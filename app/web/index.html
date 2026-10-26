@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>异环养成规划器 · OKnteAutofoot</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root{
+    --bg:#101418; --panel:#171d24; --panel2:#1d252e; --line:#2a3441;
+    --txt:#dbe4ee; --dim:#8a99ab; --acc:#4da3ff; --ok:#3ecf8e; --warn:#f0b429; --err:#ff6b6b;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font:14px/1.6 "Microsoft YaHei",system-ui,sans-serif}
+  header{display:flex;align-items:center;gap:14px;padding:10px 20px;background:var(--panel);border-bottom:1px solid var(--line)}
+  header h1{font-size:17px;margin:0}
+  header .sub{color:var(--dim);font-size:12px}
+  nav{display:flex;gap:4px;padding:8px 16px;background:var(--panel);border-bottom:1px solid var(--line)}
+  nav button{background:none;border:1px solid transparent;color:var(--dim);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:14px}
+  nav button.on{color:var(--txt);background:var(--panel2);border-color:var(--line)}
+  main{padding:18px 20px;max-width:1080px;margin:0 auto}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:14px}
+  .card h3{margin:0 0 10px;font-size:14px;color:var(--acc)}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  .grid{display:grid;gap:8px}
+  label{font-size:13px;color:var(--dim)}
+  input,select,textarea{background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:6px;padding:5px 8px;font-size:13px}
+  input[type=number]{width:90px}
+  textarea{width:100%;min-height:300px;font-family:Consolas,monospace;font-size:12px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}
+  th{color:var(--dim);font-weight:normal}
+  .btn{background:var(--acc);border:none;color:#08121d;padding:7px 18px;border-radius:6px;cursor:pointer;font-size:14px;font-weight:bold}
+  .btn.sec{background:var(--panel2);color:var(--txt);border:1px solid var(--line);font-weight:normal}
+  .btn.danger{background:var(--err);color:#1a0808}
+  .btn.mini{padding:3px 10px;font-size:12px}
+  .btn:disabled{opacity:.45;cursor:not-allowed}
+  .tag{display:inline-block;padding:1px 9px;border-radius:10px;font-size:12px;border:1px solid var(--line)}
+  .tag.ok{color:var(--ok);border-color:var(--ok)}
+  .tag.err{color:var(--err);border-color:var(--err)}
+  .tag.warn{color:var(--warn);border-color:var(--warn)}
+  .stat{display:flex;gap:26px;flex-wrap:wrap}
+  .stat b{display:block;font-size:22px;color:var(--txt)}
+  .stat span{font-size:12px;color:var(--dim)}
+  #log{background:#0b0f13;border:1px solid var(--line);border-radius:8px;padding:10px;height:240px;overflow-y:auto;font:12px/1.7 Consolas,monospace;white-space:pre-wrap}
+  .char{border:1px solid var(--line);border-radius:8px;margin-bottom:10px;overflow:hidden}
+  .char .head{display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--panel2)}
+  .char .body{padding:10px 12px;display:none}
+  .char.open .body{display:block}
+  .muted{color:var(--dim);font-size:12px}
+  .kv{display:flex;justify-content:space-between;padding:3px 0;font-size:13px}
+  .need-row{display:grid;grid-template-columns:2fr 70px 70px 70px 60px;gap:6px;align-items:center}
+</style>
+</head>
+<body>
+<header>
+  <h1>异环养成规划器</h1>
+  <span class="sub">基于 ok-nte 配置与无界面运行 · 不改其源码</span>
+  <span id="envTags" class="row" style="margin-left:auto"></span>
+</header>
+<nav id="nav">
+  <button data-t="overview" class="on">总览</button>
+  <button data-t="chars">角色</button>
+  <button data-t="inv">库存</button>
+  <button data-t="tables">数据表</button>
+  <button data-t="settings">设置</button>
+  <button data-t="history">历史</button>
+</nav>
+<main id="main"></main>
+
+<script>
+"use strict";
+const $ = (s,el=document)=>el.querySelector(s);
+const esc = s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+let BOOT=null, TIMER=null;
+
+async function api(path, body){
+  const opt = body===undefined ? {} : {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)};
+  const res = await fetch(path, opt);
+  const data = await res.json().catch(()=>({}));
+  if(!res.ok) throw new Error(data.error||res.status);
+  return data;
+}
+
+/* ---------- 数据工具 ---------- */
+function allMaterials(){
+  // 统一材料目录：体力本目标（obtain=stamina）+ extra（hunter/external）
+  const M=BOOT.tables.materials;
+  const list=(M.targets||[]).map(t=>({id:t.id,display:t.display_name||t.name,category:t.category,
+    source:t.source||"",obtain:"stamina",name:t.name}));
+  (M.extra_materials||[]).forEach(m=>list.push({id:m.id,display:m.display_name||m.id,
+    category:m.category,source:m.source||"",obtain:m.obtain||"external"}));
+  return list;
+}
+function matAllName(id){const m=allMaterials().find(x=>x.id===id);return m?m.display:id;}
+function matAllOptions(sel){
+  return allMaterials().map(m=>`<option value="${m.id}" ${m.id===sel?"selected":""}>${esc(m.display)}</option>`).join("");
+}
+function matOptions(sel){
+  return BOOT.tables.materials.targets.map(t=>{
+    const d=t.display_name||t.name;
+    return `<option value="${t.id}" ${t.id===sel?"selected":""}>${esc(d)}</option>`;}).join("");
+}
+function matName(id){return matAllName(id);}
+
+/* ---------- 总览 ---------- */
+async function renderOverview(){
+  const st = BOOT.state, plan = await api("/api/plan").catch(e=>({error:e.message}));
+  const compat = BOOT.compat, run = await api("/api/status");
+  const today = run.today||{};
+  const pend = run.pending||[];
+  const limit = st.settings.daily_stamina_limit;
+  const p = plan.plan||{}, steps = p.steps||[], d = p.detail;
+  const planHtml = plan.error ? `<span class="tag err">${esc(plan.error)}</span>` :
+    (steps.length ? `<table><tr><th>顺序</th><th>目标</th><th>轮数</th><th>体力</th><th>预计产出</th><th>缺口角色</th><th>为什么刷</th></tr>${
+      steps.map((s,i)=>`<tr><td>${i+1}</td><td>${esc(s.name)}</td><td>${s.runs}</td><td>${s.stamina}</td><td>+${s.gain}</td><td class="muted">${esc(s.character)}</td><td class="muted" style="max-width:380px" title="${esc(s.reason?.text||"")}">${esc(s.reason?.text||"")}</td></tr>`).join("")
+    }</table>` : `<div class="muted">${p.reason?`<span class="tag">${esc(p.no_op_reason||"")}</span> ${esc(p.reason)}`:"暂无可执行步骤"}</div>`);
+  const budgetLine = d ? `<div class="muted" style="margin-top:6px">${esc(d.stamina_used_note||"")}；限额 ${d.stamina_limit}${d.hunter_reserved?` − 追猎预留 ${d.hunter_reserved}`:""} = 可规划 ${d.budget_total}，本计划安排 ${d.planned_stamina} 体力（${d.planned_runs} 轮），剩余 ${d.budget_remaining}。${(d.skipped_blacklisted||[]).length?` 当日拉黑跳过：${esc(d.skipped_blacklisted.join("、"))}。`:""}</div>` : "";
+  const warns = (p.warnings||[]).map(w=>`<div class="tag warn">${esc(w)}</div>`).join(" ");
+  const pendHtml = pend.length ? `<div class="card"><h3>未决执行（上次异常退出遗留，需手动对账）</h3>
+    <table><tr><th>任务</th><th>计划</th><th>启动时间</th><th>PID</th><th>状态</th><th>处理</th></tr>${
+      pend.map(p=>`<tr><td>${esc(p.step?.name??"?")}</td><td>${p.step?.runs??0}轮 / ${p.step?.stamina??0}体力</td>
+      <td class="muted">${esc(p.started_at||"")}</td><td>${p.pid??""}</td>
+      <td>${p.alive?`<span class="tag warn">仍在运行</span>`:`<span class="tag err">已结束·未记账</span>`}</td>
+      <td><button class="btn mini" data-rid="${esc(p.execution_id||"")}" data-res="inventory_done">已核对库存</button>
+      <button class="btn sec mini" data-rid="${esc(p.execution_id||"")}" data-res="discard">放弃记账</button></td></tr>
+      <tr><td colspan="6" class="muted">${esc(p.reason||"结果未知")}</td></tr>`).join("")
+    }</table>
+    <div class="muted" style="margin-top:6px">处理前不会开始新的执行。请先按 ok-nte 日志/背包实际数量在『库存』页校准，再点“已核对库存”；若确定没刷或无需记账，点“放弃记账”（不修改库存与额度）。规划器绝不把预计产出当作实际产出。</div></div>` : "";
+  $("#main").innerHTML = `
+    <div class="card"><div class="row" style="justify-content:space-between">
+      <div class="stat">
+        <div><b>${today.used_stamina??0}<span class="muted" style="font-size:13px">/${limit}</span></b><span>今日已耗体力(含手动)</span></div>
+        <div><b>${p.budget??0}</b><span>日常剩余额度</span></div>
+        <div><b>${today.hunter_spent??0}<span class="muted" style="font-size:13px">/${st.settings.anomaly_hunter_stamina??180}</span></b><span>追猎已耗/额度</span></div>
+      </div>
+      <div class="row">
+        <button class="btn" id="btnStart" ${(run.state==="running"||run.state==="waiting"||pend.length)?"disabled":""}>▶ 开始日常</button>
+        <button class="btn" id="btnStartHunter" ${(run.state==="running"||run.state==="waiting"||pend.length)?"disabled":""}>🎯 开始追猎</button>
+        <button class="btn sec" id="btnDry">👁 预演（不落盘）</button>
+        <button class="btn danger" id="btnStop" ${(run.state!=="running"&&run.state!=="waiting")?"disabled":""}>■ 停止</button>
+      </div>
+    </div>
+    <div class="muted" style="margin-top:8px">状态：<b id="runState">${esc(runStateText(run))}</b> <span id="waitInfo">${waitInfoText(run)}</span>
+      <span class="muted">（日常与追猎共用一个执行器，同一时刻只跑一个；ok-nte 中两者互斥）</span></div>
+    </div>
+    ${pendHtml}
+    <div class="card"><h3>日常体力计划${warns?" "+warns:""}</h3>${planHtml}${budgetLine}
+      <div class="muted" style="margin-top:6px">策略：按角色优先级顺序补齐缺口；每次执行刷一个目标，完成自动切换下一个；ok-nte 的循环模式由本规划器接管（置为停用）。追猎已拆分为独立计划（下方）。</div>
+    </div>
+    <div class="card"><h3>追猎计划（独立开始；BOSS 每局 60 体力，掉落对应角色突破材料）</h3>
+      <div class="row" style="gap:8px;margin-bottom:6px">
+        <label>目标 BOSS</label>
+        <select id="hBoss">${(BOOT.tables.materials.hunter_bosses||[]).map(b=>
+          `<option ${st.settings.anomaly_hunter_target===b.name?"selected":""}>${esc(b.name)}</option>`).join("")}</select>
+        <label>覆盖次数</label>
+        <input type="number" id="hFixed" min="0" value="0" style="width:70px" title="0=按材料缺口自动；>0=本次固定打这么多局">
+        <button class="btn sec mini" id="btnHunterPlan">生成追猎计划</button>
+      </div>
+      <div id="hunterBody"><div class="muted">点「生成追猎计划」预览（按所选 BOSS 掉落材料的缺口自动算局数，受追猎每日额度封顶）。</div></div>
+      <div class="muted" style="margin-top:6px">对应材料缺口在『角色→直接材料需求』或『库存』里体现（如 海之泪←海囚）。</div>
+    </div>
+    <div class="card"><h3>未来 3 天预览（推演：体力恢复按每日限额假设，实际以游戏为准）</h3>
+      <div class="row"><button class="btn sec" id="btnPreview">生成未来 3 天推演</button>
+      <span id="pvStamina" class="muted"></span></div>
+      <div id="pvBody" style="margin-top:8px"></div></div>
+    <div id="dryCard" style="display:none" class="card"><h3>Dry Run 预演结果（纯读：不写文件、不启动 ok-nte、不改额度与库存）</h3><div id="dryBody"></div></div>
+    <div class="card"><h3>执行日志</h3><div id="log"></div></div>`;
+  $("#btnStart").onclick = ()=>startRun("daily");
+  $("#btnStartHunter").onclick = startHunterRun;
+  $("#btnDry").onclick = doDryRun;
+  $("#btnPreview").onclick = doPreview;
+  $("#btnHunterPlan").onclick = doHunterPlan;
+  $("#btnStop").onclick = ()=>api("/api/stop").then(refreshStatus).catch(alertErr);
+  drawLog(run.lines||[]);
+}
+async function doHunterPlan(){
+  const body=$("#hunterBody");
+  body.innerHTML='<div class="muted">推演中…</div>';
+  try{
+    const boss=encodeURIComponent($("#hBoss").value);
+    const fixed=+$("#hFixed").value||0;
+    const r=await api(`/api/hunter/plan?boss=${boss}&fixed_runs=${fixed}`);
+    const steps=r.steps||[];
+    body.innerHTML = steps.length
+      ? `<table><tr><th>BOSS</th><th>掉落材料</th><th>局数</th><th>体力</th><th>预计产出</th><th>为什么</th></tr>${
+        steps.map(s=>`<tr><td>${esc(s.boss)}</td><td>${esc(s.name)}</td><td>${s.runs}</td><td>${s.stamina}</td><td>+${s.gain}</td>
+        <td class="muted" style="max-width:380px">${esc(s.reason?.text||"")}</td></tr>`).join("")}</table>
+        <div class="muted" style="margin-top:4px">追猎额度：${r.detail?.hunter_limit??0} − 已耗 ${r.detail?.hunter_spent??0} = 可用 ${r.budget}。</div>`
+      : `<div class="muted">${r.reason?`<span class="tag">${esc(r.no_op_reason||"")}</span> ${esc(r.reason)}`:"追猎无步骤"}</div>`;
+  }catch(e){ body.innerHTML=`<span class="tag err">推演失败：${esc(e.message)}</span>`; }
+}
+async function doPreview(){
+  const body=$("#pvBody"), stam=$("#pvStamina");
+  body.innerHTML='<div class="muted">推演中…</div>';
+  try{
+    const r = await api("/api/preview?days=3");
+    stam.textContent = r.projected_stamina_now!=null
+      ? `当前体力估计：${r.projected_stamina_now}` : "（设置页填写\"当前体力\"后显示估计值）";
+    const warns=(r.warnings||[]).map(w=>`<div class="tag warn">${esc(w)}</div>`).join(" ");
+    const rows=r.days.map((d,i)=>`
+      <tr><td>${esc(d.date)}${i===0?"（今天）":""}</td><td>${d.budget}</td>
+      <td>${d.steps.length?d.steps.map(s=>`${esc(s.name)}×${s.runs}轮(${s.stamina}体力,+${s.gain})`).join("；"):`<span class="muted">无（未达标缺口为空${d.open_gaps?`，${d.open_gaps} 个缺口待续`:""}）</span>`}</td>
+      <td>${d.remaining}</td></tr>`).join("");
+    body.innerHTML=`${warns?`<div class="row" style="margin-bottom:6px">${warns}</div>`:""}
+      ${r.complete_on?`<div class="muted" style="margin-bottom:6px">按此推演：<b>${esc(r.complete_on)}</b> 全部达标</div>`:`<div class="muted" style="margin-bottom:6px">3 天内无法全部达标（可增加天数视角：调整限额/目标）</div>`}
+      <table><tr><th>日期</th><th>额度</th><th>安排</th><th>剩余</th></tr>${rows}</table>`;
+  }catch(e){ body.innerHTML=`<span class="tag err">推演失败：${esc(e.message)}</span>`; }
+}
+async function doDryRun(){
+  const card=$("#dryCard"), body=$("#dryBody");
+  card.style.display="block";
+  body.innerHTML='<div class="muted">预演中…</div>';
+  try{
+    const r = await api("/api/dry-run");
+    if(!r.ok){
+      body.innerHTML=`<span class="tag err">${esc(r.error||"预演失败")}</span>` +
+        (r.compat?.problems?.length?`<div class="muted" style="margin-top:6px">${r.compat.problems.map(esc).join("；")}</div>`:"");
+      return;
+    }
+    const steps=r.plan?.steps||[], s0=steps[0];
+    let html="";
+    if(s0){
+      html+=`<div style="margin-bottom:8px">本轮将执行：<b>${esc(s0.name)}</b> × ${s0.runs} 轮（${s0.stamina} 体力，预计 +${s0.gain}）`+
+        `；今日额度安排 ${r.plan.detail?`${r.plan.detail.planned_stamina}`:s0.stamina} 体力，剩余 ${r.plan.budget}。</div>`;
+      if(r.patch){
+        html+=`<div class="muted" style="margin-bottom:4px">将修改文件：<code>${esc(r.patch.file)}</code>（只列差异）</div>`+
+          `<table><tr><th>配置段</th><th>字段</th><th>当前值</th><th>将改为</th></tr>${
+            r.patch.diff.map(d=>`<tr><td>${esc(d.section)}</td><td>${esc(d.key)}</td><td class="muted">${esc(String(d.old??"（新增）"))}</td><td><b>${esc(String(d.new))}</b></td></tr>`).join("")
+          }</table>`;
+        if(r.hunter_note) html+=`<div class="muted" style="margin-top:4px">${esc(r.hunter_note)}</div>`;
+      }
+    }else{
+      html=`<div class="muted">当前无需执行：${esc(r.plan?.reason||"")}</div>`;
+    }
+    if(r.oknte_running) html+=`<div class="tag warn" style="margin-top:6px">ok-nte 当前正在运行：真实执行会等其退出后再写配置</div>`;
+    body.innerHTML=html;
+  }catch(e){ body.innerHTML=`<span class="tag err">预演失败：${esc(e.message)}</span>`; }
+}
+function runStateText(run){
+  const map={idle:"空闲",running:"运行中",stopping:"停止中",waiting:"等待中",done:"已完成",error:"出错"};
+  const mode = run.mode==="hunter"?"【追猎】":run.mode==="daily"?"【日常】":"";
+  let t = mode + (map[run.state]||run.state);
+  if(run.message && run.state!=="waiting") t += ` — ${run.message}`;  // 等待中的详情由 waitInfoText 展示
+  return t;
+}
+function waitInfoText(run){
+  if(run.state!=="waiting") return "";
+  let html = run.waiting_reason?`等待原因：${esc(run.waiting_reason)}`:"";
+  if(run.next_retry_at){
+    const target=new Date(String(run.next_retry_at).replace(" ","T"));
+    if(!isNaN(target)){
+      const left=Math.max(0,Math.ceil((target.getTime()-Date.now())/1000));
+      html+=`${html?" · ":""}距下次重试 ${Math.floor(left/60)}:${String(left%60).padStart(2,"0")}（${esc(run.next_retry_at)}）`;
+    }
+  }
+  return html?`<span class="tag warn">${html}</span>`:"";
+}
+function drawLog(lines){const el=$("#log"); if(!el)return; el.textContent=lines.join("\n")||"（暂无日志）"; el.scrollTop=el.scrollHeight;}
+async function refreshStatus(){
+  try{
+    const run = await api("/api/status");
+    const el=$("#runState"); if(el) el.textContent = runStateText(run);
+    const w=$("#waitInfo"); if(w) w.innerHTML = waitInfoText(run);
+    const b1=$("#btnStart"),bh=$("#btnStartHunter"),b2=$("#btnStop");
+    const active = run.state==="running"||run.state==="waiting";
+    if(b1) b1.disabled = active;
+    if(bh) bh.disabled = active;
+    if(b2) b2.disabled = !active;
+    drawLog(run.lines||[]);
+  }catch(e){}
+}
+async function startRun(mode){
+  try{
+    await api("/api/start",{mode});
+    refreshStatus();
+  }catch(e){alertErr(e);}
+}
+async function startHunterRun(){
+  try{
+    const boss=$("#hBoss")?.value;
+    if(boss) await api("/api/settings",{anomaly_hunter_target:boss});
+    await api("/api/start",{mode:"hunter",fixed_runs:+$("#hFixed")?.value||0});
+    refreshStatus();
+  }catch(e){alertErr(e);}
+}
+function alertErr(e){alert("操作失败："+e.message);}
+
+/* ---------- 角色（含角色库/武器库） ---------- */
+function libraryCard(title, key){
+  const names=BOOT.state[key]||[];
+  return `<div class="card"><div class="row" style="justify-content:space-between">
+      <h3 style="margin:0">${esc(title)}</h3>
+      <div class="row" style="gap:6px">
+        <input class="lib-input" data-lib="${key}" placeholder="输入名字后添加" style="width:180px">
+        <button class="btn sec mini" data-lib-add="${key}">＋ 添加</button>
+      </div></div>
+    <div class="row" style="gap:6px;flex-wrap:wrap;margin-top:8px">
+      ${names.length?names.map(n=>`<span class="tag">${esc(n)}
+        <button class="btn sec mini" data-lib-del="${key}" data-name="${esc(n)}" style="padding:0 4px;border:none;background:none;color:var(--err)">×</button></span>`).join("")
+        :'<span class="muted">（空，手动添加后可在下方角色行下拉选择）</span>'}
+    </div></div>`;
+}
+function bindLibraryHandlers(){
+  document.querySelectorAll("[data-lib-add]").forEach(btn=>btn.onclick=async()=>{
+    const key=btn.dataset.libAdd;
+    const inp=document.querySelector(`.lib-input[data-lib="${key}"]`);
+    const name=(inp.value||"").trim(); if(!name){alert("请输入名字");return;}
+    const list=[...(BOOT.state[key]||[])];
+    if(!list.includes(name)) list.push(name);
+    try{const r=await api("/api/libraries",{[key]:list});
+      BOOT.state.char_library=r.char_library;BOOT.state.weapon_library=r.weapon_library;
+      inp.value=""; renderChars();
+    }catch(e){alertErr(e);}
+  });
+  document.querySelectorAll("[data-lib-del]").forEach(btn=>btn.onclick=async()=>{
+    const key=btn.dataset.libDel, name=btn.dataset.name;
+    if(!confirm(`从${key==="char_library"?"角色库":"武器库"}删除「${name}」？（角色行里的已选值会保留）`))return;
+    const list=(BOOT.state[key]||[]).filter(n=>n!==name);
+    try{const r=await api("/api/libraries",{[key]:list});
+      BOOT.state.char_library=r.char_library;BOOT.state.weapon_library=r.weapon_library;
+      renderChars();
+    }catch(e){alertErr(e);}
+  });
+}
+function renderChars(){
+  const st = BOOT.state;
+  const tracks = BOOT.tables.requirements.tracks||{};
+  $("#main").innerHTML = `
+    ${libraryCard("角色库（手动添加，供下方角色行下拉选择）","char_library")}
+    ${libraryCard("武器库（弧盘/武器名字，手动添加，供角色行下拉选择）","weapon_library")}
+    <div class="card"><div class="row" style="justify-content:space-between">
+      <h3 style="margin:0">角色列表（列表顺序 = 补齐优先级，从上到下）</h3>
+      <button class="btn sec" id="addChar">＋ 新建角色</button>
+    </div>
+    <div class="muted">名字/武器从上面的库下拉选择（也支持手输新名字）；每个角色选择对应的材料系（异能/弧盘/空幕），填写当前/目标练度；『直接材料需求』里可用全量材料（含 BOSS 掉落/周本/小怪素材）手动填缺口。</div>
+    </div>
+    <div id="charList"></div>
+    <button class="btn" id="saveChars">保存角色</button>`;
+  const list = $("#charList");
+  if(!st.characters.length) list.innerHTML = `<div class="card muted">还没有角色，点右上角新建。</div>`;
+  st.characters.forEach((c,i)=>list.appendChild(charCard(c,i,tracks)));
+  $("#addChar").onclick = ()=>{
+    st.characters.push({id:Math.random().toString(16).slice(2,10),name:"新角色",enabled:true,
+      weapon:"",mats:{ability:1,arc:1,console:1},
+      tracks:Object.fromEntries(Object.keys(tracks).map(k=>[k,{cur:1,tgt:1}])),extra_needs:{}});
+    list.appendChild(charCard(st.characters[st.characters.length-1], st.characters.length-1, tracks));
+  };
+  $("#saveChars").onclick = async ()=>{
+    // 从 DOM 收集
+    const chars=[];
+    document.querySelectorAll(".char").forEach(el=>{
+      // 换位/删除后 DOM 序与数组序不一致，基础数据按角色 id 取，避免互换
+      const base=st.characters.find(ch=>ch.id===el.dataset.cid) || st.characters[+el.dataset.idx];
+      const tracks={};
+      el.querySelectorAll("[data-track]").forEach(inp=>{tracks[inp.dataset.track]=tracks[inp.dataset.track]||{};tracks[inp.dataset.track][inp.dataset.tk]=+inp.value||0;});
+      const extra={};
+      el.querySelectorAll(".extra-list .row").forEach(row=>{
+        const sel=row.querySelector("select"), num=row.querySelector("input[type=number]");
+        const v=+num?.value||0;
+        if(v>0 && sel?.value) extra[sel.value]=v;
+      });
+      chars.push({...base,
+        name:el.querySelector(".c-name").value.trim()||base.name,
+        enabled:el.querySelector(".c-enabled").checked,
+        weapon:el.querySelector(".c-weapon").value,
+        mats:{ability:+el.querySelector(".c-ability").value,arc:+el.querySelector(".c-arc").value,console:+el.querySelector(".c-console").value},
+        tracks, extra_needs:extra});
+    });
+    try{ await api("/api/characters",{characters:chars}); BOOT.state.characters=chars; alert("已保存"); renderChars(); }catch(e){alertErr(e);}
+  };
+  bindLibraryHandlers();
+}
+function libOptions(key, current, allowEmpty){
+  const names=BOOT.state[key]||[];
+  const opts=[];
+  if(allowEmpty) opts.push(`<option value="" ${!current?"selected":""}>（未选择）</option>`);
+  names.forEach(n=>opts.push(`<option value="${esc(n)}" ${n===current?"selected":""}>${esc(n)}</option>`));
+  if(current && !names.includes(current))
+    opts.push(`<option value="${esc(current)}" selected>${esc(current)}（不在库中）</option>`);
+  return opts.join("");
+}
+function charCard(c,i,tracks){
+  const div=document.createElement("div");
+  div.className="char"; div.dataset.idx=i; div.dataset.cid=c.id;
+  const trackRows = Object.entries(tracks).map(([k,t])=>`
+    <div class="row" style="gap:6px"><label style="width:90px">${esc(t.name)}</label>
+      <input type="number" data-track="${k}" data-tk="cur" value="${c.tracks?.[k]?.cur??1}" min="0"> →
+      <input type="number" data-track="${k}" data-tk="tgt" value="${c.tracks?.[k]?.tgt??1}" min="0" max="${t.max??999}">
+    </div>`).join("");
+  const extraRows = Object.entries(c.extra_needs||{}).map(([m,v])=>extraRow(m,v)).join("") || `<div class="muted extra-empty">（未填写）</div>`;
+  div.innerHTML=`
+    <div class="head">
+      <input type="checkbox" class="c-enabled" ${c.enabled?"checked":""}>
+      <select class="c-name" style="width:150px">${libOptions("char_library",c.name,false)}
+        ${c.name&&!(BOOT.state.char_library||[]).includes(c.name)?`<option value="${esc(c.name)}" selected>${esc(c.name)}（自定义）</option>`:""}
+      </select>
+      <span class="muted">武器</span><select class="c-weapon" style="width:130px">${libOptions("weapon_library",c.weapon||"",true)}</select>
+      <span class="muted">异能系</span><select class="c-ability">${[1,2,3,4,5].map(n=>`<option ${c.mats?.ability===n?"selected":""}>${n}</option>`).join("")}</select>
+      <span class="muted">罐头系</span><select class="c-arc">${[1,2,3,4,5].map(n=>`<option ${c.mats?.arc===n?"selected":""}>${n}</option>`).join("")}</select>
+      <span class="muted">空幕</span><select class="c-console">${[1,2,3,4,5,6].map(n=>`<option ${c.mats?.console===n?"selected":""}>${n}</option>`).join("")}</select>
+      <span style="flex:1"></span>
+      <button class="btn sec mini" data-act="up">↑</button>
+      <button class="btn sec mini" data-act="down">↓</button>
+      <button class="btn sec mini" data-act="del">删除</button>
+      <button class="btn sec mini" data-act="fold">展开/收起</button>
+    </div>
+    <div class="body">
+      <div class="grid" style="margin-bottom:8px">${trackRows}</div>
+      <h3 style="font-size:13px;color:var(--acc);margin:6px 0">直接材料需求（全量材料含 BOSS 掉落/周本/小怪素材；与练度换算叠加）</h3>
+      <div class="grid extra-list">${extraRows}</div>
+      <button class="btn sec mini" data-act="addExtra" style="margin-top:6px">＋ 添加材料</button>
+    </div>`;
+  div.querySelector('[data-act="fold"]').onclick=()=>div.classList.toggle("open");
+  div.querySelector('[data-act="del"]').onclick=()=>{div.remove();};
+  div.querySelector('[data-act="up"]').onclick=()=>{if(div.previousElementSibling)div.parentNode.insertBefore(div,div.previousElementSibling);reindex();};
+  div.querySelector('[data-act="down"]').onclick=()=>{if(div.nextElementSibling)div.parentNode.insertBefore(div.nextElementSibling,div);reindex();};
+  div.querySelector('[data-act="addExtra"]').onclick=()=>{
+    div.querySelector(".extra-empty")?.remove();
+    div.querySelector(".extra-list").insertAdjacentHTML("beforeend",extraRow("ability_1",0));
+  };
+  return div;
+}
+function extraRow(mat,v){
+  return `<div class="row" style="gap:6px"><select>${matAllOptions(mat)}</select>
+    <input type="number" value="${v}" min="0" style="width:90px" placeholder="数量">
+    <span class="muted">个</span></div>`;
+}
+function reindex(){document.querySelectorAll(".char").forEach((el,i)=>el.dataset.idx=i);}
+
+/* ---------- 库存 ---------- */
+function renderInv(){
+  const inv=BOOT.state.inventory||{};
+  const cats={};
+  allMaterials().forEach(m=>{(cats[m.category]=cats[m.category]||[]).push(m);});
+  const obtainTag=o=>o==="stamina"?`<span class="tag ok">体力本</span>`
+    :o==="hunter"?`<span class="tag warn">追猎</span>`:`<span class="tag">外部</span>`;
+  $("#main").innerHTML=`
+    <div class="card"><h3>材料库存（全量材料：体力本 + BOSS掉落/周本/小怪等外部来源；先按背包实际填写，之后规划器自动累加）</h3>
+    ${Object.entries(cats).map(([cat,items])=>`
+      <h3 style="font-size:13px;color:var(--dim)">${esc(cat)}</h3>
+      <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(300px,1fr))">
+      ${items.map(m=>`<div class="row" style="gap:8px">
+        <label style="flex:1" title="${esc(m.source)}">${esc(m.display)} ${obtainTag(m.obtain)}</label>
+        <input type="number" min="0" data-inv="${m.id}" value="${inv[m.id]??0}"></div>`).join("")}
+      </div>`).join("")}
+    </div>
+    <button class="btn" id="saveInv">保存库存</button>`;
+  $("#saveInv").onclick=async()=>{
+    const inventory={};
+    document.querySelectorAll("[data-inv]").forEach(inp=>{const v=+inp.value||0; if(v>0)inventory[inp.dataset.inv]=v;});
+    try{await api("/api/inventory",{inventory});BOOT.state.inventory=inventory;alert("已保存");}catch(e){alertErr(e);}
+  };
+}
+
+/* ---------- 数据表 ---------- */
+const GENERIC_MATS=[["exp_char","角色经验（猎人攻略）"],["exp_arc","弧盘经验（染剂）"],["coin","甲硬币"],
+  ["ability_mat","技能书（按角色所选系）"],["arc_mat","弧盘突破·罐头（按角色所选系）"],["console_mat","空幕（按角色所选节点）"]];
+function renderTables(){
+  const y=BOOT.tables.yields.per_run, hy=BOOT.tables.yields.hunter_yield||{};
+  const M=BOOT.tables.materials, all=allMaterials();
+  $("#main").innerHTML=`
+    <div class="card"><h3>每轮产出（体力本 40体力/轮，务必校准）</h3>
+      <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(280px,1fr))">
+      ${M.targets.map(t=>`<div class="row" style="gap:8px"><label style="flex:1" title="${esc(t.source||"")}">${esc(t.display_name||t.name)}</label>
+        <input type="number" min="0" data-y="${t.id}" value="${y[t.id]??1}"></div>`).join("")}
+      </div>
+      <div class="muted" style="margin:8px 0">掉落随世界等级变化；填小=多刷，填大=少刷。执行几次后按实际掉落回填（也可用『历史』页的实际获得确认闭环）。</div>
+      <button class="btn" id="saveYields">保存产量表</button>
+    </div>
+    <div class="card"><h3>BOSS 掉落产量（异象追猎 60体力/局，50级默认约8个）</h3>
+      <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(280px,1fr))">
+      ${(M.hunter_bosses||[]).map(b=>{const m=allMaterials().find(x=>x.id===b.mat_id);
+        return `<div class="row" style="gap:8px"><label style="flex:1">${esc(b.name)} → ${esc(m?m.display:b.mat_id)}</label>
+        <input type="number" min="0" data-hy="${esc(b.name)}" value="${hy[b.name]??8}"></div>`;}).join("")}
+      </div>
+      <button class="btn" id="saveHY" style="margin-top:8px">保存 BOSS 产量</button>
+    </div>
+    <div class="card"><h3>材料名称与来源（预填调研名；技能书/罐头系的 1~5 号顺序请按游戏内核对后修改，立即生效）</h3>
+      <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(340px,1fr))">
+      ${all.map(m=>`<div class="row" style="gap:6px">
+        <input style="width:45%" data-mn="${m.id}" value="${esc(m.display)}" title="显示名">
+        <input style="flex:1" data-ms="${m.id}" value="${esc(m.source)}" title="来源" placeholder="来源">
+        <span class="muted" style="width:44px">${m.obtain==="stamina"?"体力本":m.obtain==="hunter"?"追猎":"外部"}</span></div>`).join("")}
+      </div>
+      <button class="btn" id="saveNames" style="margin-top:8px">保存名称与来源</button>
+    </div>
+    <div class="card"><h3>养成需求表（等级段→材料数量，表单编辑）</h3>
+      <div id="reqEditor"></div>
+      <div class="muted" style="margin-top:6px">角色经验/弧盘经验/技能书/罐头/空幕为通用键，会按每个角色选择的系自动对应具体材料；BOSS 掉落等实名材料直接选。</div>
+      <button class="btn" id="saveReq" style="margin-top:8px">保存需求表</button>
+    </div>`;
+  buildReqEditor();
+  $("#saveYields").onclick=async()=>{
+    const per_run={};
+    document.querySelectorAll("[data-y]").forEach(inp=>per_run[inp.dataset.y]=+inp.value||0);
+    try{const r=await api("/api/tables/yields",{per_run});BOOT.tables.yields=r.yields;alert("已保存");}catch(e){alertErr(e);}
+  };
+  $("#saveHY").onclick=async()=>{
+    const hunter_yield={};
+    document.querySelectorAll("[data-hy]").forEach(inp=>hunter_yield[inp.dataset.hy]=+inp.value||0);
+    try{const r=await api("/api/tables/yields",{hunter_yield});BOOT.tables.yields=r.yields;alert("已保存");}catch(e){alertErr(e);}
+  };
+  $("#saveNames").onclick=async()=>{
+    const display={};
+    document.querySelectorAll("[data-mn]").forEach(inp=>{
+      display[inp.dataset.mn]={display_name:inp.value,
+        source:document.querySelector(`[data-ms="${inp.dataset.mn}"]`).value};});
+    try{const r=await api("/api/tables/materials",{display});BOOT.tables.materials=r.materials;alert(`已保存（${r.changed} 项）`);}catch(e){alertErr(e);}
+  };
+  $("#saveReq").onclick=async()=>{
+    const obj={version:1,tracks:{}};
+    document.querySelectorAll("[data-track-edit]").forEach(card=>{
+      const key=card.dataset.trackEdit;
+      const ladder=[];
+      card.querySelectorAll(".band-row").forEach(row=>{
+        const from=+row.querySelector(".b-from").value||0, to=+row.querySelector(".b-to").value||0;
+        const items={};
+        row.querySelectorAll(".band-item").forEach(it=>{
+          const mat=it.querySelector("select").value, cnt=+it.querySelector("input[type=number]").value||0;
+          if(mat&&cnt>0) items[mat]=cnt;});
+        if(to>from&&(Object.keys(items).length||!row.querySelector(".band-item")))
+          ladder.push({from,to,items});
+      });
+      obj.tracks[key]={name:card.querySelector(".t-name").value||key,
+        max:+card.querySelector(".t-max").value||999, ladder};
+    });
+    try{await api("/api/tables/requirements",obj);BOOT.tables.requirements=obj;alert("已保存");renderTables();}catch(e){alertErr(e);}
+  };
+}
+function buildReqEditor(){
+  const req=BOOT.tables.requirements, host=$("#reqEditor");
+  const generic=new Map(GENERIC_MATS);
+  const matLabel=id=>generic.get(id)||matAllName(id);
+  const matOpts=sel=>[...generic.entries()].map(([k,label])=>
+      `<option value="${k}" ${k===sel?"selected":""}>${esc(label)}</option>`).join("")
+    +allMaterials().map(m=>`<option value="${m.id}" ${m.id===sel?"selected":""}>${esc(m.display)}</option>`).join("");
+  host.innerHTML=Object.entries(req.tracks||{}).map(([key,t])=>`
+    <div class="char open" data-track-edit="${key}">
+      <div class="head">
+        <input class="t-name" value="${esc(t.name||key)}" style="width:130px" title="轨道名">
+        <span class="muted">上限</span><input class="t-max" type="number" value="${t.max??999}" style="width:70px">
+        <span style="flex:1"></span>
+        <button class="btn sec mini" data-act="addBand">＋ 添加等级段</button>
+      </div>
+      <div class="body" style="display:block">
+        ${(t.ladder||[]).map(bandRow(b=>b)).join("")||`<div class="muted band-empty">（暂无等级段：本轨道不参与换算，可在角色『直接材料需求』里手填）</div>`}
+      </div>
+    </div>`).join("");
+  function bandRow(b){
+    return `<div class="band-row card" style="margin:6px 0;padding:8px">
+      <div class="row" style="gap:6px;margin-bottom:4px">
+        <span class="muted">从</span><input class="b-from" type="number" value="${b?.from??1}" style="width:70px">
+        <span class="muted">到</span><input class="b-to" type="number" value="${b?.to??10}" style="width:70px">
+        <span style="flex:1"></span>
+        <button class="btn sec mini" data-act="addBandItem">＋ 材料</button>
+        <button class="btn sec mini" data-act="delBand">删除本段</button>
+      </div>
+      <div class="grid band-items">
+      ${Object.entries(b?.items||{}).map(([mat,cnt])=>bandItem(mat,cnt)).join("")
+        ||`<div class="muted">（未配置材料）</div>`}
+      </div>
+    </div>`;
+  }
+  function bandItem(mat,cnt){
+    return `<div class="row band-item" style="gap:6px">
+      <select style="flex:1">${matOpts(mat)}</select>
+      <input type="number" value="${cnt}" min="0" style="width:100px" placeholder="数量">
+      <button class="btn sec mini" data-act="delItem">×</button></div>`;
+  }
+  host.querySelectorAll('[data-act="addBand"]').forEach(btn=>btn.onclick=()=>{
+    const card=btn.closest("[data-track-edit]");
+    const body=card.querySelector(".body");
+    body.querySelector(".band-empty")?.remove();
+    body.insertAdjacentHTML("beforeend",bandRow({from:1,to:10,items:{}}));
+    bindBandButtons(card);
+  });
+  function bindBandButtons(scope){
+    scope.querySelectorAll('[data-act="delBand"]').forEach(btn=>btn.onclick=()=>btn.closest(".band-row").remove());
+    scope.querySelectorAll('[data-act="addBandItem"]').forEach(btn=>btn.onclick=()=>{
+      const items=btn.closest(".band-row").querySelector(".band-items");
+      items.querySelector(".muted")?.remove();
+      items.insertAdjacentHTML("beforeend",bandItem("exp_char",0));
+      bindBandButtons(scope);
+    });
+    scope.querySelectorAll('[data-act="delItem"]').forEach(btn=>btn.onclick=()=>btn.closest(".band-item").remove());
+  }
+  bindBandButtons(host);
+}
+
+/* ---------- 设置 ---------- */
+function renderSettings(){
+  const s=BOOT.state.settings;
+  $("#main").innerHTML=`
+    <div class="card"><h3>基本</h3>
+      <div class="row" style="margin-bottom:8px"><label style="width:150px">ok-nte 安装目录</label>
+        <input id="s_root" value="${esc(s.oknte_root)}" style="flex:1"></div>
+      <div class="row" style="margin-bottom:8px"><label style="width:150px">每日体力限额</label>
+        <input type="number" id="s_limit" value="${s.daily_stamina_limit}" min="40" step="20">
+        <span class="muted">注意：ok-nte 在当日活跃度达标(180体力/100活跃)后会自动跳过，填太大也不会多刷</span></div>
+      <div class="row" style="margin-bottom:8px"><label style="width:150px">每日重置小时(0-23)</label>
+        <input type="number" id="s_reset" value="${s.daily_reset_hour}" min="0" max="23"></div>
+      <div class="row" style="margin-bottom:8px"><label style="width:150px">单次运行时限(分钟)</label>
+        <input type="number" id="s_maxmin" value="${s.max_run_minutes}" min="10"></div>
+      <div class="row"><label style="width:150px">完成/失败通知</label>
+        <input type="checkbox" id="s_notify" ${s.notify_enabled?"checked":""}>
+        <span class="muted">Windows 气泡通知</span></div>
+    </div>
+    <div class="card"><h3>持续执行</h3>
+      <div class="row" style="margin-bottom:8px"><input type="checkbox" id="s_cont" ${s.continuous_mode?"checked":""}>
+        <span>持续执行模式：点开始后一直执行，跨天自动继续</span></div>
+      <div class="row"><label style="width:150px">繁忙重试等待(秒)</label>
+        <input type="number" id="s_retry" value="${s.busy_retry_seconds??300}" min="0" max="3600" step="30">
+        <span class="muted">遇到 ok-nte 占用、游戏内体力不足、当日额度用尽等情形时，等待这么久再自动重试（0~3600）</span></div>
+    </div>
+    <div class="card"><h3>追猎计划（独立于日常计划，单独开始；ok-nte 中两者互斥）</h3>
+      <div class="row" style="margin-bottom:8px"><label style="width:150px">追猎每日体力额度</label>
+        <input type="number" id="s_hsta" value="${s.anomaly_hunter_stamina}" min="0" step="60">
+        <span class="muted">60体力/局；额度按追猎记账独立扣减</span></div>
+      <div class="row"><label style="width:150px">默认追猎目标</label>
+        <select id="s_htgt">${(BOOT.tables.materials.hunter_bosses||[]).map(b=>
+          `<option ${s.anomaly_hunter_target===b.name?"selected":""}>${esc(b.name)}</option>`).join("")}</select>
+        <span class="muted">也可在总览页追猎计划卡临时选择</span></div>
+    </div>
+    <div class="card"><h3>体力恢复模型（用于估计与未来预览，不影响执行逻辑）</h3>
+      <div class="row" style="margin-bottom:8px"><label style="width:150px">体力上限</label>
+        <input type="number" id="s_cap" value="${s.stamina_cap??240}" min="1" max="999"></div>
+      <div class="row" style="margin-bottom:8px"><label style="width:150px">每小时恢复</label>
+        <input type="number" id="s_regen" value="${s.stamina_regen_per_hour??10}" min="0" max="999" step="0.5">
+        <span class="muted">默认 10/小时（即 6 分钟 1 点），按游戏实际填写</span></div>
+      <div class="row"><label style="width:150px">当前体力（选填）</label>
+        <input type="number" id="s_snow" value="${s.stamina_now??""}" min="0" max="9999" step="0.5" placeholder="如 132">
+        <span class="muted">保存时刻作为推算基准${s.stamina_now_at?`（上次：${esc(s.stamina_now_at)}）`:""}；清空即停用估计</span></div>
+    </div>
+    <div class="card"><h3>配置导入 / 导出</h3>
+      <div class="row" style="gap:12px">
+        <button class="btn sec" id="btnExport">导出配置 JSON</button>
+        <input type="file" id="impFile" accept=".json" style="display:none">
+        <button class="btn sec" id="btnImport">导入配置 JSON</button>
+        <span class="muted">含设置/角色/库存/产量/需求表（不含历史）；导入前自动备份，非法文件整体拒绝</span>
+      </div><div id="impMsg" class="muted" style="margin-top:6px"></div></div>
+    <div class="card"><h3>ok-nte 配置备份与回滚（每次写入前自动备份，保留最近 20 份）</h3>
+      <div id="bkList" class="muted">读取中…</div></div>
+    <button class="btn" id="saveSettings">保存设置</button>`;
+  $("#saveSettings").onclick=async()=>{
+    const snowRaw=$("#s_snow").value.trim();
+    try{await api("/api/settings",{
+      oknte_root:$("#s_root").value, daily_stamina_limit:+$("#s_limit").value||180,
+      daily_reset_hour:+$("#s_reset").value||4, max_run_minutes:+$("#s_maxmin").value||90,
+      notify_enabled:$("#s_notify").checked,
+      continuous_mode:$("#s_cont").checked, busy_retry_seconds:+$("#s_retry").value||0,
+      anomaly_hunter_stamina:+$("#s_hsta").value||180, anomaly_hunter_target:$("#s_htgt").value,
+      stamina_cap:+$("#s_cap").value||240, stamina_regen_per_hour:+$("#s_regen").value||0,
+      stamina_now:snowRaw===""?null:+snowRaw});
+      alert("已保存"); await boot(); renderSettings();}catch(e){alertErr(e);}
+  };
+  $("#btnExport").onclick=async()=>{
+    try{
+      const data=await api("/api/export");
+      const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
+      const a=document.createElement("a");
+      a.href=URL.createObjectURL(blob);
+      a.download=`OKntePlanner-config-${new Date().toISOString().slice(0,10)}.json`;
+      a.click(); URL.revokeObjectURL(a.href);
+    }catch(e){alertErr(e);}
+  };
+  $("#btnImport").onclick=()=>$("#impFile").click();
+  $("#impFile").onchange=async(ev)=>{
+    const file=ev.target.files[0]; ev.target.value="";
+    if(!file)return;
+    const msg=$("#impMsg"); msg.textContent="读取中…";
+    try{
+      const payload=JSON.parse(await file.text());
+      const n=(payload.characters||[]).length;
+      if(!confirm(`导入将覆盖当前设置/角色/库存/产量/需求表（会先自动备份），文件含 ${n} 个角色。继续？`))return;
+      const r=await api("/api/import",payload);
+      msg.textContent=`导入成功：${r.characters} 个角色、${r.inventory_items} 项库存；原配置已备份到 ${r.backup}`;
+      await boot(); renderSettings();
+    }catch(e){
+      msg.textContent="";
+      alertErr({message:(e.message||"导入失败")});
+    }
+  };
+  loadBackups();
+}
+async function loadBackups(){
+  const el=$("#bkList"); if(!el)return;
+  try{
+    const r=await api("/api/backups");
+    const rows=(r.backups||[]).map(b=>`
+      <tr><td>${esc(b.name)}</td><td class="muted">${esc(b.mtime)}</td><td>${(b.size/1024).toFixed(1)} KB</td>
+      <td><button class="btn sec mini" data-bk="${esc(b.name)}">恢复</button></td></tr>`).join("");
+    el.innerHTML=rows?`<table><tr><th>备份</th><th>时间</th><th>大小</th><th>操作</th></tr>${rows}</table>`
+      :'<span class="muted">还没有备份（首次执行写入时自动产生）</span>';
+    el.querySelectorAll("[data-bk]").forEach(btn=>btn.onclick=async()=>{
+      const name=btn.dataset.bk;
+      if(!confirm(`用「${name}」整体恢复 ok-nte 日常配置？当前配置会先自动备份（可再回滚）。ok-nte 必须已完全退出。`))return;
+      try{ const r=await api("/api/backups/restore",{name});
+        alert(`已恢复：${r.restored}（当前配置已另行备份）`); loadBackups();
+      }catch(e){alertErr(e);}
+    });
+  }catch(e){ el.innerHTML=`<span class="tag err">备份列表读取失败：${esc(e.message)}</span>`; }
+}
+
+/* ---------- 历史 ---------- */
+async function renderHistory(){
+  const r=await api("/api/history");
+  const rows=(r.history||[]).slice().reverse().map(h=>{
+    const actualCell = h.status!=="done" ? `<span class="muted">—</span>` :
+      (h.actual_gain!==undefined
+        ? `<b>${h.actual_gain}</b> <span class="muted">(${esc(h.confirmed_at||"已确认")})</span>`
+        : `<span class="row" style="gap:4px"><input type="number" min="0" style="width:70px" placeholder="实际" data-cf-day="${esc(h.day)}" data-cf-time="${esc(h.time)}" data-cf-mat="${esc(h.mat_id)}">
+           <button class="btn sec mini" data-cf="1">确认</button></span>`);
+    return `<tr><td>${esc(h.day)} ${esc(h.time)}</td><td>${esc(h.name)}</td><td>${h.runs}</td>
+    <td>${h.stamina}</td><td>${h.gain>0?"+"+h.gain:"-"}</td><td>${actualCell}</td>
+    <td>${{done:"完成",short:"体力不足",skipped:"跳过",failed:"失败",reconciled:"已对账"}[h.status]||esc(h.status)}</td>
+    <td class="muted">${esc(h.note||"")}</td></tr>`;}).join("");
+  const sug = await api("/api/yield-suggestions").catch(()=>({suggestions:[]}));
+  const sugRows=(sug.suggestions||[]).map(s=>`
+    <tr><td>${esc(s.name)}</td><td>${s.configured_yield}</td>
+    <td>${s.confirmed_runs} 轮 / ${s.confirmed_gain} 个</td>
+    <td><b>${s.measured_yield}</b></td><td><b>${s.suggested_yield}</b></td>
+    <td>${s.suggested_yield!==s.configured_yield
+      ?`<button class="btn mini" data-apply-mat="${esc(s.mat_id)}" data-apply-val="${s.suggested_yield}">应用</button>`
+      :`<span class="tag ok">一致</span>`}</td></tr>`).join("");
+  const sugCard=(sug.suggestions||[]).length?`<div class="card"><h3>产量校准建议（基于已确认实际获得；只建议，应用后走产量表通道）</h3>
+    <table><tr><th>材料</th><th>当前产量</th><th>已确认累计</th><th>实测每轮</th><th>建议值</th><th>操作</th></tr>${sugRows}</table>
+    <div class="muted" style="margin-top:6px">measured = Σ实际获得 ÷ Σ轮数（全部已确认的完成记录）；应用 = 把该材料的每轮产出改为建议值。样本少时建议先多确认几条再看。</div></div>`:"";
+  $("#main").innerHTML=`${sugCard}<div class="card"><h3>执行历史（最近200条）</h3>
+    ${rows?`<table><tr><th>时间</th><th>目标</th><th>轮数</th><th>体力</th><th>预计产出</th><th>实际获得</th><th>结果</th><th>备注</th></tr>${rows}</table>`:'<div class="muted">还没有记录</div>'}</div>`;
+  document.querySelectorAll("[data-cf]").forEach(btn=>btn.onclick=async()=>{
+    const wrap=btn.closest(".row");
+    const inp=wrap.querySelector("input[data-cf-day]");
+    const v=+inp.value;
+    if(!(v>=0)){alert("请填写非负整数");return;}
+    try{
+      const res=await api("/api/history/confirm",{day:inp.dataset.cfDay,time:inp.dataset.cfTime,mat_id:inp.dataset.cfMat,actual_gain:v});
+      if(!res.ok) throw new Error(res.message||res.error);
+      renderHistory();
+    }catch(e){alertErr(e);}
+  });
+  document.querySelectorAll("[data-apply-mat]").forEach(btn=>btn.onclick=async()=>{
+    const mat=btn.dataset.applyMat, val=+btn.dataset.applyVal;
+    if(!confirm(`把「${matName(mat)}」的每轮产出改为 ${val}？`))return;
+    try{
+      const per_run={...BOOT.tables.yields.per_run,[mat]:val};
+      const res=await api("/api/tables/yields",{per_run});
+      BOOT.tables.yields=res.yields;
+      renderHistory();
+    }catch(e){alertErr(e);}
+  });
+}
+
+/* ---------- 框架 ---------- */
+async function boot(){
+  BOOT=await api("/api/bootstrap");
+  const tags=[];
+  const c = BOOT.compat;
+  if (c.status === "incompatible")
+    tags.push(`<span class="tag err" title="${esc((c.problems||[]).join('；'))}">ok-nte 不兼容</span>`);
+  else if (c.status === "compatible_with_warning")
+    tags.push(`<span class="tag warn" title="${esc((c.warnings||[]).join('；'))}">ok-nte ${esc(c.version||"?")} 兼容(警告)</span>`);
+  else
+    tags.push(`<span class="tag ok">ok-nte ${esc(c.version||"?")}</span>`);
+  tags.push(BOOT.admin?`<span class="tag ok">管理员</span>`:`<span class="tag warn">非管理员</span>`);
+  tags.push(BOOT.oknte_running?`<span class="tag warn">ok-nte 运行中</span>`:`<span class="tag ok">ok-nte 已关闭</span>`);
+  $("#envTags").innerHTML=tags.join(" ");
+}
+document.querySelectorAll("#nav button").forEach(b=>b.onclick=()=>{
+  document.querySelectorAll("#nav button").forEach(x=>x.classList.remove("on"));
+  b.classList.add("on");
+  clearInterval(TIMER);
+  const t=b.dataset.t;
+  ({overview:renderOverview,chars:renderChars,inv:renderInv,tables:renderTables,
+    settings:renderSettings,history:renderHistory})[t]();
+  if(t==="overview") TIMER=setInterval(refreshStatus,2000);
+});
+boot().then(()=>{renderOverview();TIMER=setInterval(refreshStatus,2000);}).catch(e=>{
+  $("#main").innerHTML=`<div class="card"><span class="tag err">加载失败：${esc(e.message)}</span></div>`;
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,34 @@
+{
+  "version": 2,
+  "note": "per_run：体力本每轮(40体力)掉落数量；hunter_yield：追猎每局(60体力)BOSS掉落材料数量（按50级默认8个，可校准）。填小=多刷，填大=少刷。",
+  "per_run": {
+    "exp_char": 7,
+    "exp_arc": 7,
+    "coin": 7,
+    "ability_1": 3,
+    "ability_2": 3,
+    "ability_3": 3,
+    "ability_4": 3,
+    "ability_5": 3,
+    "arc_1": 2,
+    "arc_2": 2,
+    "arc_3": 2,
+    "arc_4": 2,
+    "arc_5": 2,
+    "console_1": 2,
+    "console_2": 2,
+    "console_3": 2,
+    "console_4": 2,
+    "console_5": 2,
+    "console_6": 2
+  },
+  "hunter_yield": {
+    "音霸魔王": 8,
+    "无首铁驭": 8,
+    "塞润尼缇": 8,
+    "黑之书": 8,
+    "海囚": 8,
+    "围巢鸟": 8,
+    "斑蝶": 8
+  }
+}

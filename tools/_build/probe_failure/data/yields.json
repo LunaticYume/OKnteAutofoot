@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "note": "每种材料副本每轮(40体力)的产出数量。默认值是估计值——掉落随世界等级变化，请在执行几次后按实际掉落在面板『数据表』页校准。产量只影响『刷几轮』与库存扣减，改小=多刷，改大=少刷。",
+  "per_run": {
+    "exp_char": 7,
+    "exp_arc": 7,
+    "coin": 7,
+    "ability_1": 3,
+    "ability_2": 3,
+    "ability_3": 3,
+    "ability_4": 3,
+    "ability_5": 3,
+    "arc_1": 2,
+    "arc_2": 2,
+    "arc_3": 2,
+    "arc_4": 2,
+    "arc_5": 2,
+    "console_1": 2,
+    "console_2": 2,
+    "console_3": 2,
+    "console_4": 2,
+    "console_5": 2,
+    "console_6": 2
+  }
+}
