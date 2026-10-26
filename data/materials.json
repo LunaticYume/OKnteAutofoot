@@ -1,0 +1,294 @@
+{
+  "version": 2,
+  "cost_per_run": 40,
+  "note": "display_name/source 可在面板『数据表→材料名称与来源』里编辑；技能书/罐头系的 1~5 号与游戏内列的对应顺序未经证实，预填调研名，请按游戏内核对后改名（立即生效）。",
+  "targets": [
+    {
+      "id": "exp_char",
+      "name": "角色经验",
+      "display_name": "猎人攻略（角色经验书）",
+      "category": "经验与甲硬币",
+      "source": "异象界域·胡迪尼的魔术舞台（经验本）",
+      "config": {"任务类型": "经验与甲硬币", "具体奖励目标": "角色经验"}
+    },
+    {
+      "id": "exp_arc",
+      "name": "弧盘经验",
+      "display_name": "染剂（弧盘/武器强化）",
+      "category": "经验与甲硬币",
+      "source": "异象界域/商店（来源未确认，可改）",
+      "config": {"任务类型": "经验与甲硬币", "具体奖励目标": "弧盘经验"}
+    },
+    {
+      "id": "coin",
+      "name": "甲硬币",
+      "display_name": "甲硬币",
+      "category": "经验与甲硬币",
+      "source": "全副本/探索",
+      "config": {"任务类型": "经验与甲硬币", "具体奖励目标": "甲硬币"}
+    },
+    {
+      "id": "ability_1",
+      "name": "异能升级材料·壹",
+      "display_name": "技能书·军衔系（新兵的怯懦→「白蔷薇」）",
+      "category": "异能升级材料",
+      "source": "异象界域·扑克茶会（技能本）",
+      "config": {"任务类型": "异能升级材料", "异能材料序号": 1}
+    },
+    {
+      "id": "ability_2",
+      "name": "异能升级材料·贰",
+      "display_name": "技能书·雏鸟系（雏鸟的希冀→「橄榄枝」）",
+      "category": "异能升级材料",
+      "source": "异象界域·扑克茶会（技能本）",
+      "config": {"任务类型": "异能升级材料", "异能材料序号": 2}
+    },
+    {
+      "id": "ability_3",
+      "name": "异能升级材料·叁",
+      "display_name": "技能书·帽子系（初次的期许→「黑帽子」）",
+      "category": "异能升级材料",
+      "source": "异象界域·扑克茶会（技能本）",
+      "config": {"任务类型": "异能升级材料", "异能材料序号": 3}
+    },
+    {
+      "id": "ability_4",
+      "name": "异能升级材料·肆",
+      "display_name": "技能书·同频系（思维的同频→「心跳夜」）",
+      "category": "异能升级材料",
+      "source": "异象界域·扑克茶会（技能本）",
+      "config": {"任务类型": "异能升级材料", "异能材料序号": 4}
+    },
+    {
+      "id": "ability_5",
+      "name": "异能升级材料·伍",
+      "display_name": "技能书·水波系（水波的迟疑→「第二人」）",
+      "category": "异能升级材料",
+      "source": "异象界域·扑克茶会（技能本）",
+      "config": {"任务类型": "异能升级材料", "异能材料序号": 5}
+    },
+    {
+      "id": "arc_1",
+      "name": "弧盘突破材料·壹",
+      "display_name": "弧盘突破·戏剧芯（入门→典藏）",
+      "category": "弧盘突破材料",
+      "source": "异象界域·泡影罐头工厂",
+      "config": {"任务类型": "弧盘突破材料", "弧盘材料序号": 1}
+    },
+    {
+      "id": "arc_2",
+      "name": "弧盘突破材料·贰",
+      "display_name": "弧盘突破·液态梦（试用→罐装）",
+      "category": "弧盘突破材料",
+      "source": "异象界域·泡影罐头工厂",
+      "config": {"任务类型": "弧盘突破材料", "弧盘材料序号": 2}
+    },
+    {
+      "id": "arc_3",
+      "name": "弧盘突破材料·叁",
+      "display_name": "弧盘突破·苹果核（铁制→金色）",
+      "category": "弧盘突破材料",
+      "source": "异象界域·泡影罐头工厂",
+      "config": {"任务类型": "弧盘突破材料", "弧盘材料序号": 3}
+    },
+    {
+      "id": "arc_4",
+      "name": "弧盘突破材料·肆",
+      "display_name": "弧盘突破·螺旋乐（碎屑→齐奏）",
+      "category": "弧盘突破材料",
+      "source": "异象界域·泡影罐头工厂",
+      "config": {"任务类型": "弧盘突破材料", "弧盘材料序号": 4}
+    },
+    {
+      "id": "arc_5",
+      "name": "弧盘突破材料·伍",
+      "display_name": "弧盘突破·冷点心（无味→特制）",
+      "category": "弧盘突破材料",
+      "source": "异象界域·泡影罐头工厂",
+      "config": {"任务类型": "弧盘突破材料", "弧盘材料序号": 5}
+    },
+    {
+      "id": "console_1",
+      "name": "空幕·壹",
+      "display_name": "空幕·钟表把戏（兔子洞节点1）",
+      "category": "空幕",
+      "source": "异象界域·兔子洞",
+      "config": {"任务类型": "空幕", "空幕序号": 1}
+    },
+    {
+      "id": "console_2",
+      "name": "空幕·贰",
+      "display_name": "空幕·雕塑长廊（兔子洞节点2）",
+      "category": "空幕",
+      "source": "异象界域·兔子洞",
+      "config": {"任务类型": "空幕", "空幕序号": 2}
+    },
+    {
+      "id": "console_3",
+      "name": "空幕·叁",
+      "display_name": "空幕·经纬织机（兔子洞节点3）",
+      "category": "空幕",
+      "source": "异象界域·兔子洞",
+      "config": {"任务类型": "空幕", "空幕序号": 3}
+    },
+    {
+      "id": "console_4",
+      "name": "空幕·肆",
+      "display_name": "空幕·守卫萝卜（兔子洞节点4）",
+      "category": "空幕",
+      "source": "异象界域·兔子洞",
+      "config": {"任务类型": "空幕", "空幕序号": 4}
+    },
+    {
+      "id": "console_5",
+      "name": "空幕·伍",
+      "display_name": "空幕·心智地图（兔子洞节点5）",
+      "category": "空幕",
+      "source": "异象界域·兔子洞",
+      "config": {"任务类型": "空幕", "空幕序号": 5}
+    },
+    {
+      "id": "console_6",
+      "name": "空幕·陆",
+      "display_name": "空幕·铁轨之夜（兔子洞节点6）",
+      "category": "空幕",
+      "source": "异象界域·兔子洞",
+      "config": {"任务类型": "空幕", "空幕序号": 6}
+    }
+  ],
+  "hunter_bosses": [
+    {"name": "音霸魔王", "mat_id": "boss_pick_watermoon"},
+    {"name": "无首铁驭", "mat_id": "boss_spark_plug"},
+    {"name": "塞润尼缇", "mat_id": "boss_flower_seed"},
+    {"name": "黑之书", "mat_id": "boss_page_delusion"},
+    {"name": "海囚", "mat_id": "boss_sea_tear"},
+    {"name": "围巢鸟", "mat_id": "boss_nest_fragment"},
+    {"name": "斑蝶", "mat_id": "boss_ticket_stub"}
+  ],
+  "extra_materials": [
+    {
+      "id": "boss_flower_seed", "display_name": "倾诉花种", "category": "BOSS掉落（角色突破）",
+      "source": "异象追猎·塞润尼缇（60体力/局）", "obtain": "hunter"
+    },
+    {
+      "id": "boss_pick_watermoon", "display_name": "水月色拨片", "category": "BOSS掉落（角色突破）",
+      "source": "异象追猎·音霸魔王（60体力/局）", "obtain": "hunter"
+    },
+    {
+      "id": "boss_page_delusion", "display_name": "妄想彼端的一页", "category": "BOSS掉落（角色突破）",
+      "source": "异象追猎·黑之书（60体力/局，BOSS对应待核对）", "obtain": "hunter"
+    },
+    {
+      "id": "boss_spark_plug", "display_name": "上膛骑士火花塞", "category": "BOSS掉落（角色突破）",
+      "source": "异象追猎·无首铁驭（限时刷新）", "obtain": "hunter"
+    },
+    {
+      "id": "boss_sea_tear", "display_name": "海之泪", "category": "BOSS掉落（角色突破）",
+      "source": "异象追猎（60体力/局；BOSS 归属两源冲突，待核对）", "obtain": "hunter"
+    },
+    {
+      "id": "boss_ticket_stub", "display_name": "斑斓的票根", "category": "BOSS掉落（角色突破）",
+      "source": "异象追猎·斑蝶（60体力/局；归属低置信，待核对）", "obtain": "hunter"
+    },
+    {
+      "id": "boss_nest_fragment", "display_name": "护巢残片", "category": "BOSS掉落（角色突破）",
+      "source": "异象追猎·围巢鸟（60体力/局）", "obtain": "hunter"
+    },
+    {
+      "id": "wk_skirt", "display_name": "名为炫耀的裙袂", "category": "异象巡礼（周本）",
+      "source": "异象巡礼·永不谢幕的阿拉克涅（60体力，周3次）", "obtain": "external"
+    },
+    {
+      "id": "wk_crown", "display_name": "名为尊贵的冠冕", "category": "异象巡礼（周本）",
+      "source": "异象巡礼（合成/高难）", "obtain": "external"
+    },
+    {
+      "id": "wk_scepter", "display_name": "名为显赫的权杖", "category": "异象巡礼（周本）",
+      "source": "异象巡礼", "obtain": "external"
+    },
+    {
+      "id": "wk_memory", "display_name": "记忆的永恒", "category": "异象巡礼（周本）",
+      "source": "异象巡礼·讨债人（周3次共用池）", "obtain": "external"
+    },
+    {
+      "id": "wk_stamp", "display_name": "好狗狗印章", "category": "异象巡礼（周本）",
+      "source": "异象巡礼·墨菲克斯（周3次共用池）", "obtain": "external"
+    },
+    {
+      "id": "wk_fluff", "display_name": "好狗狗的毛茸茸", "category": "异象巡礼（周本）",
+      "source": "异象巡礼", "obtain": "external"
+    },
+    {
+      "id": "wk_dandelion", "display_name": "蒲公英的通行证", "category": "异象巡礼（周本）",
+      "source": "异象巡礼", "obtain": "external"
+    },
+    {
+      "id": "mob_whisper_c", "display_name": "失落絮语", "category": "小怪素材",
+      "source": "大世界·敌影清剿", "obtain": "external"
+    },
+    {
+      "id": "mob_whisper_b", "display_name": "茫昧絮语", "category": "小怪素材",
+      "source": "大世界·敌影清剿", "obtain": "external"
+    },
+    {
+      "id": "mob_whisper_a", "display_name": "悖谬絮语", "category": "小怪素材",
+      "source": "大世界·敌影清剿", "obtain": "external"
+    },
+    {
+      "id": "mob_silhouette_c", "display_name": "褪色掠影", "category": "小怪素材",
+      "source": "大世界小怪", "obtain": "external"
+    },
+    {
+      "id": "mob_silhouette_b", "display_name": "失焦掠影", "category": "小怪素材",
+      "source": "大世界小怪", "obtain": "external"
+    },
+    {
+      "id": "mob_silhouette_a", "display_name": "晦暗掠影", "category": "小怪素材",
+      "source": "大世界小怪", "obtain": "external"
+    },
+    {
+      "id": "mob_numeral_c", "display_name": "模糊数符", "category": "小怪素材",
+      "source": "大世界小怪", "obtain": "external"
+    },
+    {
+      "id": "mob_numeral_b", "display_name": "未解数符", "category": "小怪素材",
+      "source": "大世界小怪", "obtain": "external"
+    },
+    {
+      "id": "mob_numeral_a", "display_name": "扭曲数符", "category": "小怪素材",
+      "source": "大世界小怪", "obtain": "external"
+    },
+    {
+      "id": "mob_delusion_c", "display_name": "悬想幻妄", "category": "小怪素材",
+      "source": "大世界小怪", "obtain": "external"
+    },
+    {
+      "id": "mob_delusion_b", "display_name": "渴念幻妄", "category": "小怪素材",
+      "source": "大世界小怪", "obtain": "external"
+    },
+    {
+      "id": "mob_delusion_a", "display_name": "超验幻妄", "category": "小怪素材",
+      "source": "大世界小怪", "obtain": "external"
+    },
+    {
+      "id": "well_c", "display_name": "井小屑", "category": "空幕强化",
+      "source": "兔子洞（随空幕本掉落）", "obtain": "external"
+    },
+    {
+      "id": "well_b", "display_name": "井屑达人", "category": "空幕强化",
+      "source": "兔子洞/分解", "obtain": "external"
+    },
+    {
+      "id": "well_a", "display_name": "超屑井主", "category": "空幕强化",
+      "source": "兔子洞·裂痕难度", "obtain": "external"
+    },
+    {
+      "id": "dreamless_core", "display_name": "无梦果核", "category": "其他",
+      "source": "来源未确认（都市特技升级）", "obtain": "external"
+    },
+    {
+      "id": "oracle_stone", "display_name": "谕石", "category": "其他",
+      "source": "大世界收集→魔女之家兑换", "obtain": "external"
+    }
+  ]
+}

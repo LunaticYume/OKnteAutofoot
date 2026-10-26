@@ -1,0 +1,390 @@
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 2189)
+Traceback (most recent call last):
+  File "socketserver.py", line 697, in process_request_thread
+  File "socketserver.py", line 362, in finish_request
+  File "socketserver.py", line 766, in __init__
+  File "http\server.py", line 436, in handle
+  File "http\server.py", line 424, in handle_one_request
+  File "main.py", line 268, in do_GET
+  File "main.py", line 242, in _send
+  File "socketserver.py", line 845, in write
+ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 2192)
+Traceback (most recent call last):
+  File "socketserver.py", line 697, in process_request_thread
+  File "socketserver.py", line 362, in finish_request
+  File "socketserver.py", line 766, in __init__
+  File "http\server.py", line 436, in handle
+  File "http\server.py", line 424, in handle_one_request
+  File "main.py", line 268, in do_GET
+  File "main.py", line 242, in _send
+  File "socketserver.py", line 845, in write
+ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 2223)
+Traceback (most recent call last):
+  File "socketserver.py", line 697, in process_request_thread
+  File "socketserver.py", line 362, in finish_request
+  File "socketserver.py", line 766, in __init__
+  File "http\server.py", line 436, in handle
+  File "http\server.py", line 424, in handle_one_request
+  File "main.py", line 268, in do_GET
+  File "main.py", line 242, in _send
+  File "socketserver.py", line 845, in write
+ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 2227)
+Traceback (most recent call last):
+  File "socketserver.py", line 697, in process_request_thread
+  File "socketserver.py", line 362, in finish_request
+  File "socketserver.py", line 766, in __init__
+  File "http\server.py", line 436, in handle
+  File "http\server.py", line 424, in handle_one_request
+  File "main.py", line 268, in do_GET
+  File "main.py", line 242, in _send
+  File "socketserver.py", line 845, in write
+ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 2229)
+Traceback (most recent call last):
+  File "socketserver.py", line 697, in process_request_thread
+  File "socketserver.py", line 362, in finish_request
+  File "socketserver.py", line 766, in __init__
+  File "http\server.py", line 436, in handle
+  File "http\server.py", line 424, in handle_one_request
+  File "main.py", line 268, in do_GET
+  File "main.py", line 242, in _send
+  File "socketserver.py", line 845, in write
+ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 2233)
+Traceback (most recent call last):
+  File "socketserver.py", line 697, in process_request_thread
+  File "socketserver.py", line 362, in finish_request
+  File "socketserver.py", line 766, in __init__
+  File "http\server.py", line 436, in handle
+  File "http\server.py", line 424, in handle_one_request
+  File "main.py", line 268, in do_GET
+  File "main.py", line 242, in _send
+  File "socketserver.py", line 845, in write
+ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 2236)
+Traceback (most recent call last):
+  File "socketserver.py", line 697, in process_request_thread
+  File "socketserver.py", line 362, in finish_request
+  File "socketserver.py", line 766, in __init__
+  File "http\server.py", line 436, in handle
+  File "http\server.py", line 424, in handle_one_request
+  File "main.py", line 268, in do_GET
+  File "main.py", line 242, in _send
+  File "socketserver.py", line 845, in write
+ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 2241)
+Traceback (most recent call last):
+  File "socketserver.py", line 697, in process_request_thread
+  File "socketserver.py", line 362, in finish_request
+  File "socketserver.py", line 766, in __init__
+  File "http\server.py", line 436, in handle
+  File "http\server.py", line 424, in handle_one_request
+  File "main.py", line 268, in do_GET
+  File "main.py", line 242, in _send
+  File "socketserver.py", line 845, in write
+ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 2242)
+Traceback (most recent call last):
+  File "socketserver.py", line 697, in process_request_thread
+  File "socketserver.py", line 362, in finish_request
+  File "socketserver.py", line 766, in __init__
+  File "http\server.py", line 436, in handle
+  File "http\server.py", line 424, in handle_one_request
+  File "main.py", line 268, in do_GET
+  File "main.py", line 242, in _send
+  File "socketserver.py", line 845, in write
+ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 2246)
+Traceback (most recent call last):
+  File "socketserver.py", line 697, in process_request_thread
+  File "socketserver.py", line 362, in finish_request
+  File "socketserver.py", line 766, in __init__
+  File "http\server.py", line 436, in handle
+  File "http\server.py", line 424, in handle_one_request
+  File "main.py", line 268, in do_GET
+  File "main.py", line 242, in _send
+  File "socketserver.py", line 845, in write
+ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 2281)
+Traceback (most recent call last):
+  File "socketserver.py", line 697, in process_request_thread
+  File "socketserver.py", line 362, in finish_request
+  File "socketserver.py", line 766, in __init__
+  File "http\server.py", line 436, in handle
+  File "http\server.py", line 424, in handle_one_request
+  File "main.py", line 268, in do_GET
+  File "main.py", line 242, in _send
+  File "socketserver.py", line 845, in write
+ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 2290)
+Traceback (most recent call last):
+  File "socketserver.py", line 697, in process_request_thread
+  File "socketserver.py", line 362, in finish_request
+  File "socketserver.py", line 766, in __init__
+  File "http\server.py", line 436, in handle
+  File "http\server.py", line 424, in handle_one_request
+  File "main.py", line 268, in do_GET
+  File "main.py", line 242, in _send
+  File "socketserver.py", line 845, in write
+ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 2294)
+Traceback (most recent call last):
+  File "socketserver.py", line 697, in process_request_thread
+  File "socketserver.py", line 362, in finish_request
+  File "socketserver.py", line 766, in __init__
+  File "http\server.py", line 436, in handle
+  File "http\server.py", line 424, in handle_one_request
+  File "main.py", line 268, in do_GET
+  File "main.py", line 242, in _send
+  File "socketserver.py", line 845, in write
+ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 2316)
+Traceback (most recent call last):
+  File "socketserver.py", line 697, in process_request_thread
+  File "socketserver.py", line 362, in finish_request
+  File "socketserver.py", line 766, in __init__
+  File "http\server.py", line 436, in handle
+  File "http\server.py", line 424, in handle_one_request
+  File "main.py", line 268, in do_GET
+  File "main.py", line 242, in _send
+  File "socketserver.py", line 845, in write
+ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 2456)
+Traceback (most recent call last):
+  File "socketserver.py", line 697, in process_request_thread
+  File "socketserver.py", line 362, in finish_request
+  File "socketserver.py", line 766, in __init__
+  File "http\server.py", line 436, in handle
+  File "http\server.py", line 424, in handle_one_request
+  File "main.py", line 268, in do_GET
+  File "main.py", line 242, in _send
+  File "socketserver.py", line 845, in write
+ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 2656)
+Traceback (most recent call last):
+  File "socketserver.py", line 697, in process_request_thread
+  File "socketserver.py", line 362, in finish_request
+  File "socketserver.py", line 766, in __init__
+  File "http\server.py", line 436, in handle
+  File "http\server.py", line 424, in handle_one_request
+  File "main.py", line 268, in do_GET
+  File "main.py", line 242, in _send
+  File "socketserver.py", line 845, in write
+ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 2796)
+Traceback (most recent call last):
+  File "socketserver.py", line 697, in process_request_thread
+  File "socketserver.py", line 362, in finish_request
+  File "socketserver.py", line 766, in __init__
+  File "http\server.py", line 436, in handle
+  File "http\server.py", line 424, in handle_one_request
+  File "main.py", line 268, in do_GET
+  File "main.py", line 242, in _send
+  File "socketserver.py", line 845, in write
+ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 3028)
+Traceback (most recent call last):
+  File "socketserver.py", line 697, in process_request_thread
+  File "socketserver.py", line 362, in finish_request
+  File "socketserver.py", line 766, in __init__
+  File "http\server.py", line 436, in handle
+  File "http\server.py", line 424, in handle_one_request
+  File "main.py", line 268, in do_GET
+  File "main.py", line 242, in _send
+  File "socketserver.py", line 845, in write
+ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 3238)
+Traceback (most recent call last):
+  File "socketserver.py", line 697, in process_request_thread
+  File "socketserver.py", line 362, in finish_request
+  File "socketserver.py", line 766, in __init__
+  File "http\server.py", line 436, in handle
+  File "http\server.py", line 424, in handle_one_request
+  File "main.py", line 268, in do_GET
+  File "main.py", line 242, in _send
+  File "socketserver.py", line 845, in write
+ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 3420)
+Traceback (most recent call last):
+  File "socketserver.py", line 697, in process_request_thread
+  File "socketserver.py", line 362, in finish_request
+  File "socketserver.py", line 766, in __init__
+  File "http\server.py", line 436, in handle
+  File "http\server.py", line 424, in handle_one_request
+  File "main.py", line 268, in do_GET
+  File "main.py", line 242, in _send
+  File "socketserver.py", line 845, in write
+ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 3529)
+Traceback (most recent call last):
+  File "socketserver.py", line 697, in process_request_thread
+  File "socketserver.py", line 362, in finish_request
+  File "socketserver.py", line 766, in __init__
+  File "http\server.py", line 436, in handle
+  File "http\server.py", line 424, in handle_one_request
+  File "main.py", line 268, in do_GET
+  File "main.py", line 242, in _send
+  File "socketserver.py", line 845, in write
+ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 3596)
+Traceback (most recent call last):
+  File "socketserver.py", line 697, in process_request_thread
+  File "socketserver.py", line 362, in finish_request
+  File "socketserver.py", line 766, in __init__
+  File "http\server.py", line 436, in handle
+  File "http\server.py", line 424, in handle_one_request
+  File "main.py", line 268, in do_GET
+  File "main.py", line 242, in _send
+  File "socketserver.py", line 845, in write
+ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 3676)
+Traceback (most recent call last):
+  File "socketserver.py", line 697, in process_request_thread
+  File "socketserver.py", line 362, in finish_request
+  File "socketserver.py", line 766, in __init__
+  File "http\server.py", line 436, in handle
+  File "http\server.py", line 424, in handle_one_request
+  File "main.py", line 268, in do_GET
+  File "main.py", line 242, in _send
+  File "socketserver.py", line 845, in write
+ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 3750)
+Traceback (most recent call last):
+  File "socketserver.py", line 697, in process_request_thread
+  File "socketserver.py", line 362, in finish_request
+  File "socketserver.py", line 766, in __init__
+  File "http\server.py", line 436, in handle
+  File "http\server.py", line 424, in handle_one_request
+  File "main.py", line 268, in do_GET
+  File "main.py", line 242, in _send
+  File "socketserver.py", line 845, in write
+ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 3844)
+Traceback (most recent call last):
+  File "socketserver.py", line 697, in process_request_thread
+  File "socketserver.py", line 362, in finish_request
+  File "socketserver.py", line 766, in __init__
+  File "http\server.py", line 436, in handle
+  File "http\server.py", line 424, in handle_one_request
+  File "main.py", line 268, in do_GET
+  File "main.py", line 242, in _send
+  File "socketserver.py", line 845, in write
+ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 3914)
+Traceback (most recent call last):
+  File "socketserver.py", line 697, in process_request_thread
+  File "socketserver.py", line 362, in finish_request
+  File "socketserver.py", line 766, in __init__
+  File "http\server.py", line 436, in handle
+  File "http\server.py", line 424, in handle_one_request
+  File "main.py", line 268, in do_GET
+  File "main.py", line 242, in _send
+  File "socketserver.py", line 845, in write
+ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 3997)
+Traceback (most recent call last):
+  File "socketserver.py", line 697, in process_request_thread
+  File "socketserver.py", line 362, in finish_request
+  File "socketserver.py", line 766, in __init__
+  File "http\server.py", line 436, in handle
+  File "http\server.py", line 424, in handle_one_request
+  File "main.py", line 268, in do_GET
+  File "main.py", line 242, in _send
+  File "socketserver.py", line 845, in write
+ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 4269)
+Traceback (most recent call last):
+  File "socketserver.py", line 697, in process_request_thread
+  File "socketserver.py", line 362, in finish_request
+  File "socketserver.py", line 766, in __init__
+  File "http\server.py", line 436, in handle
+  File "http\server.py", line 424, in handle_one_request
+  File "main.py", line 268, in do_GET
+  File "main.py", line 242, in _send
+  File "socketserver.py", line 845, in write
+ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 4522)
+Traceback (most recent call last):
+  File "socketserver.py", line 697, in process_request_thread
+  File "socketserver.py", line 362, in finish_request
+  File "socketserver.py", line 766, in __init__
+  File "http\server.py", line 436, in handle
+  File "http\server.py", line 424, in handle_one_request
+  File "main.py", line 268, in do_GET
+  File "main.py", line 242, in _send
+  File "socketserver.py", line 845, in write
+ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 4548)
+Traceback (most recent call last):
+  File "socketserver.py", line 697, in process_request_thread
+  File "socketserver.py", line 362, in finish_request
+  File "socketserver.py", line 766, in __init__
+  File "http\server.py", line 436, in handle
+  File "http\server.py", line 424, in handle_one_request
+  File "main.py", line 268, in do_GET
+  File "main.py", line 242, in _send
+  File "socketserver.py", line 845, in write
+ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。
+----------------------------------------
