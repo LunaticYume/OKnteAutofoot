@@ -12,22 +12,14 @@
     "busy_retry_seconds": 300,
     "port": 8765,
     "known_oknte_version": "",
-<<<<<<< HEAD
     "stamina_cap": 320,
-=======
-    "stamina_cap": 240,
->>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
     "stamina_regen_per_hour": 10,
     "stamina_now": null,
     "stamina_now_at": ""
   },
   "characters": [
     {
-<<<<<<< HEAD
-      "id": "24441c60",
-=======
-      "id": "00c03350",
->>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
+      "id": "a12bfbd6",
       "name": "冒烟测试角色",
       "enabled": true,
       "mats": {
@@ -64,45 +56,8 @@
   },
   "history": [
     {
-      "day": "2030-01-01",
-      "time": "10:00:00",
-      "mat_id": "coin",
-      "name": "甲硬币",
-      "runs": 2,
-      "stamina": 80,
-      "gain": 14,
-      "status": "done",
-      "note": "",
-      "actual_gain": 10,
-      "confirmed_at": "2026-10-27 05:17:35"
-    },
-    {
-      "day": "2030-01-01",
-      "time": "11:00:00",
-      "mat_id": "coin",
-      "name": "甲硬币",
-      "runs": 2,
-      "stamina": 80,
-      "gain": 14,
-      "status": "done",
-      "note": "",
-      "actual_gain": 6,
-      "confirmed_at": "2026-10-27 05:17:35"
-    },
-    {
-      "day": "2030-01-01",
-      "time": "12:00:00",
-      "mat_id": "exp_char",
-      "name": "角色经验",
-      "runs": 1,
-      "stamina": 40,
-      "gain": 7,
-      "status": "failed",
-      "note": "x"
-    },
-    {
       "day": "2026-10-27",
-      "time": "05:29:47",
+      "time": "00:32:40",
       "mat_id": "boss_sea_tear",
       "name": "海之泪",
       "runs": 2,
@@ -114,20 +69,7 @@
     },
     {
       "day": "2026-10-27",
-      "time": "05:38:42",
-      "mat_id": "boss_sea_tear",
-      "name": "海之泪",
-      "runs": 2,
-      "stamina": 120,
-      "gain": 16,
-      "status": "done",
-      "note": "",
-      "mode": "hunter"
-<<<<<<< HEAD
-    },
-    {
-      "day": "2026-10-27",
-      "time": "06:56:33",
+      "time": "00:46:53",
       "mat_id": "boss_sea_tear",
       "name": "海之泪",
       "runs": 2,
@@ -139,7 +81,7 @@
     },
     {
       "day": "2026-10-27",
-      "time": "07:04:57",
+      "time": "00:56:55",
       "mat_id": "boss_sea_tear",
       "name": "海之泪",
       "runs": 2,
@@ -148,94 +90,16 @@
       "status": "done",
       "note": "",
       "mode": "hunter"
-    },
-    {
-      "day": "2026-10-27",
-      "time": "07:14:02",
-      "mat_id": "boss_sea_tear",
-      "name": "海之泪",
-      "runs": 2,
-      "stamina": 120,
-      "gain": 16,
-      "status": "done",
-      "note": "",
-      "mode": "hunter"
-    },
-    {
-      "day": "2026-10-27",
-      "time": "07:22:10",
-      "mat_id": "boss_sea_tear",
-      "name": "海之泪",
-      "runs": 2,
-      "stamina": 120,
-      "gain": 16,
-      "status": "done",
-      "note": "",
-      "mode": "hunter"
-    },
-    {
-      "day": "2026-10-27",
-      "time": "07:30:14",
-      "mat_id": "boss_sea_tear",
-      "name": "海之泪",
-      "runs": 2,
-      "stamina": 120,
-      "gain": 16,
-      "status": "done",
-      "note": "",
-      "mode": "hunter"
-    },
-    {
-      "day": "2026-10-27",
-      "time": "08:13:35",
-      "mat_id": "boss_sea_tear",
-      "name": "海之泪",
-      "runs": 2,
-      "stamina": 120,
-      "gain": 16,
-      "status": "done",
-      "note": "",
-      "mode": "hunter"
-    },
-    {
-      "day": "2026-10-27",
-      "time": "23:30:21",
-      "mat_id": "boss_sea_tear",
-      "name": "海之泪",
-      "runs": 2,
-      "stamina": 120,
-      "gain": 16,
-      "status": "done",
-      "note": "",
-      "mode": "hunter"
-    },
-    {
-      "day": "2026-10-27",
-      "time": "23:41:18",
-      "mat_id": "boss_sea_tear",
-      "name": "海之泪",
-      "runs": 2,
-      "stamina": 120,
-      "gain": 16,
-      "status": "done",
-      "note": "",
-      "mode": "hunter"
-    },
-    {
-      "day": "2026-10-27",
-      "time": "23:49:25",
-      "mat_id": "boss_sea_tear",
-      "name": "海之泪",
-      "runs": 2,
-      "stamina": 120,
-      "gain": 16,
-      "status": "done",
-      "note": "",
-      "mode": "hunter"
-=======
->>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
     }
   ],
+  "char_library": [
+    "浔",
+    "灵可"
+  ],
+  "weapon_library": [
+    "远行者之声"
+  ],
+  "schema": 2,
   "today": {
     "date": "2026-10-27",
     "used_stamina": 0,
@@ -243,11 +107,7 @@
     "blacklist": [],
     "entries": [
       {
-<<<<<<< HEAD
-        "time": "23:49:25",
-=======
-        "time": "05:38:42",
->>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
+        "time": "00:56:55",
         "mat_id": "boss_sea_tear",
         "name": "海之泪",
         "runs": 2,
@@ -260,19 +120,7 @@
     ],
     "hunter_spent": 120
   },
-  "schema": 2,
-  "char_library": [
-    "浔",
-    "灵可"
-  ],
-  "weapon_library": [
-    "远行者之声"
-<<<<<<< HEAD
-  ],
   "common_costs": {
     "ascension_boss": 86
   }
-=======
-  ]
->>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
 }

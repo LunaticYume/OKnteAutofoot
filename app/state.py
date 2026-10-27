@@ -61,14 +61,8 @@ DEFAULT_SETTINGS = {
     "busy_retry_seconds": 300,
     "port": 8765,
     "known_oknte_version": "",
-<<<<<<< HEAD
     # 体力恢复模型（阶段9；阶段15 上限默认 320：家具扩展后游戏内体力上限会升高，设置页可改）
     "stamina_cap": 320,
-=======
-    # 体力恢复模型（阶段9）：cap/regen 为参数；stamina_now 为用户手填的当前体力，
-    # stamina_now_at 由服务端在保存时盖章（推算基准时刻）
-    "stamina_cap": 240,
->>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
     "stamina_regen_per_hour": 10,
     "stamina_now": None,
     "stamina_now_at": "",

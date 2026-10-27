@@ -21,24 +21,15 @@
 | 11 | 修复 EXE 打不开（端口占用根因 + 可诊断性） | PASS（EXE-PACKAGING-Result.md 阶段11附录） |
 | 12 | **桌面化 v2：独立桌面进程**（pywebview 原生窗口，OKntePlanner_single 为主推；v1 Edge 壳降为备用档并加 --no-proxy-server 根治代理截获"拒绝连接"） | PASS（DESKTOP-UI-Result.md v2 章节；用户双击 Manual 见文末） |
 | 13 | **材料实名+角色/武器库+需求表 UI+追猎独立计划**（31项外部材料补全、显示名可编辑、库下拉、需求表表单化、追猎双按钮双额度独立记账/AnomalyHunter.json 最小补丁/日常开关 ensure） | PASS（LIBRARIES-HUNTER-Result.md） |
-<<<<<<< HEAD
 | 14 | **全角色/全武器养成数据落库**（game_data.json：27角色/50弧盘/物态→罐头系与属性→技能书系映射/养成总量预填；一键导入全库与按目录导入角色；需求表真实数值；coin 产量 fail-safe） | PASS（GAME-DATA-Result.md） |
 | 15 | **体力上限320 + seelie式角色UI + 通用材料表**（stamina_cap 320/限额999+上游边界提示；满级快捷按钮；通用材料表 tab：通用量参考/角色映射/一键应用，共享映射真相，随导出迁移） | PASS（COMMON-COSTS-Result.md） |
+| 16 | **P2 批次一：专属图标（纯stdlib ICO，EXE/任务栏）+ 历史页 14 天 SVG 图表 + 兼容报告一键生成**（含 Git 合并冲突全量修复插曲） | PASS（P2-BATCH1-Result.md） |
 
-## 路线图状态（2026-10-27 更新）
+## 路线图状态（2026-10-28 更新）
 
-阶段 1–15 全部完成。当前形态：双击 `dist\OKntePlanner_single\OKntePlanner.exe` = 独立桌面
+阶段 1–16 全部完成（P2 批次一：图标/图表/兼容报告已交付；排除项见 P2-BATCH1-Result）。当前形态：双击 `dist\OKntePlanner_single\OKntePlanner.exe` = 独立桌面
 应用（pywebview 原生窗口）；面板支持 日常/追猎 双计划双按钮（独立额度独立记账）、全量
 材料实名（可在数据表改名）、角色/武器库下拉（游戏目录一键导入 27 角色/50 弧盘）、
 按目录导入角色自动预填、需求表表单编辑（真实数值预填）、通用材料表（通用量参考/映射/
 一键应用）、体力上限 320 口径。剩余 P2 项（应用专属窗口图标、历史图表、多来源材料效率
 排序、兼容报告、背包 OCR、逐级分段表与 1.5 新角色数据更新）待排期。
-=======
-
-## 路线图状态（2026-10-27 更新）
-
-阶段 1–13 全部完成。当前形态：双击 `dist\OKntePlanner_single\OKntePlanner.exe` = 独立桌面
-应用（pywebview 原生窗口）；面板支持 日常/追猎 双计划双按钮（独立额度独立记账）、全量
-材料实名（可在数据表改名）、角色/武器库下拉、需求表表单编辑。剩余 P2 项（应用专属窗口
-图标、历史图表、多来源材料效率排序、兼容报告、背包 OCR）待排期。
->>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4

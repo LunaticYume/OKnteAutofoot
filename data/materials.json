@@ -184,19 +184,11 @@
     },
     {
       "id": "boss_sea_tear", "display_name": "海之泪", "category": "BOSS掉落（角色突破）",
-<<<<<<< HEAD
       "source": "异象追猎（60体力/局；BOSS 归属两源冲突，待核对）", "obtain": "hunter"
     },
     {
       "id": "boss_ticket_stub", "display_name": "斑斓的票根", "category": "BOSS掉落（角色突破）",
       "source": "异象追猎·斑蝶（60体力/局；归属低置信，待核对）", "obtain": "hunter"
-=======
-      "source": "异象追猎·海囚（60体力/局）", "obtain": "hunter"
-    },
-    {
-      "id": "boss_ticket_stub", "display_name": "斑斓的票根", "category": "BOSS掉落（角色突破）",
-      "source": "异象追猎·斑蝶（60体力/局）", "obtain": "hunter"
->>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
     },
     {
       "id": "boss_nest_fragment", "display_name": "护巢残片", "category": "BOSS掉落（角色突破）",
@@ -215,13 +207,10 @@
       "source": "异象巡礼", "obtain": "external"
     },
     {
-<<<<<<< HEAD
       "id": "wk_memory", "display_name": "记忆的永恒", "category": "异象巡礼（周本）",
       "source": "异象巡礼·讨债人（周3次共用池）", "obtain": "external"
     },
     {
-=======
->>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
       "id": "wk_stamp", "display_name": "好狗狗印章", "category": "异象巡礼（周本）",
       "source": "异象巡礼·墨菲克斯（周3次共用池）", "obtain": "external"
     },

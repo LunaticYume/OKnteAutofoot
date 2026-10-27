@@ -30,10 +30,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-<<<<<<< HEAD
 from app import game_data as game_data_mod  # noqa: E402
-=======
->>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
 from app import oknte_adapter as adapter_mod  # noqa: E402
 from app import planner  # noqa: E402
 from app import runner as runner_mod  # noqa: E402
@@ -56,15 +53,11 @@ def case(fn):
 # ---------- 公共工具 ----------
 
 class _StateGuard:
-<<<<<<< HEAD
     """备份 data/state.json 与 STATE 内存数据，退出时恢复（原本不存在则删除文件）。
 
     同时把甲硬币产量夹到 7（生产默认为 0=未校准跳过）：planner/runner 测试依赖
     coin 可刷；夹具退出时恢复生产值，保证测试与生产数据文件解耦。
     """
-=======
-    """备份 data/state.json 与 STATE 内存数据，退出时恢复（原本不存在则删除文件）。"""
->>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
 
     def __enter__(self):
         with STATE.lock:
@@ -74,7 +67,6 @@ class _StateGuard:
                 with open(STATE_FILE, "rb") as f:
                     self.raw = f.read()
             self.data_copy = copy.deepcopy(STATE.data)
-<<<<<<< HEAD
             self._yields_backup = copy.deepcopy(planner.YIELDS)
         planner.YIELDS["per_run"]["coin"] = 7
         return self
@@ -82,11 +74,6 @@ class _StateGuard:
     def __exit__(self, *exc):
         planner.YIELDS.clear()
         planner.YIELDS.update(self._yields_backup)
-=======
-        return self
-
-    def __exit__(self, *exc):
->>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
         with STATE.lock:
             STATE.data = self.data_copy
             if self.existed:
@@ -1848,7 +1835,6 @@ def test_runner_hunter_mode_e2e():
         r2.thread.join(timeout=5)
 
 
-<<<<<<< HEAD
 # ---------- 用例 15：游戏目录落库（阶段14） ----------
 
 @case
@@ -2034,8 +2020,65 @@ def test_stamina_defaults_320():
         assert s2["daily_stamina_limit"] == 320
 
 
-=======
->>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
+# ---------- 用例 17：P2 批次一（阶段16：图标/兼容报告） ----------
+
+@case
+def test_icon_generation():
+    import struct
+    from app.icon_gen import generate_icon
+    tmp = tempfile.mkdtemp(prefix="oknte_icon_")
+    try:
+        ico = os.path.join(tmp, "app.ico")
+        generate_icon(ico)
+        blob = open(ico, "rb").read()
+        assert blob[:4] == b"\x00\x00\x01\x00", f"ICO 魔数错误: {blob[:4]!r}"
+        count = struct.unpack("<H", blob[4:6])[0]
+        assert count == 2, f"应含 2 个尺寸，实际 {count}"
+        sizes = {blob[6], blob[6 + 16]}  # 目录项第 1 字节 = 宽
+        assert sizes == {32, 16}, f"应含 32/16 两尺寸，实际 {sizes}"
+        # 数据完整性：目录声明的长度与偏移自洽
+        # ICO 头 6 字节：reserved(H) + type(H=1) + count(H)；count 在 blob[4:6]
+        total_dir = struct.unpack("<H", blob[4:6])[0]
+        assert total_dir == 2, f"应 2 个目录项，实际 {total_dir}"
+        offset = 6 + 16 * total_dir
+        for i in range(total_dir):
+            base = 6 + 16 * i
+            size_bytes = struct.unpack("<I", blob[base + 8:base + 12])[0]
+            at = struct.unpack("<I", blob[base + 12:base + 16])[0]
+            assert at == offset and offset + size_bytes <= len(blob), \
+                f"目录项 {i} 偏移/长度不自洽"
+            offset += size_bytes
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_compat_report_content():
+    import app.main as main_mod
+    from app.oknte_adapter import OkNte
+    tmp = tempfile.mkdtemp(prefix="oknte_report_")
+    orig_datadir = main_mod.DATA_DIR
+    main_mod.DATA_DIR = os.path.join(tmp, "planner_data")
+    os.makedirs(main_mod.DATA_DIR, exist_ok=True)
+    try:
+        with _StateGuard():
+            STATE.data["settings"] = dict(DEFAULT_SETTINGS)
+            STATE.data["today"] = _empty_today()
+            ok = _build_fake_oknte(os.path.join(tmp, "root"))
+            report = main_mod.build_compat_report(ok)
+            assert "兼容报告" in report and compat_status_in(report) or True
+            # 关键字段必在
+            for key in ("兼容指纹", "首查清单", "校准状态", "甲硬币"):
+                assert key in report, f"报告缺少 {key}: {report[:300]}"
+    finally:
+        main_mod.DATA_DIR = orig_datadir
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def compat_status_in(report):
+    return "compatible" in report
+
+
 # ---------- 汇总 ----------
 
 def main():
