@@ -122,12 +122,9 @@
   ('app',
    'E:\\AgentMultiWorkStation\\ZcodeWorkin\\GameAssistantPlugins\\OKnteAutofoot\\app\\__init__.py',
    'PYMODULE'),
-<<<<<<< HEAD
   ('app.game_data',
    'E:\\AgentMultiWorkStation\\ZcodeWorkin\\GameAssistantPlugins\\OKnteAutofoot\\app\\game_data.py',
    'PYMODULE'),
-=======
->>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
   ('app.oknte_adapter',
    'E:\\AgentMultiWorkStation\\ZcodeWorkin\\GameAssistantPlugins\\OKnteAutofoot\\app\\oknte_adapter.py',
    'PYMODULE'),

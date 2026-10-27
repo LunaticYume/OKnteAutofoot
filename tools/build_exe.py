@@ -33,11 +33,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DIST = os.path.join(ROOT, "dist", "OKntePlanner")
 DIST_SINGLE = os.path.join(ROOT, "dist", "OKntePlanner_single")
 EMBEDDED_DEFAULT = r"D:\GamingAssistant\ok-nte\data\apps\ok-nte\python\python.exe"
-<<<<<<< HEAD
 TABLE_FILES = ("materials.json", "yields.json", "requirements.json", "game_data.json")
-=======
-TABLE_FILES = ("materials.json", "yields.json", "requirements.json")
->>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
 
 LAUNCHER_CS = r"""using System;
 using System.Diagnostics;
@@ -221,6 +217,14 @@ def copy_tree_clean(src, dst):
     shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
 
 
+def _generate_icon(path):
+    import sys
+    if ROOT not in sys.path:  # 直接运行 tools/build_exe.py 时 sys.path 不含项目根
+        sys.path.insert(0, ROOT)
+    from app.icon_gen import generate_icon
+    generate_icon(path)
+
+
 def build_dist():
     print("== 组装 dist/OKntePlanner ==")
     if os.path.isdir(DIST):
@@ -240,6 +244,9 @@ def build_dist():
     if not csc:
         raise RuntimeError("未找到 csc.exe（.NET Framework 编译器）；"
                            "Windows 10/11 自带，请检查 C:\\Windows\\Microsoft.NET")
+    ico = os.path.join(ROOT, "tools", "_build", "app.ico")
+    os.makedirs(os.path.dirname(ico), exist_ok=True)
+    _generate_icon(ico)  # 应用专属图标（EXE/任务栏，阶段16）
     with tempfile.TemporaryDirectory(prefix="oknte_build_") as tmp:
         cs = os.path.join(tmp, "Launcher.cs")
         manifest = os.path.join(tmp, "app.manifest")
@@ -250,7 +257,7 @@ def build_dist():
         exe = os.path.join(DIST, "异环养成规划器.exe")
         result = subprocess.run(
             [csc, "/nologo", "/codepage:65001", "/target:winexe",
-             f"/win32manifest:{manifest}", f"/out:{exe}", cs],
+             f"/win32icon:{ico}", f"/win32manifest:{manifest}", f"/out:{exe}", cs],
             capture_output=True, text=True, timeout=120)
         if result.returncode != 0:
             raise RuntimeError(f"csc 编译失败:\n{result.stdout}\n{result.stderr}")
@@ -322,6 +329,9 @@ def try_pyinstaller_single(py):
     print("== 可选档：PyInstaller 单文件 EXE（失败不阻断）==")
     deps = PYI_DEPS
     work = os.path.join(ROOT, "tools", "_build", "work")
+    ico = os.path.join(ROOT, "tools", "_build", "app.ico")
+    os.makedirs(os.path.dirname(ico), exist_ok=True)
+    _generate_icon(ico)  # 幂等：单文件档独立生成（不依赖 build_dist 的局部变量）
     try:
         probe = subprocess.run([py, "-m", "pip", "--version"],
                                capture_output=True, timeout=60)
@@ -341,7 +351,7 @@ def try_pyinstaller_single(py):
             if HAS_PYWEBVIEW else []
         r = subprocess.run(
             [py, "-m", "PyInstaller", "--noconfirm", "--onefile", "--noconsole",
-             "--uac-admin", *collect,
+             "--uac-admin", *collect, "--icon", ico,
              "--add-data",
              os.path.join(ROOT, "app", "web", "index.html") + os.pathsep + os.path.join("app", "web"),
              "--name", "OKntePlanner", "--distpath", DIST_SINGLE,

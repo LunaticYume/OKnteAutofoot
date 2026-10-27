@@ -60,10 +60,7 @@
 <nav id="nav">
   <button data-t="overview" class="on">总览</button>
   <button data-t="chars">角色</button>
-<<<<<<< HEAD
   <button data-t="common">通用材料</button>
-=======
->>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
   <button data-t="inv">库存</button>
   <button data-t="tables">数据表</button>
   <button data-t="settings">设置</button>
@@ -141,6 +138,7 @@ async function renderOverview(){
         <button class="btn" id="btnStart" ${(run.state==="running"||run.state==="waiting"||pend.length)?"disabled":""}>▶ 开始日常</button>
         <button class="btn" id="btnStartHunter" ${(run.state==="running"||run.state==="waiting"||pend.length)?"disabled":""}>🎯 开始追猎</button>
         <button class="btn sec" id="btnDry">👁 预演（不落盘）</button>
+        <button class="btn sec" id="btnCompat">⬇ 导出兼容报告</button>
         <button class="btn danger" id="btnStop" ${(run.state!=="running"&&run.state!=="waiting")?"disabled":""}>■ 停止</button>
       </div>
     </div>
@@ -172,6 +170,17 @@ async function renderOverview(){
   $("#btnStart").onclick = ()=>startRun("daily");
   $("#btnStartHunter").onclick = startHunterRun;
   $("#btnDry").onclick = doDryRun;
+  $("#btnCompat").onclick = async ()=>{
+    try{
+      const res = await fetch("/api/compat-report");
+      const text = await res.text();
+      const blob=new Blob([text],{type:"text/markdown"});
+      const a=document.createElement("a");
+      a.href=URL.createObjectURL(blob);
+      a.download=`OKntePlanner-compat-${new Date().toISOString().slice(0,10)}.md`;
+      a.click(); URL.revokeObjectURL(a.href);
+    }catch(e){alertErr(e);}
+  };
   $("#btnPreview").onclick = doPreview;
   $("#btnHunterPlan").onclick = doHunterPlan;
   $("#btnStop").onclick = ()=>api("/api/stop").then(refreshStatus).catch(alertErr);
@@ -330,7 +339,6 @@ function renderChars(){
   const st = BOOT.state;
   const tracks = BOOT.tables.requirements.tracks||{};
   $("#main").innerHTML = `
-<<<<<<< HEAD
     <div class="card"><h3>游戏目录（调研预填：23+2 角色 / 50 弧盘，含属性·物态·材料归属与置信度）</h3>
       <div class="row" style="gap:8px">
         <button class="btn sec" id="btnImportLibs">⬇ 导入全角色/全武器到库</button>
@@ -338,8 +346,6 @@ function renderChars(){
         <button class="btn sec" id="btnImportChar">⬇ 按目录导入角色（自动预填材料需求）</button>
         <span class="muted">低置信/未查到的字段导入后标黄或留空，请按游戏内核对</span>
       </div></div>
-=======
->>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
     ${libraryCard("角色库（手动添加，供下方角色行下拉选择）","char_library")}
     ${libraryCard("武器库（弧盘/武器名字，手动添加，供角色行下拉选择）","weapon_library")}
     <div class="card"><div class="row" style="justify-content:space-between">
@@ -382,7 +388,6 @@ function renderChars(){
     });
     try{ await api("/api/characters",{characters:chars}); BOOT.state.characters=chars; alert("已保存"); renderChars(); }catch(e){alertErr(e);}
   };
-<<<<<<< HEAD
   $("#btnImportLibs").onclick = async ()=>{
     if(!confirm("把游戏目录中的全部角色（23+2）与弧盘（50）合并进角色库/武器库？（自定义名字保留，不覆盖）"))return;
     try{
@@ -409,8 +414,6 @@ function renderChars(){
       alert(`已导入「${c.name}」。`+(low.length?` 注意：${low.join("；")}`:"全部字段高/中置信。"));
     }catch(e){alertErr(e);}
   };
-=======
->>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
   bindLibraryHandlers();
 }
 function libOptions(key, current, allowEmpty){
@@ -429,10 +432,7 @@ function charCard(c,i,tracks){
     <div class="row" style="gap:6px"><label style="width:90px">${esc(t.name)}</label>
       <input type="number" data-track="${k}" data-tk="cur" value="${c.tracks?.[k]?.cur??1}" min="0"> →
       <input type="number" data-track="${k}" data-tk="tgt" value="${c.tracks?.[k]?.tgt??1}" min="0" max="${t.max??999}">
-<<<<<<< HEAD
       <button class="btn sec mini" data-act="maxTrack" data-max="${t.max??999}" title="目标一键设为满级">满级</button>
-=======
->>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
     </div>`).join("");
   const extraRows = Object.entries(c.extra_needs||{}).map(([m,v])=>extraRow(m,v)).join("") || `<div class="muted extra-empty">（未填写）</div>`;
   div.innerHTML=`
@@ -445,10 +445,7 @@ function charCard(c,i,tracks){
       <span class="muted">异能系</span><select class="c-ability">${[1,2,3,4,5].map(n=>`<option ${c.mats?.ability===n?"selected":""}>${n}</option>`).join("")}</select>
       <span class="muted">罐头系</span><select class="c-arc">${[1,2,3,4,5].map(n=>`<option ${c.mats?.arc===n?"selected":""}>${n}</option>`).join("")}</select>
       <span class="muted">空幕</span><select class="c-console">${[1,2,3,4,5,6].map(n=>`<option ${c.mats?.console===n?"selected":""}>${n}</option>`).join("")}</select>
-<<<<<<< HEAD
       <button class="btn sec mini" data-act="maxAll" title="四条轨道目标全部设为满级">全部满级</button>
-=======
->>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
       <span style="flex:1"></span>
       <button class="btn sec mini" data-act="up">↑</button>
       <button class="btn sec mini" data-act="down">↓</button>
@@ -463,7 +460,6 @@ function charCard(c,i,tracks){
     </div>`;
   div.querySelector('[data-act="fold"]').onclick=()=>div.classList.toggle("open");
   div.querySelector('[data-act="del"]').onclick=()=>{div.remove();};
-<<<<<<< HEAD
   div.querySelectorAll('[data-act="maxTrack"]').forEach(btn=>btn.onclick=()=>{
     const tgt=btn.closest(".row").querySelector('[data-tk="tgt"]');
     tgt.value=btn.dataset.max;
@@ -475,8 +471,6 @@ function charCard(c,i,tracks){
       if(tgt&&btn) tgt.value=btn.dataset.max;
     });
   };
-=======
->>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
   div.querySelector('[data-act="up"]').onclick=()=>{if(div.previousElementSibling)div.parentNode.insertBefore(div,div.previousElementSibling);reindex();};
   div.querySelector('[data-act="down"]').onclick=()=>{if(div.nextElementSibling)div.parentNode.insertBefore(div.nextElementSibling,div);reindex();};
   div.querySelector('[data-act="addExtra"]').onclick=()=>{
@@ -652,7 +646,6 @@ function buildReqEditor(){
   bindBandButtons(host);
 }
 
-<<<<<<< HEAD
 /* ---------- 通用材料表（阶段15） ---------- */
 const COMMON_LABELS = {
   char_exp: ["角色 1→80 · 猎人攻略（特级口径）", "本"],
@@ -735,8 +728,6 @@ async function renderCommon(){
     }catch(e){$("#ccMsg").textContent="";alertErr(e);}
   };
 }
-=======
->>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
 /* ---------- 设置 ---------- */
 function renderSettings(){
   const s=BOOT.state.settings;
@@ -745,13 +736,8 @@ function renderSettings(){
       <div class="row" style="margin-bottom:8px"><label style="width:150px">ok-nte 安装目录</label>
         <input id="s_root" value="${esc(s.oknte_root)}" style="flex:1"></div>
       <div class="row" style="margin-bottom:8px"><label style="width:150px">每日体力限额</label>
-<<<<<<< HEAD
         <input type="number" id="s_limit" value="${s.daily_stamina_limit}" min="0" max="999" step="20">
         <span class="muted">ok-nte 在当日活跃度达标(180体力)后会自动跳过日常体力任务——多出的部分刷不到（上游行为）；这里只是规划上限。游戏内体力上限可经家具扩容（你现在 320）</span></div>
-=======
-        <input type="number" id="s_limit" value="${s.daily_stamina_limit}" min="40" step="20">
-        <span class="muted">注意：ok-nte 在当日活跃度达标(180体力/100活跃)后会自动跳过，填太大也不会多刷</span></div>
->>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
       <div class="row" style="margin-bottom:8px"><label style="width:150px">每日重置小时(0-23)</label>
         <input type="number" id="s_reset" value="${s.daily_reset_hour}" min="0" max="23"></div>
       <div class="row" style="margin-bottom:8px"><label style="width:150px">单次运行时限(分钟)</label>
@@ -778,12 +764,8 @@ function renderSettings(){
     </div>
     <div class="card"><h3>体力恢复模型（用于估计与未来预览，不影响执行逻辑）</h3>
       <div class="row" style="margin-bottom:8px"><label style="width:150px">体力上限</label>
-<<<<<<< HEAD
         <input type="number" id="s_cap" value="${s.stamina_cap??320}" min="1" max="999">
         <span class="muted">游戏内体力上限：基础 240，家具「织梦结」等可扩容（你现在 320）</span></div>
-=======
-        <input type="number" id="s_cap" value="${s.stamina_cap??240}" min="1" max="999"></div>
->>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
       <div class="row" style="margin-bottom:8px"><label style="width:150px">每小时恢复</label>
         <input type="number" id="s_regen" value="${s.stamina_regen_per_hour??10}" min="0" max="999" step="0.5">
         <span class="muted">默认 10/小时（即 6 分钟 1 点），按游戏实际填写</span></div>
@@ -809,11 +791,7 @@ function renderSettings(){
       notify_enabled:$("#s_notify").checked,
       continuous_mode:$("#s_cont").checked, busy_retry_seconds:+$("#s_retry").value||0,
       anomaly_hunter_stamina:+$("#s_hsta").value||180, anomaly_hunter_target:$("#s_htgt").value,
-<<<<<<< HEAD
       stamina_cap:+$("#s_cap").value||320, stamina_regen_per_hour:+$("#s_regen").value||0,
-=======
-      stamina_cap:+$("#s_cap").value||240, stamina_regen_per_hour:+$("#s_regen").value||0,
->>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
       stamina_now:snowRaw===""?null:+snowRaw});
       alert("已保存"); await boot(); renderSettings();}catch(e){alertErr(e);}
   };
@@ -866,8 +844,31 @@ async function loadBackups(){
 }
 
 /* ---------- 历史 ---------- */
+function historyChart(history){
+  // 最近 14 天双系列 SVG 条形图（纯前端零依赖）：体力消耗=青、预计产出=绿
+  const days = {};
+  (history||[]).forEach(h=>{const d=days[h.day]=days[h.day]||{s:0,g:0,n:0};
+    d.s+=h.stamina||0; d.g+=h.gain||0; d.n++;});
+  const list = Object.entries(days).sort((a,b)=>a[0]<b[0]?-1:1).slice(-14);
+  if(!list.length) return "";
+  const W=680,H=150,pad=28,bw=Math.max(8,(W-pad*2)/list.length-6);
+  const maxV=Math.max(1,...list.map(([,d])=>Math.max(d.s,d.g)));
+  const bars=list.map(([day,d],i)=>{
+    const x=pad+i*((W-pad*2)/list.length)+( (W-pad*2)/list.length-bw)/2;
+    const hs=Math.round((H-30)*d.s/maxV), hg=Math.round((H-30)*d.g/maxV);
+    const t=`title="${day}：体力 ${d.s} / 产出 +${d.g}（${d.n} 次执行）"`;
+    return `<rect x="${x}" y="${H-22-hs}" width="${bw/2-1}" height="${hs}" fill="#4da3ff" ${t}/>
+      <rect x="${x+bw/2+1}" y="${H-22-hg}" width="${bw/2-1}" height="${hg}" fill="#3ecf8e" ${t}/>
+      <text x="${x+bw/2}" y="${H-8}" fill="#8a99ab" font-size="9" text-anchor="middle">${day.slice(5)}</text>`;
+  }).join("");
+  return `<div class="card"><h3>最近 14 天（每日体力消耗/预计产出，悬停看明细）</h3>
+    <svg width="${W}" height="${H}" style="max-width:100%">${bars}
+      <text x="${pad}" y="14" fill="#4da3ff" font-size="11">■ 体力消耗</text>
+      <text x="${pad+90}" y="14" fill="#3ecf8e" font-size="11">■ 预计产出</text></svg></div>`;
+}
 async function renderHistory(){
   const r=await api("/api/history");
+  const chart=historyChart(r.history);
   const rows=(r.history||[]).slice().reverse().map(h=>{
     const actualCell = h.status!=="done" ? `<span class="muted">—</span>` :
       (h.actual_gain!==undefined
@@ -889,7 +890,7 @@ async function renderHistory(){
   const sugCard=(sug.suggestions||[]).length?`<div class="card"><h3>产量校准建议（基于已确认实际获得；只建议，应用后走产量表通道）</h3>
     <table><tr><th>材料</th><th>当前产量</th><th>已确认累计</th><th>实测每轮</th><th>建议值</th><th>操作</th></tr>${sugRows}</table>
     <div class="muted" style="margin-top:6px">measured = Σ实际获得 ÷ Σ轮数（全部已确认的完成记录）；应用 = 把该材料的每轮产出改为建议值。样本少时建议先多确认几条再看。</div></div>`:"";
-  $("#main").innerHTML=`${sugCard}<div class="card"><h3>执行历史（最近200条）</h3>
+  $("#main").innerHTML=`${chart}${sugCard}<div class="card"><h3>执行历史（最近200条）</h3>
     ${rows?`<table><tr><th>时间</th><th>目标</th><th>轮数</th><th>体力</th><th>预计产出</th><th>实际获得</th><th>结果</th><th>备注</th></tr>${rows}</table>`:'<div class="muted">还没有记录</div>'}</div>`;
   document.querySelectorAll("[data-cf]").forEach(btn=>btn.onclick=async()=>{
     const wrap=btn.closest(".row");
@@ -934,13 +935,8 @@ document.querySelectorAll("#nav button").forEach(b=>b.onclick=()=>{
   b.classList.add("on");
   clearInterval(TIMER);
   const t=b.dataset.t;
-<<<<<<< HEAD
   ({overview:renderOverview,chars:renderChars,common:renderCommon,inv:renderInv,
     tables:renderTables,settings:renderSettings,history:renderHistory})[t]();
-=======
-  ({overview:renderOverview,chars:renderChars,inv:renderInv,tables:renderTables,
-    settings:renderSettings,history:renderHistory})[t]();
->>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
   if(t==="overview") TIMER=setInterval(refreshStatus,2000);
 });
 boot().then(()=>{renderOverview();TIMER=setInterval(refreshStatus,2000);}).catch(e=>{

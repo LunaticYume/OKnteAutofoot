@@ -200,7 +200,6 @@ def _step_libraries_and_hunter_plan():
         and plan.get("boss") == "海囚", f"/api/hunter/plan 结构异常: {sorted(plan.keys())}"
 
 
-<<<<<<< HEAD
 def _step_common_costs():
     data = _request("/api/common-costs")
     assert data.get("costs", {}).get("ascension_boss") == 86 \
@@ -212,8 +211,14 @@ def _step_common_costs():
     assert applied.get("ok") is True and isinstance(applied.get("applied"), list), applied
 
 
-=======
->>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
+def _step_compat_report():
+    req = urllib.request.Request(BASE + "/api/compat-report")
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        body = resp.read().decode("utf-8")
+        assert resp.status == 200 and "兼容报告" in body and "首查清单" in body \
+            and "兼容指纹" in body, f"报告内容异常: {body[:200]}"
+
+
 def _step_stop():
     data = _request("/api/stop", {})
     assert "message" in data, f"/api/stop 响应异常: {data}"
@@ -228,10 +233,8 @@ STEPS = [
     ("GET /api/preview 未来3天推演", _step_preview),
     ("产量校准三端点（建议/保存/确认404）", _step_yield_calibration_endpoints),
     ("角色库/武器库 + 追猎计划预览", _step_libraries_and_hunter_plan),
-<<<<<<< HEAD
     ("通用材料表（读取/保存/应用）", _step_common_costs),
-=======
->>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
+    ("GET /api/compat-report 兼容报告", _step_compat_report),
     ("导出/导入回环 + 备份列表", _step_export_import_backups),
     ("POST /api/stop 可达", _step_stop),
 ]

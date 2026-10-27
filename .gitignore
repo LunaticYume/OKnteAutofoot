@@ -1,4 +1,8 @@
-.zcode/*
-dist/*
-tests/*
-
+__pycache__/
+*.pyc
+data/backups/
+tools/_build/
+dist/
+*.tmp
+.zcode/
+data/requirements.json.bak
