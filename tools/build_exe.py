@@ -33,7 +33,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DIST = os.path.join(ROOT, "dist", "OKntePlanner")
 DIST_SINGLE = os.path.join(ROOT, "dist", "OKntePlanner_single")
 EMBEDDED_DEFAULT = r"D:\GamingAssistant\ok-nte\data\apps\ok-nte\python\python.exe"
+<<<<<<< HEAD
 TABLE_FILES = ("materials.json", "yields.json", "requirements.json", "game_data.json")
+=======
+TABLE_FILES = ("materials.json", "yields.json", "requirements.json")
+>>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
 
 LAUNCHER_CS = r"""using System;
 using System.Diagnostics;

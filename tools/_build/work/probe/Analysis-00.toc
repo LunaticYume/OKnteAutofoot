@@ -327,15 +327,24 @@
   ('tracemalloc',
    'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\tracemalloc.py',
    'PYMODULE'),
+<<<<<<< HEAD
+=======
+  ('_py_abc',
+   'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\_py_abc.py',
+   'PYMODULE'),
+>>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
   ('subprocess',
    'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\subprocess.py',
    'PYMODULE'),
   ('signal',
    'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\signal.py',
    'PYMODULE'),
+<<<<<<< HEAD
   ('_py_abc',
    'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\_py_abc.py',
    'PYMODULE'),
+=======
+>>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
   ('app.state',
    'E:\\AgentMultiWorkStation\\ZcodeWorkin\\GameAssistantPlugins\\OKnteAutofoot\\app\\state.py',
    'PYMODULE'),
@@ -404,6 +413,7 @@
  [('base_library.zip',
    'E:\\AgentMultiWorkStation\\ZcodeWorkin\\GameAssistantPlugins\\OKnteAutofoot\\tools\\_build\\work\\probe\\base_library.zip',
    'DATA')],
+<<<<<<< HEAD
  [('_weakrefset',
    'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\_weakrefset.py',
    'PYMODULE'),
@@ -412,10 +422,20 @@
    'PYMODULE'),
   ('keyword',
    'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\keyword.py',
+=======
+ [('enum',
+   'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\enum.py',
+>>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
    'PYMODULE'),
   ('posixpath',
    'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\posixpath.py',
    'PYMODULE'),
+<<<<<<< HEAD
+=======
+  ('heapq',
+   'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\heapq.py',
+   'PYMODULE'),
+>>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
   ('encodings.zlib_codec',
    'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\encodings\\zlib_codec.py',
    'PYMODULE'),
@@ -782,6 +802,7 @@
   ('encodings',
    'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\encodings\\__init__.py',
    'PYMODULE'),
+<<<<<<< HEAD
   ('warnings',
    'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\warnings.py',
    'PYMODULE'),
@@ -802,10 +823,33 @@
    'PYMODULE'),
   ('sre_compile',
    'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\sre_compile.py',
+=======
+  ('weakref',
+   'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\weakref.py',
+   'PYMODULE'),
+  ('stat',
+   'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\stat.py',
+   'PYMODULE'),
+  ('collections.abc',
+   'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\collections\\abc.py',
+   'PYMODULE'),
+  ('collections',
+   'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\collections\\__init__.py',
+   'PYMODULE'),
+  ('types',
+   'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\types.py',
+   'PYMODULE'),
+  ('copyreg',
+   'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\copyreg.py',
+   'PYMODULE'),
+  ('sre_parse',
+   'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\sre_parse.py',
+>>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
    'PYMODULE'),
   ('_collections_abc',
    'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\_collections_abc.py',
    'PYMODULE'),
+<<<<<<< HEAD
   ('heapq',
    'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\heapq.py',
    'PYMODULE'),
@@ -814,6 +858,19 @@
    'PYMODULE'),
   ('enum',
    'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\enum.py',
+=======
+  ('_weakrefset',
+   'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\_weakrefset.py',
+   'PYMODULE'),
+  ('locale',
+   'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\locale.py',
+   'PYMODULE'),
+  ('ntpath',
+   'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\ntpath.py',
+   'PYMODULE'),
+  ('keyword',
+   'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\keyword.py',
+>>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
    'PYMODULE'),
   ('re._parser',
    'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\re\\_parser.py',
@@ -830,15 +887,21 @@
   ('re',
    'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\re\\__init__.py',
    'PYMODULE'),
+<<<<<<< HEAD
   ('functools',
    'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\functools.py',
    'PYMODULE'),
   ('sre_constants',
    'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\sre_constants.py',
+=======
+  ('warnings',
+   'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\warnings.py',
+>>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
    'PYMODULE'),
   ('abc',
    'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\abc.py',
    'PYMODULE'),
+<<<<<<< HEAD
   ('collections.abc',
    'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\collections\\abc.py',
    'PYMODULE'),
@@ -853,19 +916,51 @@
    'PYMODULE'),
   ('linecache',
    'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\linecache.py',
+=======
+  ('functools',
+   'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\functools.py',
+   'PYMODULE'),
+  ('sre_constants',
+   'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\sre_constants.py',
+>>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
    'PYMODULE'),
   ('genericpath',
    'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\genericpath.py',
    'PYMODULE'),
+<<<<<<< HEAD
   ('sre_parse',
    'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\sre_parse.py',
+=======
+  ('codecs',
+   'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\codecs.py',
+>>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
    'PYMODULE'),
   ('operator',
    'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\operator.py',
    'PYMODULE'),
+<<<<<<< HEAD
   ('types',
    'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\types.py',
    'PYMODULE'),
   ('stat',
    'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\stat.py',
+=======
+  ('sre_compile',
+   'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\sre_compile.py',
+   'PYMODULE'),
+  ('traceback',
+   'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\traceback.py',
+   'PYMODULE'),
+  ('io',
+   'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\io.py',
+   'PYMODULE'),
+  ('os',
+   'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\os.py',
+   'PYMODULE'),
+  ('reprlib',
+   'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\reprlib.py',
+   'PYMODULE'),
+  ('linecache',
+   'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\Lib\\linecache.py',
+>>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
    'PYMODULE')])

@@ -1,10 +1,18 @@
 {
   "version": 2,
+<<<<<<< HEAD
   "note": "per_run：体力本每轮(40体力)掉落数量；hunter_yield：追猎每局(60体力)BOSS掉落材料数量（按50级默认8个，可校准）。填小=多刷，填大=少刷。coin（甲硬币）每局产量未查到（需求按万计）：保持0=规划器跳过甲硬币并提示校准，请在游戏内实测一局后回填——这是有意的 fail-safe，防止用错误产量排出几十万轮的计划。",
   "per_run": {
     "exp_char": 7,
     "exp_arc": 7,
     "coin": 0,
+=======
+  "note": "per_run：体力本每轮(40体力)掉落数量；hunter_yield：追猎每局(60体力)BOSS掉落材料数量（按50级默认8个，可校准）。填小=多刷，填大=少刷。",
+  "per_run": {
+    "exp_char": 7,
+    "exp_arc": 7,
+    "coin": 7,
+>>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
     "ability_1": 3,
     "ability_2": 3,
     "ability_3": 3,

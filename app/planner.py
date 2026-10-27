@@ -221,11 +221,14 @@ def make_plan(oknte=None, now=None):
     for name in broken:
         warnings.append(f"{name}：材料表缺少副本配置（config），已跳过，请检查数据表")
     skipped_broken_zero = broken  # 仅损坏目标构成 invalid_material_config
+<<<<<<< HEAD
     # 产量未校准防线：任何有缺口且产量为 0 的可规划材料都必须可见警告——
     # 即使预算在其他材料上耗尽、循环从未到达它（如大额甲硬币需求）
     for item in ordered:
         if yield_of(item["mat_id"]) <= 0:
             warnings.append(f"{item['name']}：产量未校准（为0），已跳过，请在『数据表』填写每轮产出")
+=======
+>>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
 
     local_used = int(today.get("used_stamina", 0) or 0)
     used = local_used
@@ -294,8 +297,13 @@ def make_plan(oknte=None, now=None):
             skipped_zero.append(item["name"])
             continue
         if yield_of(mat_id) <= 0:
+<<<<<<< HEAD
             # 警告已在预扫描统一生成（含预算耗尽未到达的项），此处仅跳过
             skipped_zero.append(item["name"])
+=======
+            skipped_zero.append(item["name"])
+            warnings.append(f"{item['name']}：产量未校准（为0），已跳过，请在『数据表』填写每轮产出")
+>>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
             continue
         budget_before = budget
         runs = min(item["runs_needed"], budget // COST_PER_RUN)

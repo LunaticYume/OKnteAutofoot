@@ -13,7 +13,10 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from app import planner
+<<<<<<< HEAD
 from app import game_data
+=======
+>>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
 from app.oknte_adapter import OkNte, OkNteError
 from app.runner import RUNNER
 from app.state import (DATA_DIR, ROOT, STATE, STATE_SCHEMA, new_character,
@@ -82,7 +85,11 @@ def _sanitize_character(raw):
     extra = raw.get("extra_needs") or {}
     char["extra_needs"] = {
         str(k): _clamp_int(v, 0, 10**7, 0)
+<<<<<<< HEAD
         for k, v in extra.items() if str(k) in planner.ALL_ORDER  # 全量目录（体力本+外部）
+=======
+        for k, v in extra.items() if str(k) in planner.TARGETS
+>>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
     }
     return char
 
@@ -92,11 +99,19 @@ def _sanitize_settings(raw):
     for key in ("daily_stamina_limit", "daily_reset_hour", "anomaly_hunter_stamina",
                 "max_run_minutes"):
         if key in raw:
+<<<<<<< HEAD
             current[key] = _clamp_int(raw[key], 0, 999, current[key])
     if "stamina_cap" in raw:
         current["stamina_cap"] = _clamp_int(raw["stamina_cap"], 1, 999, current["stamina_cap"])
     if "port" in raw:
         current["port"] = _clamp_int(raw["port"], 1, 65535, current["port"])
+=======
+            current[key] = _clamp_int(raw[key], 0, 2000, current[key])
+    if "port" in raw:
+        current["port"] = _clamp_int(raw["port"], 1, 65535, current["port"])
+    if "stamina_cap" in raw:
+        current["stamina_cap"] = _clamp_int(raw["stamina_cap"], 1, 999, current["stamina_cap"])
+>>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
     if "stamina_regen_per_hour" in raw:
         current["stamina_regen_per_hour"] = _clamp_int(
             raw["stamina_regen_per_hour"], 0, 999, current["stamina_regen_per_hour"])
@@ -141,6 +156,7 @@ def _sanitize_libraries(raw):
             "weapon_library": _clean(raw.get("weapon_library"))}
 
 
+<<<<<<< HEAD
 def _common_costs():
     """通用养成数量：默认 + 用户覆盖深合并（用户只存改过的键）。"""
     merged = dict(game_data.COMMON_COST_DEFAULTS)
@@ -185,6 +201,8 @@ def _sanitize_common_costs(raw):
     return clean
 
 
+=======
+>>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
 def build_export():
     """导出用户配置（settings/角色/库存/库/产量/需求表；不含历史与运行时）。"""
     with STATE.lock:
@@ -196,7 +214,10 @@ def build_export():
             "char_library": copy.deepcopy(STATE.data.get("char_library", [])),
             "weapon_library": copy.deepcopy(STATE.data.get("weapon_library", [])),
             "inventory": copy.deepcopy(STATE.data["inventory"]),
+<<<<<<< HEAD
             "common_costs": _common_costs(),
+=======
+>>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
             "yields": {"per_run": dict(planner.YIELDS["per_run"]),
                        "hunter_yield": dict(planner.YIELDS.get("hunter_yield", {}))},
             "requirements": copy.deepcopy(planner.REQUIREMENTS),
@@ -248,10 +269,13 @@ def apply_import(payload):
             libs = _sanitize_libraries(payload)
             STATE.data["char_library"] = libs["char_library"]
             STATE.data["weapon_library"] = libs["weapon_library"]
+<<<<<<< HEAD
         if "common_costs" in payload:  # 通用量随导入迁移（可选段）
             clean_costs = _sanitize_common_costs(payload["common_costs"])
             STATE.data["common_costs"] = {**(STATE.data.get("common_costs") or {}),
                                           **clean_costs}
+=======
+>>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
         STATE.data["schema"] = STATE_SCHEMA
         STATE.save()
     _save_json_atomic(os.path.join(DATA_DIR, "yields.json"), clean_yields)
@@ -355,6 +379,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/bootstrap":
             oknte = self._oknte()
             STATE.ensure_today()
+<<<<<<< HEAD
             try:  # 游戏目录角色名（供『按目录导入角色』下拉）；损坏不阻塞面板
                 gd_chars = [c["name"] + ("" if c.get("live") else "（未上线）")
                             for c in game_data.load().get("characters", [])]
@@ -364,6 +389,11 @@ class Handler(BaseHTTPRequestHandler):
                 "state": STATE.data,
                 "tables": _tables(),
                 "game_characters": gd_chars,
+=======
+            self._send(200, {
+                "state": STATE.data,
+                "tables": _tables(),
+>>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
                 "compat": oknte.compat_check(),
                 "admin": is_admin(),
                 "oknte_running": oknte.is_running(),
@@ -403,6 +433,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, build_export())
         elif path == "/api/backups":
             self._send(200, {"backups": self._oknte().list_backups()})
+<<<<<<< HEAD
         elif path == "/api/game-data":
             self._send(200, game_data.load())
         elif path == "/api/common-costs":
@@ -411,6 +442,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"defaults": game_data.COMMON_COST_DEFAULTS,
                              "costs": costs,
                              "mapping": _common_mapping_rows(data, costs)})
+=======
+>>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
         else:
             self._send(404, {"error": "not found"})
 
@@ -444,6 +477,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             STATE.data["inventory"] = {
                 str(k): _clamp_int(v, 0, 10**8, 0)
+<<<<<<< HEAD
                 for k, v in inv.items() if str(k) in planner.ALL_ORDER  # 全量目录
             }
             STATE.save()
@@ -522,6 +556,12 @@ class Handler(BaseHTTPRequestHandler):
                      if r["skipped"] and (name == "全部" or r["name"] == name)]
             self._send(200, {"ok": True, "applied": applied, "skipped": skipped,
                              "notes": notes})
+=======
+                for k, v in inv.items() if str(k) in planner.TARGETS
+            }
+            STATE.save()
+            self._send(200, {"ok": True, "inventory": STATE.inventory})
+>>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
         elif path == "/api/libraries":
             libs = _sanitize_libraries(body)
             STATE.data["char_library"] = libs["char_library"]
