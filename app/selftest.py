@@ -68,7 +68,9 @@ class _StateGuard:
                     self.raw = f.read()
             self.data_copy = copy.deepcopy(STATE.data)
             self._yields_backup = copy.deepcopy(planner.YIELDS)
-        planner.YIELDS["per_run"]["coin"] = 7
+        # 数学测试统一夹具：全部体力本产量=7（生产值为 mysqil 鉴别7 口径，逐材料不同）
+        for tid in planner.TARGET_ORDER:
+            planner.YIELDS["per_run"][tid] = 7
         return self
 
     def __exit__(self, *exc):
@@ -1093,6 +1095,9 @@ class _E2EGuard:
         _E2EOkNte.force_busy = False
         _E2EOkNte.mode_env = {"FAKE_MODE": "done", "FAKE_DELAY": "0.05", "FAKE_DELAY2": "0.05"}
         runner_mod.OkNte = lambda root: _E2EOkNte(root)
+        self._yields_backup = __import__("copy").deepcopy(planner.YIELDS)
+        for tid in planner.TARGET_ORDER:
+            planner.YIELDS["per_run"][tid] = 7
         return self
 
     def configure(self, mode=None, **settings_over):
@@ -1111,6 +1116,8 @@ class _E2EGuard:
             _E2EOkNte.mode_env = {**_E2EOkNte.mode_env, "FAKE_MODE": mode}
 
     def __exit__(self, *exc):
+        planner.YIELDS.clear()
+        planner.YIELDS.update(self._yields_backup)
         runner_mod.RUNTIME_FILE = self._orig_runtime
         runner_mod.OkNte = self._orig_oknte
         self._state_guard.__exit__(*exc)
@@ -1858,10 +1865,11 @@ def test_game_data_integrity():
     m2c = data["matter_state_to_can"]
     assert m2c["固态"] == "arc_1" and m2c["等离子"] == "arc_2" \
         and m2c["液态"] == "arc_3" and m2c["气态"] == "arc_4", m2c
-    # 属性→技能书系 3 个实证
+    # 属性→技能书系（mysqil 五系全齐；按角色个体为准，存在魂系例外）
     a2s = data["attribute_to_skill_series"]
     assert a2s["光"] == "ability_2" and a2s["灵"] == "ability_1" \
-        and a2s["咒"] == "ability_3" and a2s["暗"] is None, a2s
+        and a2s["咒"] == "ability_3" and a2s["暗"] == "ability_5" \
+        and a2s["相"] == "ability_4", a2s
     # 武器：名单唯一、物态齐全、owner 与角色名对得上
     wnames = [w["name"] for w in data["weapons"]]
     assert len(wnames) == len(set(wnames)) == 50
@@ -1889,9 +1897,9 @@ def test_game_data_import_character():
         assert raw["mats"]["ability"] == 1 and raw["mats"]["arc"] == 2, raw["mats"]
         assert raw["weapon"] == "远行者之声"
         # 小怪素材 = 突破17/18/15 + 技能40/40/64 合计
-        assert raw["extra_needs"] == {"boss_pick_watermoon": 86, "wk_skirt": 32,
-                                      "mob_silhouette_c": 57, "mob_silhouette_b": 58,
-                                      "mob_silhouette_a": 79}, raw["extra_needs"]
+        # mysqil 口径：BOSS 86 + 周本 11 + 小怪白当量 390（突破206+技能184，族群基础档）
+        assert raw["extra_needs"] == {"boss_pick_watermoon": 86, "wk_skirt": 11,
+                                      "mob_silhouette_c": 390}, raw["extra_needs"]
         # 落库校验：_sanitize_character 保留全部预填（材料id都在目录里）
         clean = main_mod._sanitize_character(raw)
         assert clean["extra_needs"] == raw["extra_needs"] and clean["weapon"] == "远行者之声"
@@ -1900,11 +1908,11 @@ def test_game_data_import_character():
         assert raw2["extra_needs"] == {} and raw2["mats"]["arc"] == 1, raw2
         # 低置信角色：暗系技能书不猜（安魂曲 ability 保持默认 1? 不——暗未查到→不设置）
         raw3 = game_data_mod.build_character_import(data, "安魂曲")
-        assert raw3["mats"]["ability"] == 1, "未查到的技能书系必须保持默认值而非猜测"
+        assert raw3["mats"]["ability"] == 5, "安魂曲(暗) mysqil 权威=水波系 ability_5"
         # 阶段15 语义：BOSS 材料数量全角色一致（通用量 86），不再用单角色旧值 50；
         # 小怪素材同样取通用值（突破 17/18/15 + 技能 40/40/64 = 57/58/79，族群对应具体材料）
         assert raw3["extra_needs"]["boss_flower_seed"] == 86, raw3["extra_needs"]
-        assert raw3["extra_needs"]["mob_whisper_a"] == 79, raw3["extra_needs"]
+        assert raw3["extra_needs"]["mob_whisper_c"] == 390, "白当量合计写族群基础档"
         # 不存在的角色
         try:
             game_data_mod.build_character_import(data, "不存在")
@@ -1926,31 +1934,38 @@ def test_game_data_requirements_linkage():
         char = main_mod._sanitize_character(raw)
         char["tracks"] = {"char_level": {"cur": 1, "tgt": 80},
                           "ability_level": {"cur": 1, "tgt": 13},
-                          "arc_level": {"cur": 1, "tgt": 60},
+                          "arc_level": {"cur": 1, "tgt": 80},
                           "console_level": {"cur": 1, "tgt": 1}}
         STATE.data["characters"] = [char]
-        planner.YIELDS["per_run"]["coin"] = 0  # 本用例验证生产默认（coin 未校准→跳过+警告）
+        # mysqil 鉴别7 口径（生产默认）：coin 12万/局、经验 22.5万/12.5万/局、书·罐头 18/局
+        planner.YIELDS["per_run"]["coin"] = 120000
+        planner.YIELDS["per_run"]["exp_char"] = 225000
+        planner.YIELDS["per_run"]["exp_arc"] = 125000
+        for n in range(1, 6):
+            planner.YIELDS["per_run"][f"ability_{n}"] = 18
+            planner.YIELDS["per_run"][f"arc_{n}"] = 18
         STATE.data["settings"]["daily_stamina_limit"] = 99999  # 大额度：验证多步骤完整规划
         snap = planner.snapshot()
-        gaps = snap["gaps"]
-        # 轨道换算：技能书 144、罐头 50、经验书 325
+        # mysqil 逐段合计：技能书白当量 199、罐头白当量 230、角色经验 649.6 万
         by_id = {row["mat_id"]: row for c in snap["characters"] for row in c["rows"]}
-        assert by_id["ability_1"]["need"] == 144, by_id["ability_1"]
-        assert by_id["arc_2"]["need"] == 50, by_id["arc_2"]
-        assert by_id["exp_char"]["need"] == 325
+        assert by_id["ability_1"]["need"] == 199, by_id["ability_1"]
+        assert by_id["arc_2"]["need"] == 230, by_id["arc_2"]
+        assert by_id["exp_char"]["need"] == 6496000
         assert by_id["boss_pick_watermoon"]["need"] == 86 and not by_id["boss_pick_watermoon"]["farmable"]
-        assert by_id["mob_silhouette_c"]["need"] == 57 and not by_id["mob_silhouette_c"]["farmable"]
-        # coin 产量=0（生产默认）→ coin 不进计划但缺口可见；可行性材料按顺序排步
+        assert by_id["mob_silhouette_c"]["need"] == 390 and not by_id["mob_silhouette_c"]["farmable"]
+        # coin 已校准 → 正常排步；贪心顺序按 TARGET_ORDER
         plan = planner.make_plan(now=NOW)
         mat_ids = [s["mat_id"] for s in plan["steps"]]
-        assert "coin" not in mat_ids, "coin 产量未校准时必须被跳过"
-        assert any(w.startswith("甲硬币") for w in plan["warnings"]), plan["warnings"]
-        # 贪心顺序（TARGET_ORDER）：exp_char(47轮) → exp_arc(53轮) → ability_1(48轮) → arc_2(25轮)
-        assert mat_ids == ["exp_char", "exp_arc", "ability_1", "arc_2"], mat_ids
+        assert mat_ids == ["exp_char", "exp_arc", "coin", "ability_1", "arc_2"], mat_ids
         by = {s["mat_id"]: s for s in plan["steps"]}
-        assert (by["ability_1"]["runs"], by["ability_1"]["gain"]) == (48, 144), by["ability_1"]
-        assert (by["arc_2"]["runs"], by["arc_2"]["gain"]) == (25, 50), by["arc_2"]
-        assert by["exp_char"]["runs"] == 47 and by["exp_arc"]["runs"] == 53
+        assert (by["ability_1"]["runs"], by["ability_1"]["gain"]) == (12, 216), by["ability_1"]
+        assert (by["arc_2"]["runs"], by["arc_2"]["gain"]) == (13, 234), by["arc_2"]
+        assert by["exp_char"]["runs"] == 29, "6496000/225000=28.87→29 局"
+        assert by["exp_arc"]["runs"] == 30, "3727000/125000=29.8→30 局"
+        # coin 需求 = 全轨道硬币合计（角色214.8万+技能50.7万+弧盘161.2万=426.7万）
+        coin_need = by_id["coin"]["need"]
+        assert coin_need == 4167311, coin_need  # 214.8万+50.7万+109.2万+42万（弧盘突破）
+        assert by["coin"]["runs"] == -(-coin_need // 120000) == 35, by["coin"]["runs"]
         assert not any(s["mat_id"].startswith(("boss_", "mob_", "wk_")) for s in plan["steps"]), \
             "外部来源材料绝不能进体力本计划"
 
@@ -1967,9 +1982,8 @@ def test_common_costs_flow():
         entry = game_data_mod.find_character(data, "灵可")
         prefill, skipped = game_data_mod.character_material_mapping(
             data, entry, dict(game_data_mod.COMMON_COST_DEFAULTS))
-        assert prefill == {"boss_pick_watermoon": 86, "wk_skirt": 32,
-                           "mob_silhouette_c": 57, "mob_silhouette_b": 58,
-                           "mob_silhouette_a": 79}, prefill
+        assert prefill == {"boss_pick_watermoon": 86, "wk_skirt": 11,
+                           "mob_silhouette_c": 390}, prefill
         assert skipped == [], skipped
         # 与『按目录导入角色』完全同源（同一处真相）
         raw = game_data_mod.build_character_import(data, "灵可")
@@ -1983,13 +1997,14 @@ def test_common_costs_flow():
         entry3 = game_data_mod.find_character(data, "娜娜莉")
         prefill3, skipped3 = game_data_mod.character_material_mapping(
             data, entry3, dict(game_data_mod.COMMON_COST_DEFAULTS))
-        assert prefill3 == {} and any("BOSS" in s for s in skipped3), (prefill3, skipped3)
+        assert prefill3 == {"boss_page_delusion": 86, "wk_stamp": 11}, prefill3
+        assert any("小怪" in s for s in skipped3), skipped3
         # 3) 保存钳位：越界压回、未知键丢弃
         clean = main_mod._sanitize_common_costs(
             {"ascension_boss": 10**9, "skill_weekly": -5, "bogus": 1,
-             "ascension_mob": [90, 91, 92]})
+             "ascension_mob": 90})
         assert clean == {"ascension_boss": 10**7, "skill_weekly": 0,
-                         "ascension_mob": [90, 91, 92]}, clean
+                         "ascension_mob": 90}, clean
         # 4) 应用：改通用量后重应用覆盖同名键（幂等）
         STATE.data["common_costs"] = {"ascension_boss": 90}
         STATE.data["characters"] = [main_mod._sanitize_character(raw)]
@@ -2004,7 +2019,7 @@ def test_common_costs_flow():
         char["extra_needs"] = {k: main_mod._clamp_int(v, 0, 10**7, 0)
                                for k, v in merged_extra.items()}
         assert char["extra_needs"]["boss_pick_watermoon"] == 90
-        assert char["extra_needs"]["wk_skirt"] == 32, "未改的通用键保持原值"
+        assert char["extra_needs"]["wk_skirt"] == 11, "未改的通用键保持原值"
 
 
 @case
