@@ -20,18 +20,19 @@ _LOW_CONFIDENCE_KEYS = ("skill_confidence",)
 
 # 通用养成数量（每角色相同、材料因角色而异的部分在这里给出数量；可校准）
 COMMON_COST_DEFAULTS = {
-    "char_exp": 325,                 # 角色 1→80 猎人攻略（特级口径）
+    # 阶段17：mysqil 环世全鉴权威数值（白当量口径，紫:蓝:白=9:3:1 折算）
+    "char_exp": 6496000,             # 角色 1→80 经验点（每局 22.5万@鉴别7）
     "ascension_boss": 86,            # 突破满级 BOSS 材料（每角色一只对应 BOSS）
-    "ascension_mob": [17, 18, 15],   # 突破小怪素材三档（低/中/高）
-    "skill_books": [40, 40, 64],     # 技能全满技能书三档
-    "skill_weekly": 32,              # 技能周本素材
-    "skill_mob": [40, 40, 64],       # 技能小怪素材三档
-    "arc_exp": 365,                  # 弧盘 1→60 染剂（混沌当量）
-    "arc_cans": [14, 18, 18],        # 弧盘突破罐头三档
-    "arc_mob": [14, 18, 18],         # 弧盘小怪素材三档
-    "coin_char": 2150000,            # 角色升级+突破甲硬币（已含突破段52.5万）
-    "coin_skill": 1750000,           # 技能全满甲硬币
-    "coin_arc": 1510000,             # 弧盘全程甲硬币
+    "ascension_mob": 206,            # 突破小怪素材（白当量，写入族群基础档）
+    "skill_books": 199,              # 技能 1→10 白书 184 + 天赋解锁 15（白当量）
+    "skill_weekly": 11,              # 技能周本素材（技能段8+天赋3）
+    "skill_mob": 184,                # 技能小怪素材（白当量，写入族群基础档）
+    "arc_exp": 1240000,              # 弧盘 1→60 经验点（每局 12.5万@鉴别7；1→80 为 3727000）
+    "arc_cans": 230,                 # 弧盘突破罐头（白当量，S级口径，走练度轨道）
+    "arc_mob": 230,                  # 弧盘小怪素材（白当量，写入族群基础档）
+    "coin_char": 2148212,            # 角色升级+突破甲硬币（mysqil 逐段合计）
+    "coin_skill": 555000,            # 技能全满甲硬币（逐级48.5万+天赋7万）
+    "coin_arc": 1207264,             # 弧盘 1→80 甲硬币（mysqil weaponLevelExp 合计）
 }
 
 
@@ -63,17 +64,15 @@ def character_material_mapping(data, entry, costs):
     weekly = entry.get("weekly_material")
     if weekly and weekly.get("mat_id") and weekly.get("total"):
         extra[weekly["mat_id"]] = int(costs.get("skill_weekly", 32))
-    family_ids = _MOB_FAMILY_TO_IDS.get(entry.get("mob_family") or "", ("", "", ""))
-    slots = ("c", "b", "a")
-    has_mob = any(int((entry.get(s) or {}).get(k) or 0) > 0
-                  for s in ("mob_breakthrough", "mob_skill") for k in slots)
-    if has_mob and all(family_ids):
-        asc = costs.get("ascension_mob") or [0, 0, 0]
-        skl = costs.get("skill_mob") or [0, 0, 0]
-        for slot, mat_id in zip(slots, family_ids):
-            total = int(asc[slots.index(slot)] or 0) + int(skl[slots.index(slot)] or 0)
-            if total > 0:
-                extra[mat_id] = extra.get(mat_id, 0) + total
+    base_id = _MOB_FAMILY_TO_IDS.get(entry.get("mob_family") or "", ("",))[0]
+    has_mob = bool(entry.get("mob_family")) and any(
+        int((entry.get(s) or {}).get(k) or 0) > 0
+        for s in ("mob_breakthrough", "mob_skill") for k in ("c", "b", "a"))
+    if has_mob and base_id:
+        # mysqil 白当量合计写入族群基础档（白书/白怪为折算基准单位，紫:蓝:白=9:3:1）
+        total = int(costs.get("ascension_mob", 206) or 0) + int(costs.get("skill_mob", 184) or 0)
+        if total > 0:
+            extra[base_id] = extra.get(base_id, 0) + total
     elif entry.get("live"):
         skipped.append("小怪素材（族群/数量未查到）")
     return extra, skipped
@@ -98,9 +97,10 @@ def build_character_import(data, name):
         "boss": (entry.get("boss_material") or {}).get("confidence"),
         "notes": entry.get("_note", ""),
     }
-    # 属性→技能书系（仅目录映射给出时才设置，绝不猜）
-    series = data.get("attribute_to_skill_series", {}).get(entry.get("attribute"))
-    if series and entry.get("skill_series"):
+    # 技能书系：优先角色个体值（mysqil 权威，存在跨属性例外），属性多数派仅作后备
+    series = entry.get("skill_series") or data.get("attribute_to_skill_series", {}).get(
+        entry.get("attribute"))
+    if series:
         char["mats"]["ability"] = int(series.rsplit("_", 1)[1])
     # 物态→罐头系
     can = data.get("matter_state_to_can", {}).get(entry.get("matter_state"))

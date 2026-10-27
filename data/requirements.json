@@ -1,43 +1,242 @@
 {
-  "version": 2,
-  "note": "养成需求表（阶段14预填调研总量，满级口径：325=特级猎人攻略、144=技能书三档合计40/40/64、50=弧盘罐头三档合计14/18/18、365=混沌染剂当量）。采用线性插值折算部分等级段；角色差异材料（BOSS掉落86/周本/小怪素材）由『从目录导入角色』预填到各角色的直接材料需求，不在通用轨道里。数值全部可改。",
+  "version": 3,
+  "note": "阶段17：mysqil 环世全鉴 DetailedCalc 权威逐级表（经验/硬币按经验点与枚数原口径，技能书/小怪/罐头为白当量，紫:蓝:白=9:3:1 折算；S级弧盘突破口径，A 级约 0.89 倍）。BOSS 材料/周本/小怪族群因角色而异，由『通用材料表→一键应用』写入各角色直接需求。全部数值可编辑。来源: https://wiki.mysqil.com/tools/cultivation",
   "generic_materials": {
-    "exp_char": "猎人攻略（角色经验书，按角色）",
-    "exp_arc": "染剂（弧盘/武器强化）",
-    "coin": "甲硬币",
-    "ability_mat": "技能书（按角色所选属性系 ability_1~5）",
-    "arc_mat": "弧盘突破·罐头（按角色/武器物态 arc_1~5）",
-    "console_mat": "空幕（按角色所选节点）"
+    "exp_char": "角色经验（经验点口径，每局 22.5万@鉴别7）",
+    "exp_arc": "弧盘经验（经验点口径，每局 12.5万@鉴别7）",
+    "coin": "甲硬币（每局 12万@鉴别7）",
+    "ability_mat": "技能书（白书当量，按角色属性系 ability_1~5）",
+    "arc_mat": "弧盘突破·罐头（白当量，按武器物态 arc_1~5，S级口径）",
+    "console_mat": "空幕（兔子洞，mysqil 未收录，留空待校准）"
   },
   "tracks": {
     "char_level": {
       "name": "角色等级",
       "max": 80,
       "ladder": [
-        {"from": 1, "to": 80, "items": {"exp_char": 325, "coin": 2150000}}
+        {
+          "from": 1,
+          "to": 20,
+          "items": {
+            "exp_char": 101000,
+            "coin": 50198
+          }
+        },
+        {
+          "from": 20,
+          "to": 30,
+          "items": {
+            "exp_char": 213000,
+            "coin": 103113
+          }
+        },
+        {
+          "from": 30,
+          "to": 40,
+          "items": {
+            "exp_char": 372000,
+            "coin": 167835
+          }
+        },
+        {
+          "from": 40,
+          "to": 50,
+          "items": {
+            "exp_char": 605000,
+            "coin": 251185
+          }
+        },
+        {
+          "from": 50,
+          "to": 60,
+          "items": {
+            "exp_char": 986000,
+            "coin": 371260
+          }
+        },
+        {
+          "from": 60,
+          "to": 70,
+          "items": {
+            "exp_char": 1605000,
+            "coin": 551163
+          }
+        },
+        {
+          "from": 70,
+          "to": 80,
+          "items": {
+            "exp_char": 2614000,
+            "coin": 653458
+          }
+        }
       ]
     },
     "ability_level": {
       "name": "异能等级",
       "max": 13,
       "ladder": [
-        {"from": 1, "to": 13, "items": {"ability_mat": 144, "coin": 1750000}}
+        {
+          "from": 1,
+          "to": 2,
+          "items": {
+            "ability_mat": 2,
+            "coin": 2000
+          }
+        },
+        {
+          "from": 2,
+          "to": 3,
+          "items": {
+            "ability_mat": 3,
+            "coin": 5000
+          }
+        },
+        {
+          "from": 3,
+          "to": 4,
+          "items": {
+            "ability_mat": 5,
+            "coin": 10000
+          }
+        },
+        {
+          "from": 4,
+          "to": 5,
+          "items": {
+            "ability_mat": 6,
+            "coin": 20000
+          }
+        },
+        {
+          "from": 5,
+          "to": 6,
+          "items": {
+            "ability_mat": 9,
+            "coin": 40000
+          }
+        },
+        {
+          "from": 6,
+          "to": 7,
+          "items": {
+            "ability_mat": 15,
+            "coin": 60000
+          }
+        },
+        {
+          "from": 7,
+          "to": 8,
+          "items": {
+            "ability_mat": 27,
+            "coin": 80000
+          }
+        },
+        {
+          "from": 8,
+          "to": 9,
+          "items": {
+            "ability_mat": 45,
+            "coin": 100000
+          }
+        },
+        {
+          "from": 9,
+          "to": 10,
+          "items": {
+            "ability_mat": 72,
+            "coin": 120000
+          }
+        },
+        {
+          "from": 10,
+          "to": 13,
+          "items": {
+            "ability_mat": 15,
+            "coin": 70000
+          }
+        }
       ]
     },
     "arc_level": {
       "name": "弧盘等级",
-      "max": 60,
+      "max": 80,
       "ladder": [
-        {"from": 1, "to": 60, "items": {"exp_arc": 365, "arc_mat": 50, "coin": 1510000}}
+        {
+          "from": 1,
+          "to": 20,
+          "items": {
+            "exp_arc": 39000,
+            "coin": 31619,
+            "arc_mat": 4
+          }
+        },
+        {
+          "from": 20,
+          "to": 30,
+          "items": {
+            "exp_arc": 96000,
+            "coin": 68761,
+            "arc_mat": 10
+          }
+        },
+        {
+          "from": 30,
+          "to": 40,
+          "items": {
+            "exp_arc": 199500,
+            "coin": 119760,
+            "arc_mat": 18
+          }
+        },
+        {
+          "from": 40,
+          "to": 50,
+          "items": {
+            "exp_arc": 344500,
+            "coin": 183293,
+            "arc_mat": 36
+          }
+        },
+        {
+          "from": 50,
+          "to": 60,
+          "items": {
+            "exp_arc": 561000,
+            "coin": 268240,
+            "arc_mat": 54
+          }
+        },
+        {
+          "from": 60,
+          "to": 70,
+          "items": {
+            "exp_arc": 913500,
+            "coin": 394038,
+            "arc_mat": 108
+          }
+        },
+        {
+          "from": 70,
+          "to": 80,
+          "items": {
+            "exp_arc": 1488000,
+            "coin": 446388
+          }
+        }
       ]
     },
     "console_level": {
       "name": "空幕等级",
       "max": 20,
       "ladder": [
-        {"from": 1, "to": 20, "items": {}}
+        {
+          "from": 1,
+          "to": 20,
+          "items": {}
+        }
       ],
-      "_note": "井屑逐级消耗未查到，留空待你在游戏内核对后填写"
+      "_note": "井屑消耗 mysqil 未收录，待校准"
     }
   }
 }

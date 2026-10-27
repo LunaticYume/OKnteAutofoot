@@ -12,242 +12,1136 @@
   },
   "attribute_to_skill_series": {
     "光": "ability_2",
-    "灵": "ability_1",
     "咒": "ability_3",
-    "暗": null,
-    "相": null,
-    "魂": null,
-    "_note": "光=鸽子系(雏鸟的希冀→橄榄枝,浔实证)、灵=军衔系(新兵的怯懦→白蔷薇,灵可实证)、咒=黑帽子系(初次的期许→黑帽子,残虹实证)；暗=杯子图案但档名未查到、相/魂未查到（疑为 ability_4/5 的同频系与水波系，未证实）"
+    "暗": "ability_5",
+    "灵": "ability_1",
+    "相": "ability_4",
+    "魂": "ability_4",
+    "神": null,
+    "_note": "多数派提示；技能书系按角色个体为准（例外：海月(魂)用军衔系、法帝娅(魂)用同频系、哈尼娅(魂)用鸽子系——mysqil 权威分组已逐角色写入 skill_series）"
   },
   "characters": [
-    {"name": "灵可", "rarity": "S", "attribute": "灵", "matter_state": "等离子", "version": "1.3后半", "live": true,
-     "skill_series": "ability_1", "skill_confidence": "high",
-     "boss_material": {"mat_id": "boss_pick_watermoon", "boss": "音霸魔王", "total": 86, "confidence": "high"},
-     "weekly_material": {"mat_id": "wk_skirt", "total": 32, "confidence": "high"},
-     "mob_family": "掠影",
-     "mob_breakthrough": {"c": 17, "b": 18, "a": 15, "confidence": "high"},
-     "mob_skill": {"c": 40, "b": 40, "a": 64, "confidence": "high"},
-     "signature_weapon": "远行者之声"},
-    {"name": "浔", "rarity": "S", "attribute": "光", "matter_state": "固态", "version": "1.0下半", "live": true,
-     "skill_series": "ability_2", "skill_confidence": "high",
-     "boss_material": {"mat_id": "boss_flower_seed", "boss": "塞润尼缇", "total": 86, "confidence": "high"},
-     "weekly_material": {"mat_id": "wk_skirt", "total": 32, "confidence": "high"},
-     "mob_family": "絮语",
-     "mob_breakthrough": {"c": 17, "b": 18, "a": 15, "confidence": "medium"},
-     "mob_skill": null,
-     "signature_weapon": "行进于时间之外"},
-    {"name": "安魂曲", "rarity": "S", "attribute": "暗", "matter_state": "液态", "version": "1.1前半", "live": true,
-     "skill_series": null, "skill_confidence": "low",
-     "boss_material": {"mat_id": "boss_flower_seed", "boss": "塞润尼缇", "total": 50, "confidence": "medium"},
-     "weekly_material": null,
-     "mob_family": "絮语",
-     "mob_breakthrough": {"c": 17, "b": 18, "a": 6, "confidence": "low"},
-     "mob_skill": null,
-     "signature_weapon": "最后一朵玫瑰"},
-    {"name": "伊洛伊", "rarity": "S", "attribute": "灵", "matter_state": "液态", "version": "1.2后半", "live": true,
-     "skill_series": "ability_1", "skill_confidence": "medium",
-     "boss_material": {"mat_id": "boss_page_delusion", "boss": "黑之书", "total": 86, "confidence": "high"},
-     "weekly_material": {"mat_id": "wk_stamp", "total": 32, "confidence": "medium"},
-     "mob_family": "絮语",
-     "mob_breakthrough": {"c": 57, "b": 68, "a": 79, "confidence": "low"},
-     "mob_skill": null,
-     "signature_weapon": "错误的门",
-     "_note": "小怪素材两源冲突（3733=絮语57/68/79 合计口径；TapTap=掠影），按絮语合计口径预填，请核对"},
-    {"name": "残虹", "rarity": "S", "attribute": "咒", "matter_state": "气态", "version": "1.3前半", "live": true,
-     "skill_series": "ability_3", "skill_confidence": "high",
-     "boss_material": {"mat_id": "boss_nest_fragment", "boss": "围巢鸟", "total": 86, "confidence": "high"},
-     "weekly_material": {"mat_id": "wk_memory", "total": 11, "confidence": "high"},
-     "mob_family": "数符",
-     "mob_breakthrough": {"c": 17, "b": 18, "a": 15, "confidence": "high"},
-     "mob_skill": null,
-     "signature_weapon": "噬心诡刃",
-     "_note": "技能段小怪素材仅查到至8级(40/40/12)，未预填，请按游戏内补"},
-    {"name": "明音凛", "rarity": "S", "attribute": "相", "matter_state": "液态", "version": "1.4", "live": true,
-     "skill_series": null, "skill_confidence": "low",
-     "boss_material": {"mat_id": "boss_spark_plug", "boss": "无首铁驭", "total": 86, "confidence": "high"},
-     "weekly_material": {"mat_id": "wk_stamp", "total": 32, "confidence": "medium"},
-     "mob_family": null,
-     "mob_breakthrough": null,
-     "mob_skill": null,
-     "signature_weapon": "月的对跖点",
-     "_note": "专武名据1.4弧盘攻略推断，低置信"},
-    {"name": "真红", "rarity": "S", "attribute": "光", "matter_state": "聚合", "version": "1.2前半", "live": true,
-     "skill_series": "ability_2", "skill_confidence": "medium",
-     "boss_material": {"mat_id": "boss_spark_plug", "boss": "无首铁驭", "total": 86, "confidence": "low"},
-     "weekly_material": null,
-     "mob_family": null,
-     "mob_breakthrough": null,
-     "mob_skill": null,
-     "signature_weapon": "穿过胭红蜃景",
-     "_note": "BOSS 材料归属为攻略『大概率』推测，低置信"},
-    {"name": "零", "rarity": "S", "attribute": "光", "matter_state": "固态", "version": "1.0", "live": true,
-     "skill_series": "ability_2", "skill_confidence": "medium",
-     "boss_material": null, "weekly_material": null, "mob_family": null,
-     "mob_breakthrough": null, "mob_skill": null,
-     "signature_weapon": "休息日"},
-    {"name": "娜娜莉", "rarity": "S", "attribute": "灵", "matter_state": "等离子", "version": "1.0", "live": true,
-     "skill_series": "ability_1", "skill_confidence": "medium",
-     "boss_material": null, "weekly_material": null, "mob_family": null,
-     "mob_breakthrough": null, "mob_skill": null,
-     "signature_weapon": "预备备"},
-    {"name": "九原", "rarity": "S", "attribute": "灵", "matter_state": "固态", "version": "1.0", "live": true,
-     "skill_series": "ability_1", "skill_confidence": "medium",
-     "boss_material": null, "weekly_material": null, "mob_family": null,
-     "mob_breakthrough": null, "mob_skill": null,
-     "signature_weapon": "现实避难所"},
-    {"name": "白藏", "rarity": "S", "attribute": "咒", "matter_state": "聚合", "version": "1.0", "live": true,
-     "skill_series": "ability_3", "skill_confidence": "medium",
-     "boss_material": null, "weekly_material": null, "mob_family": null,
-     "mob_breakthrough": null, "mob_skill": null,
-     "signature_weapon": "茶花会"},
-    {"name": "达芙蒂尔", "rarity": "S", "attribute": "暗", "matter_state": "液态", "version": "1.0", "live": true,
-     "skill_series": null, "skill_confidence": "low",
-     "boss_material": null, "weekly_material": null, "mob_family": null,
-     "mob_breakthrough": null, "mob_skill": null,
-     "signature_weapon": "漆黑青春妄想"},
-    {"name": "早雾", "rarity": "S", "attribute": "咒", "matter_state": "气态", "version": "1.0", "live": true,
-     "skill_series": "ability_3", "skill_confidence": "medium",
-     "boss_material": null, "weekly_material": null, "mob_family": null,
-     "mob_breakthrough": null, "mob_skill": null,
-     "signature_weapon": "好狗狗走四方"},
-    {"name": "法帝娅", "rarity": "S", "attribute": "魂", "matter_state": "聚合", "version": "1.0", "live": true,
-     "skill_series": null, "skill_confidence": "low",
-     "boss_material": null, "weekly_material": null, "mob_family": null,
-     "mob_breakthrough": null, "mob_skill": null,
-     "signature_weapon": "永恒圆舞曲"},
-    {"name": "哈索尔", "rarity": "S", "attribute": "相", "matter_state": "等离子", "version": "1.0", "live": true,
-     "skill_series": null, "skill_confidence": "low",
-     "boss_material": null, "weekly_material": null, "mob_family": null,
-     "mob_breakthrough": null, "mob_skill": null,
-     "signature_weapon": "焰魂狂飙"},
-    {"name": "小吱", "rarity": "S", "attribute": "光", "matter_state": "气态", "version": "1.0", "live": true,
-     "skill_series": "ability_2", "skill_confidence": "medium",
-     "boss_material": null, "weekly_material": null, "mob_family": null,
-     "mob_breakthrough": null, "mob_skill": null,
-     "signature_weapon": "思考喵"},
-    {"name": "哈尼娅", "rarity": "A", "attribute": "魂", "matter_state": "固态", "version": "1.0", "live": true,
-     "skill_series": null, "skill_confidence": "low",
-     "boss_material": null, "weekly_material": null, "mob_family": null,
-     "mob_breakthrough": null, "mob_skill": null,
-     "signature_weapon": "引爆全场"},
-    {"name": "海月", "rarity": "A", "attribute": "魂", "matter_state": "等离子", "version": "1.0", "live": true,
-     "skill_series": null, "skill_confidence": "low",
-     "boss_material": null, "weekly_material": null, "mob_family": null,
-     "mob_breakthrough": null, "mob_skill": null,
-     "signature_weapon": "银河暂留"},
-    {"name": "翳", "rarity": "A", "attribute": "相", "matter_state": "气态", "version": "1.0", "live": true,
-     "skill_series": null, "skill_confidence": "low",
-     "boss_material": null, "weekly_material": null, "mob_family": null,
-     "mob_breakthrough": null, "mob_skill": null,
-     "signature_weapon": "面具下的泪"},
-    {"name": "埃德嘉", "rarity": "A", "attribute": "光", "matter_state": "液态", "version": "1.0", "live": true,
-     "skill_series": "ability_2", "skill_confidence": "medium",
-     "boss_material": null, "weekly_material": null, "mob_family": null,
-     "mob_breakthrough": null, "mob_skill": null,
-     "signature_weapon": "扭曲之城的呼唤"},
-    {"name": "阿德勒", "rarity": "A", "attribute": "咒", "matter_state": "聚合", "version": "1.0", "live": true,
-     "skill_series": "ability_3", "skill_confidence": "medium",
-     "boss_material": null, "weekly_material": null, "mob_family": null,
-     "mob_breakthrough": null, "mob_skill": null,
-     "signature_weapon": "勿忘伞"},
-    {"name": "卡厄斯", "rarity": "S", "attribute": "相", "matter_state": "聚合", "version": "1.1", "live": true,
-     "skill_series": null, "skill_confidence": "low",
-     "boss_material": null, "weekly_material": null, "mob_family": null,
-     "mob_breakthrough": null, "mob_skill": null,
-     "signature_weapon": "众人追寻之物"},
-    {"name": "薄荷", "rarity": "A", "attribute": "灵", "matter_state": "液态", "version": "1.3", "live": true,
-     "skill_series": "ability_1", "skill_confidence": "medium",
-     "boss_material": null, "weekly_material": null, "mob_family": null,
-     "mob_breakthrough": null, "mob_skill": null,
-     "signature_weapon": null},
-    {"name": "黑羽", "rarity": "S", "attribute": "魂", "matter_state": "气态", "version": "1.4前半", "live": true,
-     "skill_series": null, "skill_confidence": "low",
-     "boss_material": null, "weekly_material": null, "mob_family": null,
-     "mob_breakthrough": null, "mob_skill": null,
-     "signature_weapon": "罪与罚"},
-    {"name": "塔吉多", "rarity": "S", "attribute": "神", "matter_state": "等离子", "version": "1.4后半", "live": true,
-     "skill_series": null, "skill_confidence": "low",
-     "boss_material": null, "weekly_material": null, "mob_family": null,
-     "mob_breakthrough": null, "mob_skill": null,
-     "signature_weapon": "鲸之歌",
-     "_note": "『神』属性仅单源记载，置信度低"},
-    {"name": "曳尔沐", "rarity": "S", "attribute": "光", "matter_state": null, "version": "1.5上半(约11/5)", "live": false,
-     "skill_series": null, "skill_confidence": "low",
-     "boss_material": null, "weekly_material": null, "mob_family": null,
-     "mob_breakthrough": null, "mob_skill": null,
-     "signature_weapon": null,
-     "_note": "未上线，仅登记名单"},
-    {"name": "EXE", "rarity": "S", "attribute": "暗", "matter_state": null, "version": "1.5下半(约11/26)", "live": false,
-     "skill_series": null, "skill_confidence": "low",
-     "boss_material": null, "weekly_material": null, "mob_family": null,
-     "mob_breakthrough": null, "mob_skill": null,
-     "signature_weapon": null,
-     "_note": "未上线，仅登记名单"}
+    {
+      "name": "灵可",
+      "rarity": "S",
+      "attribute": "灵",
+      "matter_state": "等离子",
+      "version": "1.3后半",
+      "live": true,
+      "skill_series": "ability_1",
+      "skill_confidence": "high",
+      "boss_material": {
+        "mat_id": "boss_pick_watermoon",
+        "boss": "音霸魔王",
+        "total": 86,
+        "confidence": "high"
+      },
+      "weekly_material": {
+        "mat_id": "wk_skirt",
+        "total": 32,
+        "confidence": "high"
+      },
+      "mob_family": "掠影",
+      "mob_breakthrough": {
+        "c": 17,
+        "b": 18,
+        "a": 15,
+        "confidence": "high"
+      },
+      "mob_skill": {
+        "c": 40,
+        "b": 40,
+        "a": 64,
+        "confidence": "high"
+      },
+      "signature_weapon": "远行者之声"
+    },
+    {
+      "name": "浔",
+      "rarity": "S",
+      "attribute": "光",
+      "matter_state": "固态",
+      "version": "1.0下半",
+      "live": true,
+      "skill_series": "ability_2",
+      "skill_confidence": "high",
+      "boss_material": {
+        "mat_id": "boss_flower_seed",
+        "boss": "塞润尼缇",
+        "total": 86,
+        "confidence": "high"
+      },
+      "weekly_material": {
+        "mat_id": "wk_skirt",
+        "total": 11,
+        "confidence": "high"
+      },
+      "mob_family": "絮语",
+      "mob_breakthrough": {
+        "c": 17,
+        "b": 18,
+        "a": 15,
+        "confidence": "medium"
+      },
+      "mob_skill": null,
+      "signature_weapon": "行进于时间之外",
+      "skill_book_name": "雏鸟的希冀",
+      "mob_base_total": 270
+    },
+    {
+      "name": "安魂曲",
+      "rarity": "S",
+      "attribute": "暗",
+      "matter_state": "液态",
+      "version": "1.1前半",
+      "live": true,
+      "skill_series": "ability_5",
+      "skill_confidence": "high",
+      "boss_material": {
+        "mat_id": "boss_flower_seed",
+        "boss": "塞润尼缇",
+        "total": 86,
+        "confidence": "high"
+      },
+      "weekly_material": {
+        "mat_id": "wk_skirt",
+        "total": 11,
+        "confidence": "high"
+      },
+      "mob_family": "絮语",
+      "mob_breakthrough": {
+        "c": 17,
+        "b": 18,
+        "a": 6,
+        "confidence": "low"
+      },
+      "mob_skill": null,
+      "signature_weapon": "最后一朵玫瑰",
+      "skill_book_name": "水波的迟疑",
+      "mob_base_total": 270
+    },
+    {
+      "name": "伊洛伊",
+      "rarity": "S",
+      "attribute": "灵",
+      "matter_state": "液态",
+      "version": "1.2后半",
+      "live": true,
+      "skill_series": "ability_1",
+      "skill_confidence": "high",
+      "boss_material": {
+        "mat_id": "boss_page_delusion",
+        "boss": "黑之书",
+        "total": 86,
+        "confidence": "high"
+      },
+      "weekly_material": {
+        "mat_id": "wk_stamp",
+        "total": 11,
+        "confidence": "high"
+      },
+      "mob_family": "掠影",
+      "mob_breakthrough": {
+        "c": 57,
+        "b": 68,
+        "a": 79,
+        "confidence": "low"
+      },
+      "mob_skill": null,
+      "signature_weapon": "错误的门",
+      "skill_book_name": "新兵的怯懦",
+      "mob_base_total": 270
+    },
+    {
+      "name": "残虹",
+      "rarity": "S",
+      "attribute": "咒",
+      "matter_state": "气态",
+      "version": "1.3前半",
+      "live": true,
+      "skill_series": "ability_3",
+      "skill_confidence": "high",
+      "boss_material": {
+        "mat_id": "boss_nest_fragment",
+        "boss": "围巢鸟",
+        "total": 86,
+        "confidence": "high"
+      },
+      "weekly_material": {
+        "mat_id": "wk_memory",
+        "total": 11,
+        "confidence": "high"
+      },
+      "mob_family": "数符",
+      "mob_breakthrough": {
+        "c": 17,
+        "b": 18,
+        "a": 15,
+        "confidence": "high"
+      },
+      "mob_skill": null,
+      "signature_weapon": "噬心诡刃",
+      "_note": "技能段小怪素材仅查到至8级(40/40/12)，未预填，请按游戏内补"
+    },
+    {
+      "name": "明音凛",
+      "rarity": "S",
+      "attribute": "相",
+      "matter_state": "液态",
+      "version": "1.4",
+      "live": true,
+      "skill_series": null,
+      "skill_confidence": "low",
+      "boss_material": {
+        "mat_id": "boss_spark_plug",
+        "boss": "无首铁驭",
+        "total": 86,
+        "confidence": "high"
+      },
+      "weekly_material": {
+        "mat_id": "wk_stamp",
+        "total": 32,
+        "confidence": "medium"
+      },
+      "mob_family": null,
+      "mob_breakthrough": null,
+      "mob_skill": null,
+      "signature_weapon": "月的对跖点",
+      "_note": "专武名据1.4弧盘攻略推断，低置信"
+    },
+    {
+      "name": "真红",
+      "rarity": "S",
+      "attribute": "光",
+      "matter_state": "聚合",
+      "version": "1.2前半",
+      "live": true,
+      "skill_series": "ability_2",
+      "skill_confidence": "high",
+      "boss_material": {
+        "mat_id": "boss_spark_plug",
+        "boss": "无首铁驭",
+        "total": 86,
+        "confidence": "high"
+      },
+      "weekly_material": {
+        "mat_id": "wk_skirt",
+        "total": 11,
+        "confidence": "high"
+      },
+      "mob_family": "絮语",
+      "mob_breakthrough": null,
+      "mob_skill": null,
+      "signature_weapon": "穿过胭红蜃景",
+      "skill_book_name": "雏鸟的希冀",
+      "mob_base_total": 270
+    },
+    {
+      "name": "零",
+      "rarity": "S",
+      "attribute": "光",
+      "matter_state": "固态",
+      "version": "1.0",
+      "live": true,
+      "skill_series": "ability_2",
+      "skill_confidence": "high",
+      "boss_material": {
+        "mat_id": "boss_spark_plug",
+        "boss": "无首铁驭",
+        "total": 86,
+        "confidence": "high"
+      },
+      "weekly_material": {
+        "mat_id": "wk_stamp",
+        "total": 11,
+        "confidence": "high"
+      },
+      "mob_family": "絮语",
+      "mob_breakthrough": null,
+      "mob_skill": null,
+      "signature_weapon": "休息日",
+      "skill_book_name": "雏鸟的希冀",
+      "mob_base_total": 270
+    },
+    {
+      "name": "娜娜莉",
+      "rarity": "S",
+      "attribute": "灵",
+      "matter_state": "等离子",
+      "version": "1.0",
+      "live": true,
+      "skill_series": "ability_1",
+      "skill_confidence": "high",
+      "boss_material": {
+        "mat_id": "boss_page_delusion",
+        "boss": "黑之书",
+        "total": 86,
+        "confidence": "high"
+      },
+      "weekly_material": {
+        "mat_id": "wk_stamp",
+        "total": 11,
+        "confidence": "high"
+      },
+      "mob_family": "絮语",
+      "mob_breakthrough": null,
+      "mob_skill": null,
+      "signature_weapon": "预备备",
+      "skill_book_name": "新兵的怯懦",
+      "mob_base_total": 270
+    },
+    {
+      "name": "九原",
+      "rarity": "S",
+      "attribute": "灵",
+      "matter_state": "固态",
+      "version": "1.0",
+      "live": true,
+      "skill_series": "ability_1",
+      "skill_confidence": "high",
+      "boss_material": {
+        "mat_id": "boss_sea_tear",
+        "boss": "海囚",
+        "total": 86,
+        "confidence": "high"
+      },
+      "weekly_material": {
+        "mat_id": "wk_skirt",
+        "total": 11,
+        "confidence": "high"
+      },
+      "mob_family": "掠影",
+      "mob_breakthrough": null,
+      "mob_skill": null,
+      "signature_weapon": "现实避难所",
+      "skill_book_name": "新兵的怯懦",
+      "mob_base_total": 270
+    },
+    {
+      "name": "白藏",
+      "rarity": "S",
+      "attribute": "咒",
+      "matter_state": "聚合",
+      "version": "1.0",
+      "live": true,
+      "skill_series": "ability_3",
+      "skill_confidence": "high",
+      "boss_material": {
+        "mat_id": "boss_nest_fragment",
+        "boss": "围巢鸟",
+        "total": 86,
+        "confidence": "high"
+      },
+      "weekly_material": {
+        "mat_id": "wk_stamp",
+        "total": 11,
+        "confidence": "high"
+      },
+      "mob_family": "数符",
+      "mob_breakthrough": null,
+      "mob_skill": null,
+      "signature_weapon": "茶花会",
+      "skill_book_name": "初次的期许",
+      "mob_base_total": 270
+    },
+    {
+      "name": "达芙蒂尔",
+      "rarity": "S",
+      "attribute": "暗",
+      "matter_state": "液态",
+      "version": "1.0",
+      "live": true,
+      "skill_series": "ability_5",
+      "skill_confidence": "high",
+      "boss_material": {
+        "mat_id": "boss_spark_plug",
+        "boss": "无首铁驭",
+        "total": 86,
+        "confidence": "high"
+      },
+      "weekly_material": {
+        "mat_id": "wk_skirt",
+        "total": 11,
+        "confidence": "high"
+      },
+      "mob_family": "幻妄",
+      "mob_breakthrough": null,
+      "mob_skill": null,
+      "signature_weapon": "漆黑青春妄想",
+      "skill_book_name": "水波的迟疑",
+      "mob_base_total": 270
+    },
+    {
+      "name": "早雾",
+      "rarity": "S",
+      "attribute": "咒",
+      "matter_state": "气态",
+      "version": "1.0",
+      "live": true,
+      "skill_series": "ability_3",
+      "skill_confidence": "high",
+      "boss_material": {
+        "mat_id": "boss_spark_plug",
+        "boss": "无首铁驭",
+        "total": 86,
+        "confidence": "high"
+      },
+      "weekly_material": {
+        "mat_id": "wk_stamp",
+        "total": 11,
+        "confidence": "high"
+      },
+      "mob_family": "数符",
+      "mob_breakthrough": null,
+      "mob_skill": null,
+      "signature_weapon": "好狗狗走四方",
+      "skill_book_name": "初次的期许",
+      "mob_base_total": 270
+    },
+    {
+      "name": "法帝娅",
+      "rarity": "S",
+      "attribute": "魂",
+      "matter_state": "聚合",
+      "version": "1.0",
+      "live": true,
+      "skill_series": "ability_4",
+      "skill_confidence": "high",
+      "boss_material": {
+        "mat_id": "boss_pick_watermoon",
+        "boss": "音霸魔王",
+        "total": 86,
+        "confidence": "high"
+      },
+      "weekly_material": {
+        "mat_id": "wk_skirt",
+        "total": 11,
+        "confidence": "high"
+      },
+      "mob_family": "掠影",
+      "mob_breakthrough": null,
+      "mob_skill": null,
+      "signature_weapon": "永恒圆舞曲",
+      "skill_book_name": "思维的同频",
+      "mob_base_total": 270
+    },
+    {
+      "name": "哈索尔",
+      "rarity": "S",
+      "attribute": "相",
+      "matter_state": "等离子",
+      "version": "1.0",
+      "live": true,
+      "skill_series": "ability_4",
+      "skill_confidence": "high",
+      "boss_material": {
+        "mat_id": "boss_ticket_stub",
+        "boss": "斑蝶",
+        "total": 86,
+        "confidence": "high"
+      },
+      "weekly_material": {
+        "mat_id": "wk_stamp",
+        "total": 11,
+        "confidence": "high"
+      },
+      "mob_family": "幻妄",
+      "mob_breakthrough": null,
+      "mob_skill": null,
+      "signature_weapon": "焰魂狂飙",
+      "skill_book_name": "思维的同频",
+      "mob_base_total": 270
+    },
+    {
+      "name": "小吱",
+      "rarity": "S",
+      "attribute": "光",
+      "matter_state": "气态",
+      "version": "1.0",
+      "live": true,
+      "skill_series": "ability_2",
+      "skill_confidence": "high",
+      "boss_material": {
+        "mat_id": "boss_sea_tear",
+        "boss": "海囚",
+        "total": 86,
+        "confidence": "high"
+      },
+      "weekly_material": {
+        "mat_id": "wk_stamp",
+        "total": 11,
+        "confidence": "high"
+      },
+      "mob_family": "絮语",
+      "mob_breakthrough": null,
+      "mob_skill": null,
+      "signature_weapon": "思考喵",
+      "skill_book_name": "雏鸟的希冀",
+      "mob_base_total": 270
+    },
+    {
+      "name": "哈尼娅",
+      "rarity": "A",
+      "attribute": "魂",
+      "matter_state": "固态",
+      "version": "1.0",
+      "live": true,
+      "skill_series": "ability_5",
+      "skill_confidence": "high",
+      "boss_material": {
+        "mat_id": "boss_nest_fragment",
+        "boss": "围巢鸟",
+        "total": 86,
+        "confidence": "high"
+      },
+      "weekly_material": {
+        "mat_id": "wk_skirt",
+        "total": 11,
+        "confidence": "high"
+      },
+      "mob_family": "数符",
+      "mob_breakthrough": null,
+      "mob_skill": null,
+      "signature_weapon": "引爆全场",
+      "skill_book_name": "水波的迟疑",
+      "mob_base_total": 270
+    },
+    {
+      "name": "海月",
+      "rarity": "A",
+      "attribute": "魂",
+      "matter_state": "等离子",
+      "version": "1.0",
+      "live": true,
+      "skill_series": "ability_1",
+      "skill_confidence": "high",
+      "boss_material": {
+        "mat_id": "boss_nest_fragment",
+        "boss": "围巢鸟",
+        "total": 86,
+        "confidence": "high"
+      },
+      "weekly_material": {
+        "mat_id": "wk_stamp",
+        "total": 11,
+        "confidence": "high"
+      },
+      "mob_family": "幻妄",
+      "mob_breakthrough": null,
+      "mob_skill": null,
+      "signature_weapon": "银河暂留",
+      "skill_book_name": "新兵的怯懦",
+      "mob_base_total": 270
+    },
+    {
+      "name": "翳",
+      "rarity": "A",
+      "attribute": "相",
+      "matter_state": "气态",
+      "version": "1.0",
+      "live": true,
+      "skill_series": "ability_4",
+      "skill_confidence": "high",
+      "boss_material": {
+        "mat_id": "boss_flower_seed",
+        "boss": "塞润尼缇",
+        "total": 86,
+        "confidence": "high"
+      },
+      "weekly_material": {
+        "mat_id": "wk_skirt",
+        "total": 11,
+        "confidence": "high"
+      },
+      "mob_family": "幻妄",
+      "mob_breakthrough": null,
+      "mob_skill": null,
+      "signature_weapon": "面具下的泪",
+      "skill_book_name": "思维的同频",
+      "mob_base_total": 270
+    },
+    {
+      "name": "埃德嘉",
+      "rarity": "A",
+      "attribute": "光",
+      "matter_state": "液态",
+      "version": "1.0",
+      "live": true,
+      "skill_series": "ability_2",
+      "skill_confidence": "high",
+      "boss_material": {
+        "mat_id": "boss_ticket_stub",
+        "boss": "斑蝶",
+        "total": 86,
+        "confidence": "high"
+      },
+      "weekly_material": {
+        "mat_id": "wk_stamp",
+        "total": 11,
+        "confidence": "high"
+      },
+      "mob_family": "絮语",
+      "mob_breakthrough": null,
+      "mob_skill": null,
+      "signature_weapon": "扭曲之城的呼唤",
+      "skill_book_name": "雏鸟的希冀",
+      "mob_base_total": 270
+    },
+    {
+      "name": "阿德勒",
+      "rarity": "A",
+      "attribute": "咒",
+      "matter_state": "聚合",
+      "version": "1.0",
+      "live": true,
+      "skill_series": "ability_3",
+      "skill_confidence": "high",
+      "boss_material": {
+        "mat_id": "boss_pick_watermoon",
+        "boss": "音霸魔王",
+        "total": 86,
+        "confidence": "high"
+      },
+      "weekly_material": {
+        "mat_id": "wk_skirt",
+        "total": 11,
+        "confidence": "high"
+      },
+      "mob_family": "数符",
+      "mob_breakthrough": null,
+      "mob_skill": null,
+      "signature_weapon": "勿忘伞",
+      "skill_book_name": "初次的期许",
+      "mob_base_total": 270
+    },
+    {
+      "name": "卡厄斯",
+      "rarity": "S",
+      "attribute": "相",
+      "matter_state": "聚合",
+      "version": "1.1",
+      "live": true,
+      "skill_series": "ability_4",
+      "skill_confidence": "high",
+      "boss_material": {
+        "mat_id": "boss_sea_tear",
+        "boss": "海囚",
+        "total": 86,
+        "confidence": "high"
+      },
+      "weekly_material": {
+        "mat_id": "wk_memory",
+        "total": 11,
+        "confidence": "high"
+      },
+      "mob_family": "幻妄",
+      "mob_breakthrough": null,
+      "mob_skill": null,
+      "signature_weapon": "众人追寻之物",
+      "skill_book_name": "思维的同频",
+      "mob_base_total": 270
+    },
+    {
+      "name": "薄荷",
+      "rarity": "A",
+      "attribute": "灵",
+      "matter_state": "液态",
+      "version": "1.3",
+      "live": true,
+      "skill_series": "ability_1",
+      "skill_confidence": "high",
+      "boss_material": {
+        "mat_id": "boss_page_delusion",
+        "boss": "黑之书",
+        "total": 86,
+        "confidence": "high"
+      },
+      "weekly_material": {
+        "mat_id": "wk_stamp",
+        "total": 11,
+        "confidence": "high"
+      },
+      "mob_family": "掠影",
+      "mob_breakthrough": null,
+      "mob_skill": null,
+      "signature_weapon": null,
+      "skill_book_name": "新兵的怯懦",
+      "mob_base_total": 270
+    },
+    {
+      "name": "黑羽",
+      "rarity": "S",
+      "attribute": "魂",
+      "matter_state": "气态",
+      "version": "1.4前半",
+      "live": true,
+      "skill_series": null,
+      "skill_confidence": "low",
+      "boss_material": null,
+      "weekly_material": null,
+      "mob_family": null,
+      "mob_breakthrough": null,
+      "mob_skill": null,
+      "signature_weapon": "罪与罚"
+    },
+    {
+      "name": "塔吉多",
+      "rarity": "S",
+      "attribute": "神",
+      "matter_state": "等离子",
+      "version": "1.4后半",
+      "live": true,
+      "skill_series": null,
+      "skill_confidence": "low",
+      "boss_material": null,
+      "weekly_material": null,
+      "mob_family": null,
+      "mob_breakthrough": null,
+      "mob_skill": null,
+      "signature_weapon": "鲸之歌",
+      "_note": "『神』属性仅单源记载，置信度低"
+    },
+    {
+      "name": "曳尔沐",
+      "rarity": "S",
+      "attribute": "光",
+      "matter_state": null,
+      "version": "1.5上半(约11/5)",
+      "live": false,
+      "skill_series": null,
+      "skill_confidence": "low",
+      "boss_material": null,
+      "weekly_material": null,
+      "mob_family": null,
+      "mob_breakthrough": null,
+      "mob_skill": null,
+      "signature_weapon": null,
+      "_note": "未上线，仅登记名单"
+    },
+    {
+      "name": "EXE",
+      "rarity": "S",
+      "attribute": "暗",
+      "matter_state": null,
+      "version": "1.5下半(约11/26)",
+      "live": false,
+      "skill_series": null,
+      "skill_confidence": "low",
+      "boss_material": null,
+      "weekly_material": null,
+      "mob_family": null,
+      "mob_breakthrough": null,
+      "mob_skill": null,
+      "signature_weapon": null,
+      "_note": "未上线，仅登记名单"
+    }
   ],
   "weapons": [
-    {"name": "行进于时间之外", "rarity": "S", "matter_state": "固态", "owner": "浔", "acquisition": "限定·明月特别研募"},
-    {"name": "现实避难所", "rarity": "S", "matter_state": "固态", "owner": "九原", "acquisition": "免费·异象委托「去看电影吧」(35级)"},
-    {"name": "休息日", "rarity": "S", "matter_state": "固态", "owner": "零", "acquisition": "免费·隐藏支线「日蚀」"},
-    {"name": "倾世之雨", "rarity": "S", "matter_state": "固态", "owner": "零", "acquisition": "商城直购/限定池"},
-    {"name": "千金难买你开心", "rarity": "S", "matter_state": "固态", "owner": null, "acquisition": "未查到"},
-    {"name": "海特洛的安宁", "rarity": "S", "matter_state": "固态", "owner": null, "acquisition": "未查到"},
-    {"name": "引爆全场", "rarity": "S", "matter_state": "固态", "owner": "哈尼娅", "acquisition": "免费·都市大亨7级+音速暴君"},
-    {"name": "无畏之绵", "rarity": "S", "matter_state": "固态", "owner": null, "acquisition": "常驻池"},
-    {"name": "最后一朵玫瑰", "rarity": "S", "matter_state": "液态", "owner": "安魂曲", "acquisition": "1.1前半限定"},
-    {"name": "错误的门", "rarity": "S", "matter_state": "液态", "owner": "伊洛伊", "acquisition": "1.2后半限定"},
-    {"name": "漆黑青春妄想", "rarity": "S", "matter_state": "液态", "owner": "达芙蒂尔", "acquisition": "免费·异象委托「后青春期的书」"},
-    {"name": "月的对跖点", "rarity": "S", "matter_state": "液态", "owner": "明音凛", "acquisition": "1.4(低置信)"},
-    {"name": "极速之绵", "rarity": "S", "matter_state": "液态", "owner": null, "acquisition": "常驻池"},
-    {"name": "穿过胭红蜃景", "rarity": "S", "matter_state": "聚合", "owner": "真红", "acquisition": "1.2前半限定"},
-    {"name": "茶花会", "rarity": "S", "matter_state": "聚合", "owner": "白藏", "acquisition": "免费·番外「不言不知秋」"},
-    {"name": "永恒圆舞曲", "rarity": "S", "matter_state": "聚合", "owner": "法帝娅", "acquisition": "免费·主线+卡佩大酒店周本"},
-    {"name": "众人追寻之物", "rarity": "S", "matter_state": "聚合", "owner": "卡厄斯", "acquisition": "未查到"},
-    {"name": "凶猛之绵", "rarity": "S", "matter_state": "聚合", "owner": null, "acquisition": "常驻池"},
-    {"name": "噬心诡刃", "rarity": "S", "matter_state": "气态", "owner": "残虹", "acquisition": "1.3前半限定"},
-    {"name": "好狗狗走四方", "rarity": "S", "matter_state": "气态", "owner": "早雾", "acquisition": "免费·番外「月光当铺」"},
-    {"name": "思考喵", "rarity": "S", "matter_state": "气态", "owner": "小吱", "acquisition": "免费·都市大亨21级"},
-    {"name": "罪与罚", "rarity": "S", "matter_state": "气态", "owner": "黑羽", "acquisition": "1.4限定"},
-    {"name": "灵敏之绵", "rarity": "S", "matter_state": "气态", "owner": null, "acquisition": "常驻池"},
-    {"name": "预备备", "rarity": "S", "matter_state": "等离子", "owner": "娜娜莉", "acquisition": "限定·虎符特别研募"},
-    {"name": "远行者之声", "rarity": "S", "matter_state": "等离子", "owner": "灵可", "acquisition": "1.3后半限定"},
-    {"name": "焰魂狂飙", "rarity": "S", "matter_state": "等离子", "owner": "哈索尔", "acquisition": "免费·异象委托「铁驭强袭」(00:00-04:00)"},
-    {"name": "银河暂留", "rarity": "A", "matter_state": "等离子", "owner": "海月", "acquisition": "14天登录第10天（稀有度两源冲突，取A）"},
-    {"name": "鲸之歌", "rarity": "S", "matter_state": "等离子", "owner": "塔吉多", "acquisition": "未查到"},
-    {"name": "不屈之绵", "rarity": "S", "matter_state": "等离子", "owner": null, "acquisition": "常驻池"},
-    {"name": "勿忘伞", "rarity": "A", "matter_state": "聚合", "owner": "阿德勒", "acquisition": "未查到"},
-    {"name": "扭曲之城的呼唤", "rarity": "A", "matter_state": "液态", "owner": "埃德嘉", "acquisition": "未查到"},
-    {"name": "开始净空", "rarity": "A", "matter_state": "液态", "owner": null, "acquisition": "未查到"},
-    {"name": "灵感大逃杀", "rarity": "A", "matter_state": "液态", "owner": null, "acquisition": "未查到"},
-    {"name": "闪耀的每一天", "rarity": "A", "matter_state": "液态", "owner": null, "acquisition": "未查到"},
-    {"name": "光波眩晕，迷走狂欢", "rarity": "A", "matter_state": "气态", "owner": null, "acquisition": "未查到"},
-    {"name": "当心头顶", "rarity": "A", "matter_state": "气态", "owner": null, "acquisition": "未查到"},
-    {"name": "挂你在心口难开", "rarity": "A", "matter_state": "气态", "owner": null, "acquisition": "未查到"},
-    {"name": "拔刀", "rarity": "A", "matter_state": "等离子", "owner": null, "acquisition": "未查到"},
-    {"name": "欧拉欧拉！", "rarity": "A", "matter_state": "等离子", "owner": null, "acquisition": "未查到"},
-    {"name": "时间大盗", "rarity": "A", "matter_state": "固态", "owner": null, "acquisition": "未查到"},
-    {"name": "被遗忘者", "rarity": "A", "matter_state": "固态", "owner": null, "acquisition": "未查到"},
-    {"name": "终有时", "rarity": "A", "matter_state": "聚合", "owner": null, "acquisition": "未查到"},
-    {"name": "良药苦口", "rarity": "A", "matter_state": "聚合", "owner": null, "acquisition": "未查到"},
-    {"name": "该死的邂逅", "rarity": "A", "matter_state": "聚合", "owner": null, "acquisition": "未查到"},
-    {"name": "愚者种春", "rarity": "A", "matter_state": "聚合", "owner": null, "acquisition": "未查到"},
-    {"name": "「我们。」", "rarity": "B", "matter_state": "等离子", "owner": null, "acquisition": "未查到"},
-    {"name": "「电音」狂欢", "rarity": "B", "matter_state": "液态", "owner": null, "acquisition": "未查到"},
-    {"name": "危险游戏", "rarity": "B", "matter_state": "聚合", "owner": null, "acquisition": "未查到"},
-    {"name": "成功的第一步", "rarity": "B", "matter_state": "固态", "owner": null, "acquisition": "未查到"},
-    {"name": "笑口常开", "rarity": "B", "matter_state": "气态", "owner": null, "acquisition": "未查到"}
+    {
+      "name": "行进于时间之外",
+      "rarity": "S",
+      "matter_state": "固态",
+      "owner": "浔",
+      "acquisition": "限定·明月特别研募"
+    },
+    {
+      "name": "现实避难所",
+      "rarity": "S",
+      "matter_state": "固态",
+      "owner": "九原",
+      "acquisition": "免费·异象委托「去看电影吧」(35级)"
+    },
+    {
+      "name": "休息日",
+      "rarity": "S",
+      "matter_state": "固态",
+      "owner": "零",
+      "acquisition": "免费·隐藏支线「日蚀」"
+    },
+    {
+      "name": "倾世之雨",
+      "rarity": "S",
+      "matter_state": "固态",
+      "owner": "零",
+      "acquisition": "商城直购/限定池"
+    },
+    {
+      "name": "千金难买你开心",
+      "rarity": "S",
+      "matter_state": "固态",
+      "owner": null,
+      "acquisition": "未查到"
+    },
+    {
+      "name": "海特洛的安宁",
+      "rarity": "S",
+      "matter_state": "固态",
+      "owner": null,
+      "acquisition": "未查到"
+    },
+    {
+      "name": "引爆全场",
+      "rarity": "S",
+      "matter_state": "固态",
+      "owner": "哈尼娅",
+      "acquisition": "免费·都市大亨7级+音速暴君"
+    },
+    {
+      "name": "无畏之绵",
+      "rarity": "S",
+      "matter_state": "固态",
+      "owner": null,
+      "acquisition": "常驻池"
+    },
+    {
+      "name": "最后一朵玫瑰",
+      "rarity": "S",
+      "matter_state": "液态",
+      "owner": "安魂曲",
+      "acquisition": "1.1前半限定"
+    },
+    {
+      "name": "错误的门",
+      "rarity": "S",
+      "matter_state": "液态",
+      "owner": "伊洛伊",
+      "acquisition": "1.2后半限定"
+    },
+    {
+      "name": "漆黑青春妄想",
+      "rarity": "S",
+      "matter_state": "液态",
+      "owner": "达芙蒂尔",
+      "acquisition": "免费·异象委托「后青春期的书」"
+    },
+    {
+      "name": "月的对跖点",
+      "rarity": "S",
+      "matter_state": "液态",
+      "owner": "明音凛",
+      "acquisition": "1.4(低置信)"
+    },
+    {
+      "name": "极速之绵",
+      "rarity": "S",
+      "matter_state": "液态",
+      "owner": null,
+      "acquisition": "常驻池"
+    },
+    {
+      "name": "穿过胭红蜃景",
+      "rarity": "S",
+      "matter_state": "聚合",
+      "owner": "真红",
+      "acquisition": "1.2前半限定"
+    },
+    {
+      "name": "茶花会",
+      "rarity": "S",
+      "matter_state": "聚合",
+      "owner": "白藏",
+      "acquisition": "免费·番外「不言不知秋」"
+    },
+    {
+      "name": "永恒圆舞曲",
+      "rarity": "S",
+      "matter_state": "聚合",
+      "owner": "法帝娅",
+      "acquisition": "免费·主线+卡佩大酒店周本"
+    },
+    {
+      "name": "众人追寻之物",
+      "rarity": "S",
+      "matter_state": "聚合",
+      "owner": "卡厄斯",
+      "acquisition": "未查到"
+    },
+    {
+      "name": "凶猛之绵",
+      "rarity": "S",
+      "matter_state": "聚合",
+      "owner": null,
+      "acquisition": "常驻池"
+    },
+    {
+      "name": "噬心诡刃",
+      "rarity": "S",
+      "matter_state": "气态",
+      "owner": "残虹",
+      "acquisition": "1.3前半限定"
+    },
+    {
+      "name": "好狗狗走四方",
+      "rarity": "S",
+      "matter_state": "气态",
+      "owner": "早雾",
+      "acquisition": "免费·番外「月光当铺」"
+    },
+    {
+      "name": "思考喵",
+      "rarity": "S",
+      "matter_state": "气态",
+      "owner": "小吱",
+      "acquisition": "免费·都市大亨21级"
+    },
+    {
+      "name": "罪与罚",
+      "rarity": "S",
+      "matter_state": "气态",
+      "owner": "黑羽",
+      "acquisition": "1.4限定"
+    },
+    {
+      "name": "灵敏之绵",
+      "rarity": "S",
+      "matter_state": "气态",
+      "owner": null,
+      "acquisition": "常驻池"
+    },
+    {
+      "name": "预备备",
+      "rarity": "S",
+      "matter_state": "等离子",
+      "owner": "娜娜莉",
+      "acquisition": "限定·虎符特别研募"
+    },
+    {
+      "name": "远行者之声",
+      "rarity": "S",
+      "matter_state": "等离子",
+      "owner": "灵可",
+      "acquisition": "1.3后半限定"
+    },
+    {
+      "name": "焰魂狂飙",
+      "rarity": "S",
+      "matter_state": "等离子",
+      "owner": "哈索尔",
+      "acquisition": "免费·异象委托「铁驭强袭」(00:00-04:00)"
+    },
+    {
+      "name": "银河暂留",
+      "rarity": "A",
+      "matter_state": "等离子",
+      "owner": "海月",
+      "acquisition": "14天登录第10天（稀有度两源冲突，取A）"
+    },
+    {
+      "name": "鲸之歌",
+      "rarity": "S",
+      "matter_state": "等离子",
+      "owner": "塔吉多",
+      "acquisition": "未查到"
+    },
+    {
+      "name": "不屈之绵",
+      "rarity": "S",
+      "matter_state": "等离子",
+      "owner": null,
+      "acquisition": "常驻池"
+    },
+    {
+      "name": "勿忘伞",
+      "rarity": "A",
+      "matter_state": "聚合",
+      "owner": "阿德勒",
+      "acquisition": "未查到"
+    },
+    {
+      "name": "扭曲之城的呼唤",
+      "rarity": "A",
+      "matter_state": "液态",
+      "owner": "埃德嘉",
+      "acquisition": "未查到"
+    },
+    {
+      "name": "开始净空",
+      "rarity": "A",
+      "matter_state": "液态",
+      "owner": null,
+      "acquisition": "未查到"
+    },
+    {
+      "name": "灵感大逃杀",
+      "rarity": "A",
+      "matter_state": "液态",
+      "owner": null,
+      "acquisition": "未查到"
+    },
+    {
+      "name": "闪耀的每一天",
+      "rarity": "A",
+      "matter_state": "液态",
+      "owner": null,
+      "acquisition": "未查到"
+    },
+    {
+      "name": "光波眩晕，迷走狂欢",
+      "rarity": "A",
+      "matter_state": "气态",
+      "owner": null,
+      "acquisition": "未查到"
+    },
+    {
+      "name": "当心头顶",
+      "rarity": "A",
+      "matter_state": "气态",
+      "owner": null,
+      "acquisition": "未查到"
+    },
+    {
+      "name": "挂你在心口难开",
+      "rarity": "A",
+      "matter_state": "气态",
+      "owner": null,
+      "acquisition": "未查到"
+    },
+    {
+      "name": "拔刀",
+      "rarity": "A",
+      "matter_state": "等离子",
+      "owner": null,
+      "acquisition": "未查到"
+    },
+    {
+      "name": "欧拉欧拉！",
+      "rarity": "A",
+      "matter_state": "等离子",
+      "owner": null,
+      "acquisition": "未查到"
+    },
+    {
+      "name": "时间大盗",
+      "rarity": "A",
+      "matter_state": "固态",
+      "owner": null,
+      "acquisition": "未查到"
+    },
+    {
+      "name": "被遗忘者",
+      "rarity": "A",
+      "matter_state": "固态",
+      "owner": null,
+      "acquisition": "未查到"
+    },
+    {
+      "name": "终有时",
+      "rarity": "A",
+      "matter_state": "聚合",
+      "owner": null,
+      "acquisition": "未查到"
+    },
+    {
+      "name": "良药苦口",
+      "rarity": "A",
+      "matter_state": "聚合",
+      "owner": null,
+      "acquisition": "未查到"
+    },
+    {
+      "name": "该死的邂逅",
+      "rarity": "A",
+      "matter_state": "聚合",
+      "owner": null,
+      "acquisition": "未查到"
+    },
+    {
+      "name": "愚者种春",
+      "rarity": "A",
+      "matter_state": "聚合",
+      "owner": null,
+      "acquisition": "未查到"
+    },
+    {
+      "name": "「我们。」",
+      "rarity": "B",
+      "matter_state": "等离子",
+      "owner": null,
+      "acquisition": "未查到"
+    },
+    {
+      "name": "「电音」狂欢",
+      "rarity": "B",
+      "matter_state": "液态",
+      "owner": null,
+      "acquisition": "未查到"
+    },
+    {
+      "name": "危险游戏",
+      "rarity": "B",
+      "matter_state": "聚合",
+      "owner": null,
+      "acquisition": "未查到"
+    },
+    {
+      "name": "成功的第一步",
+      "rarity": "B",
+      "matter_state": "固态",
+      "owner": null,
+      "acquisition": "未查到"
+    },
+    {
+      "name": "笑口常开",
+      "rarity": "B",
+      "matter_state": "气态",
+      "owner": null,
+      "acquisition": "未查到"
+    }
   ],
   "totals": {
     "_note": "养成总量（置信度标注）；逐级表未查到，采用『满级总量制』预填，可拆段",
-    "char_level_1_80": {"exp_char": 325, "coin": 2150000, "confidence": "high", "scope": "升级+突破，S级口径(灵可)"},
-    "ability_full": {"ability_mat": 144, "coin": 1750000, "confidence": "high",
-      "breakdown": {"t1": 40, "t2": 40, "t3": 64},
-      "mob_skill": {"confidence": "high", "note": "小怪素材按角色族群，见 characters[].mob_skill"},
-      "weekly": {"confidence": "high", "note": "周本素材按角色，见 characters[].weekly_material"}},
-    "ascension_6段": {"boss_material_total": 86, "confidence": "high",
-      "mob_breakthrough": {"confidence": "high", "note": "按角色族群 17/18/15（絮语系安魂曲 17/18/6 疑统计不全）"},
-      "coin": 525000, "confidence": "medium", "note": "已含在 char_level 的 215万 口径内，勿重复累加"},
-    "arc_1_60": {"exp_arc": 365, "arc_mat": 50, "coin": 1510000, "confidence": "high",
-      "breakdown": {"罐头三档": [14, 18, 18], "小怪": "按角色族群 14/18/18（中高置信）"}},
-    "console": {"confidence": "low", "note": "井屑逐级消耗未查到，留待校准"}
-  }
+    "char_level_1_80": {
+      "exp_char": 325,
+      "coin": 2150000,
+      "confidence": "high",
+      "scope": "升级+突破，S级口径(灵可)"
+    },
+    "ability_full": {
+      "ability_mat": 144,
+      "coin": 1750000,
+      "confidence": "high",
+      "breakdown": {
+        "t1": 40,
+        "t2": 40,
+        "t3": 64
+      },
+      "mob_skill": {
+        "confidence": "high",
+        "note": "小怪素材按角色族群，见 characters[].mob_skill"
+      },
+      "weekly": {
+        "confidence": "high",
+        "note": "周本素材按角色，见 characters[].weekly_material"
+      }
+    },
+    "ascension_6段": {
+      "boss_material_total": 86,
+      "confidence": "medium",
+      "mob_breakthrough": {
+        "confidence": "high",
+        "note": "按角色族群 17/18/15（絮语系安魂曲 17/18/6 疑统计不全）"
+      },
+      "coin": 525000,
+      "note": "已含在 char_level 的 215万 口径内，勿重复累加"
+    },
+    "arc_1_60": {
+      "exp_arc": 365,
+      "arc_mat": 50,
+      "coin": 1510000,
+      "confidence": "high",
+      "breakdown": {
+        "罐头三档": [
+          14,
+          18,
+          18
+        ],
+        "小怪": "按角色族群 14/18/18（中高置信）"
+      }
+    },
+    "console": {
+      "confidence": "low",
+      "note": "井屑逐级消耗未查到，留待校准"
+    }
+  },
+  "source": "https://wiki.mysqil.com/tools/cultivation（DetailedCalc.js 权威数值，2026-10-28 抓取）"
 }

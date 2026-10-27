@@ -19,7 +19,7 @@
   },
   "characters": [
     {
-      "id": "a12bfbd6",
+      "id": "19fec531",
       "name": "冒烟测试角色",
       "enabled": true,
       "mats": {
@@ -90,6 +90,89 @@
       "status": "done",
       "note": "",
       "mode": "hunter"
+    },
+    {
+      "day": "2026-10-27",
+      "time": "02:04:51",
+      "mat_id": "boss_sea_tear",
+      "name": "海之泪",
+      "runs": 2,
+      "stamina": 120,
+      "gain": 16,
+      "status": "done",
+      "note": "",
+      "mode": "hunter"
+    },
+    {
+      "day": "2026-10-27",
+      "time": "02:14:44",
+      "mat_id": "boss_sea_tear",
+      "name": "海之泪",
+      "runs": 2,
+      "stamina": 120,
+      "gain": 16,
+      "status": "done",
+      "note": "",
+      "mode": "hunter"
+    },
+    {
+      "day": "2026-10-27",
+      "time": "02:22:35",
+      "mat_id": "boss_sea_tear",
+      "name": "海之泪",
+      "runs": 2,
+      "stamina": 120,
+      "gain": 16,
+      "status": "done",
+      "note": "",
+      "mode": "hunter"
+    },
+    {
+      "day": "2026-10-27",
+      "time": "02:30:58",
+      "mat_id": "boss_sea_tear",
+      "name": "海之泪",
+      "runs": 2,
+      "stamina": 120,
+      "gain": 16,
+      "status": "done",
+      "note": "",
+      "mode": "hunter"
+    },
+    {
+      "day": "2026-10-27",
+      "time": "02:31:48",
+      "mat_id": "coin",
+      "name": "甲硬币",
+      "runs": 0,
+      "stamina": 0,
+      "gain": 0,
+      "status": "reconciled",
+      "note": "[2026-10-27 2026-10-24 21:00:00 未决执行 e1] 放弃记账（不修改库存与额度）"
+    },
+    {
+      "day": "2026-10-27",
+      "time": "02:46:54",
+      "mat_id": "boss_sea_tear",
+      "name": "海之泪",
+      "runs": 2,
+      "stamina": 120,
+      "gain": 16,
+      "status": "done",
+      "note": "",
+      "mode": "hunter"
+    },
+    {
+      "day": "2026-10-27",
+      "time": "02:53:38",
+      "mat_id": "boss_sea_tear",
+      "name": "海之泪",
+      "runs": 2,
+      "stamina": 120,
+      "gain": 16,
+      "status": "done",
+      "note": "",
+      "mode": "hunter"
     }
   ],
   "char_library": [
@@ -107,7 +190,7 @@
     "blacklist": [],
     "entries": [
       {
-        "time": "00:56:55",
+        "time": "02:53:38",
         "mat_id": "boss_sea_tear",
         "name": "海之泪",
         "runs": 2,
