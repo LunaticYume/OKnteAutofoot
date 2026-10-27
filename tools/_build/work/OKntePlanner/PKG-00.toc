@@ -72,12 +72,21 @@
   ('python312.dll',
    'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\python312.dll',
    'BINARY'),
+<<<<<<< HEAD
   ('clr_loader\\ffi\\dlls\\x86\\ClrLoader.dll',
    'E:\\AgentMultiWorkStation\\ZcodeWorkin\\GameAssistantPlugins\\OKnteAutofoot\\tools\\_build\\pyi\\clr_loader\\ffi\\dlls\\x86\\ClrLoader.dll',
    'BINARY'),
   ('clr_loader\\ffi\\dlls\\amd64\\ClrLoader.dll',
    'E:\\AgentMultiWorkStation\\ZcodeWorkin\\GameAssistantPlugins\\OKnteAutofoot\\tools\\_build\\pyi\\clr_loader\\ffi\\dlls\\amd64\\ClrLoader.dll',
    'BINARY'),
+=======
+  ('clr_loader\\ffi\\dlls\\amd64\\ClrLoader.dll',
+   'E:\\AgentMultiWorkStation\\ZcodeWorkin\\GameAssistantPlugins\\OKnteAutofoot\\tools\\_build\\pyi\\clr_loader\\ffi\\dlls\\amd64\\ClrLoader.dll',
+   'BINARY'),
+  ('clr_loader\\ffi\\dlls\\x86\\ClrLoader.dll',
+   'E:\\AgentMultiWorkStation\\ZcodeWorkin\\GameAssistantPlugins\\OKnteAutofoot\\tools\\_build\\pyi\\clr_loader\\ffi\\dlls\\x86\\ClrLoader.dll',
+   'BINARY'),
+>>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
   ('_multiprocessing.pyd',
    'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\DLLs\\_multiprocessing.pyd',
    'EXTENSION'),
@@ -135,12 +144,21 @@
   ('VCRUNTIME140.dll',
    'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\VCRUNTIME140.dll',
    'BINARY'),
+<<<<<<< HEAD
   ('libssl-3.dll',
    'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\DLLs\\libssl-3.dll',
    'BINARY'),
   ('libcrypto-3.dll',
    'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\DLLs\\libcrypto-3.dll',
    'BINARY'),
+=======
+  ('libcrypto-3.dll',
+   'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\DLLs\\libcrypto-3.dll',
+   'BINARY'),
+  ('libssl-3.dll',
+   'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\DLLs\\libssl-3.dll',
+   'BINARY'),
+>>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
   ('VCRUNTIME140_1.dll',
    'D:\\GamingAssistant\\ok-nte\\data\\apps\\ok-nte\\python\\VCRUNTIME140_1.dll',
    'BINARY'),
@@ -372,6 +390,7 @@
   ('webview\\window.py',
    'E:\\AgentMultiWorkStation\\ZcodeWorkin\\GameAssistantPlugins\\OKnteAutofoot\\tools\\_build\\pyi\\webview\\window.py',
    'DATA'),
+<<<<<<< HEAD
   ('setuptools\\_vendor\\importlib_metadata-8.7.1.dist-info\\RECORD',
    'E:\\AgentMultiWorkStation\\ZcodeWorkin\\GameAssistantPlugins\\OKnteAutofoot\\tools\\_build\\pyi\\setuptools\\_vendor\\importlib_metadata-8.7.1.dist-info\\RECORD',
    'DATA'),
@@ -387,12 +406,32 @@
   ('setuptools\\_vendor\\importlib_metadata-8.7.1.dist-info\\METADATA',
    'E:\\AgentMultiWorkStation\\ZcodeWorkin\\GameAssistantPlugins\\OKnteAutofoot\\tools\\_build\\pyi\\setuptools\\_vendor\\importlib_metadata-8.7.1.dist-info\\METADATA',
    'DATA'),
+=======
+  ('setuptools\\_vendor\\importlib_metadata-8.7.1.dist-info\\WHEEL',
+   'E:\\AgentMultiWorkStation\\ZcodeWorkin\\GameAssistantPlugins\\OKnteAutofoot\\tools\\_build\\pyi\\setuptools\\_vendor\\importlib_metadata-8.7.1.dist-info\\WHEEL',
+   'DATA'),
+>>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
   ('setuptools\\_vendor\\importlib_metadata-8.7.1.dist-info\\top_level.txt',
    'E:\\AgentMultiWorkStation\\ZcodeWorkin\\GameAssistantPlugins\\OKnteAutofoot\\tools\\_build\\pyi\\setuptools\\_vendor\\importlib_metadata-8.7.1.dist-info\\top_level.txt',
    'DATA'),
   ('setuptools\\_vendor\\importlib_metadata-8.7.1.dist-info\\licenses\\LICENSE',
    'E:\\AgentMultiWorkStation\\ZcodeWorkin\\GameAssistantPlugins\\OKnteAutofoot\\tools\\_build\\pyi\\setuptools\\_vendor\\importlib_metadata-8.7.1.dist-info\\licenses\\LICENSE',
    'DATA'),
+<<<<<<< HEAD
+=======
+  ('setuptools\\_vendor\\importlib_metadata-8.7.1.dist-info\\METADATA',
+   'E:\\AgentMultiWorkStation\\ZcodeWorkin\\GameAssistantPlugins\\OKnteAutofoot\\tools\\_build\\pyi\\setuptools\\_vendor\\importlib_metadata-8.7.1.dist-info\\METADATA',
+   'DATA'),
+  ('setuptools\\_vendor\\importlib_metadata-8.7.1.dist-info\\REQUESTED',
+   'E:\\AgentMultiWorkStation\\ZcodeWorkin\\GameAssistantPlugins\\OKnteAutofoot\\tools\\_build\\pyi\\setuptools\\_vendor\\importlib_metadata-8.7.1.dist-info\\REQUESTED',
+   'DATA'),
+  ('setuptools\\_vendor\\importlib_metadata-8.7.1.dist-info\\RECORD',
+   'E:\\AgentMultiWorkStation\\ZcodeWorkin\\GameAssistantPlugins\\OKnteAutofoot\\tools\\_build\\pyi\\setuptools\\_vendor\\importlib_metadata-8.7.1.dist-info\\RECORD',
+   'DATA'),
+  ('setuptools\\_vendor\\importlib_metadata-8.7.1.dist-info\\INSTALLER',
+   'E:\\AgentMultiWorkStation\\ZcodeWorkin\\GameAssistantPlugins\\OKnteAutofoot\\tools\\_build\\pyi\\setuptools\\_vendor\\importlib_metadata-8.7.1.dist-info\\INSTALLER',
+   'DATA'),
+>>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
   ('setuptools\\_vendor\\jaraco\\text\\Lorem ipsum.txt',
    'E:\\AgentMultiWorkStation\\ZcodeWorkin\\GameAssistantPlugins\\OKnteAutofoot\\tools\\_build\\pyi\\setuptools\\_vendor\\jaraco\\text\\Lorem '
    'ipsum.txt',

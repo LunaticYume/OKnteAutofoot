@@ -30,7 +30,10 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
+<<<<<<< HEAD
 from app import game_data as game_data_mod  # noqa: E402
+=======
+>>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
 from app import oknte_adapter as adapter_mod  # noqa: E402
 from app import planner  # noqa: E402
 from app import runner as runner_mod  # noqa: E402
@@ -53,11 +56,15 @@ def case(fn):
 # ---------- 公共工具 ----------
 
 class _StateGuard:
+<<<<<<< HEAD
     """备份 data/state.json 与 STATE 内存数据，退出时恢复（原本不存在则删除文件）。
 
     同时把甲硬币产量夹到 7（生产默认为 0=未校准跳过）：planner/runner 测试依赖
     coin 可刷；夹具退出时恢复生产值，保证测试与生产数据文件解耦。
     """
+=======
+    """备份 data/state.json 与 STATE 内存数据，退出时恢复（原本不存在则删除文件）。"""
+>>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
 
     def __enter__(self):
         with STATE.lock:
@@ -67,6 +74,7 @@ class _StateGuard:
                 with open(STATE_FILE, "rb") as f:
                     self.raw = f.read()
             self.data_copy = copy.deepcopy(STATE.data)
+<<<<<<< HEAD
             self._yields_backup = copy.deepcopy(planner.YIELDS)
         planner.YIELDS["per_run"]["coin"] = 7
         return self
@@ -74,6 +82,11 @@ class _StateGuard:
     def __exit__(self, *exc):
         planner.YIELDS.clear()
         planner.YIELDS.update(self._yields_backup)
+=======
+        return self
+
+    def __exit__(self, *exc):
+>>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
         with STATE.lock:
             STATE.data = self.data_copy
             if self.existed:
@@ -1835,6 +1848,7 @@ def test_runner_hunter_mode_e2e():
         r2.thread.join(timeout=5)
 
 
+<<<<<<< HEAD
 # ---------- 用例 15：游戏目录落库（阶段14） ----------
 
 @case
@@ -2020,6 +2034,8 @@ def test_stamina_defaults_320():
         assert s2["daily_stamina_limit"] == 320
 
 
+=======
+>>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
 # ---------- 汇总 ----------
 
 def main():

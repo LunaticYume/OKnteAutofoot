@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 ('C:\\Users\\LunaticM\\AppData\\Local\\Temp\\oknte_live_96vrafun\\single_variant\\OKntePlannerTest.exe',
+=======
+('C:\\Users\\LunaticM\\AppData\\Local\\Temp\\oknte_live__8102uns\\single_variant\\OKntePlannerTest.exe',
+>>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
  False,
  False,
  False,
@@ -394,6 +398,7 @@
   ('webview\\window.py',
    'E:\\AgentMultiWorkStation\\ZcodeWorkin\\GameAssistantPlugins\\OKnteAutofoot\\tools\\_build\\pyi\\webview\\window.py',
    'DATA'),
+<<<<<<< HEAD
   ('setuptools\\_vendor\\importlib_metadata-8.7.1.dist-info\\METADATA',
    'E:\\AgentMultiWorkStation\\ZcodeWorkin\\GameAssistantPlugins\\OKnteAutofoot\\tools\\_build\\pyi\\setuptools\\_vendor\\importlib_metadata-8.7.1.dist-info\\METADATA',
    'DATA'),
@@ -406,6 +411,11 @@
   ('setuptools\\_vendor\\importlib_metadata-8.7.1.dist-info\\WHEEL',
    'E:\\AgentMultiWorkStation\\ZcodeWorkin\\GameAssistantPlugins\\OKnteAutofoot\\tools\\_build\\pyi\\setuptools\\_vendor\\importlib_metadata-8.7.1.dist-info\\WHEEL',
    'DATA'),
+=======
+  ('setuptools\\_vendor\\importlib_metadata-8.7.1.dist-info\\RECORD',
+   'E:\\AgentMultiWorkStation\\ZcodeWorkin\\GameAssistantPlugins\\OKnteAutofoot\\tools\\_build\\pyi\\setuptools\\_vendor\\importlib_metadata-8.7.1.dist-info\\RECORD',
+   'DATA'),
+>>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
   ('setuptools\\_vendor\\importlib_metadata-8.7.1.dist-info\\top_level.txt',
    'E:\\AgentMultiWorkStation\\ZcodeWorkin\\GameAssistantPlugins\\OKnteAutofoot\\tools\\_build\\pyi\\setuptools\\_vendor\\importlib_metadata-8.7.1.dist-info\\top_level.txt',
    'DATA'),
@@ -415,6 +425,18 @@
   ('setuptools\\_vendor\\importlib_metadata-8.7.1.dist-info\\REQUESTED',
    'E:\\AgentMultiWorkStation\\ZcodeWorkin\\GameAssistantPlugins\\OKnteAutofoot\\tools\\_build\\pyi\\setuptools\\_vendor\\importlib_metadata-8.7.1.dist-info\\REQUESTED',
    'DATA'),
+<<<<<<< HEAD
+=======
+  ('setuptools\\_vendor\\importlib_metadata-8.7.1.dist-info\\licenses\\LICENSE',
+   'E:\\AgentMultiWorkStation\\ZcodeWorkin\\GameAssistantPlugins\\OKnteAutofoot\\tools\\_build\\pyi\\setuptools\\_vendor\\importlib_metadata-8.7.1.dist-info\\licenses\\LICENSE',
+   'DATA'),
+  ('setuptools\\_vendor\\importlib_metadata-8.7.1.dist-info\\METADATA',
+   'E:\\AgentMultiWorkStation\\ZcodeWorkin\\GameAssistantPlugins\\OKnteAutofoot\\tools\\_build\\pyi\\setuptools\\_vendor\\importlib_metadata-8.7.1.dist-info\\METADATA',
+   'DATA'),
+  ('setuptools\\_vendor\\importlib_metadata-8.7.1.dist-info\\WHEEL',
+   'E:\\AgentMultiWorkStation\\ZcodeWorkin\\GameAssistantPlugins\\OKnteAutofoot\\tools\\_build\\pyi\\setuptools\\_vendor\\importlib_metadata-8.7.1.dist-info\\WHEEL',
+   'DATA'),
+>>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
   ('setuptools\\_vendor\\jaraco\\text\\Lorem ipsum.txt',
    'E:\\AgentMultiWorkStation\\ZcodeWorkin\\GameAssistantPlugins\\OKnteAutofoot\\tools\\_build\\pyi\\setuptools\\_vendor\\jaraco\\text\\Lorem '
    'ipsum.txt',
@@ -425,7 +447,11 @@
  [],
  False,
  False,
+<<<<<<< HEAD
  1793116842,
+=======
+ 1793051380,
+>>>>>>> 53d44889c0d699d37fd730b0019e617da1b66bb4
  [('runw.exe',
    'E:\\AgentMultiWorkStation\\ZcodeWorkin\\GameAssistantPlugins\\OKnteAutofoot\\tools\\_build\\pyi\\PyInstaller\\bootloader\\Windows-64bit-intel\\runw.exe',
    'EXECUTABLE')],
