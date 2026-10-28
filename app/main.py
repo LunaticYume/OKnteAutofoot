@@ -56,7 +56,8 @@ def _clamp_int(value, lo, hi, fallback):
 
 def _sanitize_character(raw):
     char = new_character(str(raw.get("name", ""))[:32])
-    char["id"] = str(raw.get("id", char["id"]))[:16]
+    # 空/缺失 id 重新生成，避免落库后出现空主键（str(raw["id"]) 允许自定义值）
+    char["id"] = str(raw.get("id") or char["id"])[:16]
     char["enabled"] = bool(raw.get("enabled", True))
     weapon = raw.get("weapon")
     if isinstance(weapon, str) and weapon.strip():
@@ -225,7 +226,7 @@ def apply_import(payload):
         raise ValueError("requirements 缺少 tracks 字段")
     clean_chars = [_sanitize_character(c) for c in characters[:50]]
     clean_inv = {str(k): _clamp_int(v, 0, 10**8, 0)
-                 for k, v in inventory.items() if str(k) in planner.TARGETS}
+                 for k, v in inventory.items() if str(k) in planner.ALL_ORDER}  # 全量目录（体力本+外部），与 /api/inventory 同口径
     clean_settings = _sanitize_settings(settings)
     clean_yields = {**planner.YIELDS, "per_run": {
         str(k): _clamp_int(v, 0, 10**6, 1)
@@ -372,7 +373,10 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _body(self):
-        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            return {}  # 非数字 Content-Length：按无 body 处理，而不是让请求无响应挂死
         if length <= 0 or length > 2 * 1024 * 1024:
             return {}
         try:
@@ -380,12 +384,53 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, UnicodeDecodeError):
             return None
 
+    def _game_data_or_none(self):
+        """读取游戏目录；文件缺失/损坏返回 None（调用方回 500，不让请求无响应挂死）。"""
+        try:
+            return game_data.load()
+        except (OSError, ValueError, TypeError) as e:
+            print(f"游戏目录读取失败: {type(e).__name__}: {e}")
+            return None
+
+    @staticmethod
+    def _loopback_host(value):
+        """Host/Origin 的主机部分是否为本机回环（面板只服务本机，阻断 DNS 重绑定）。"""
+        if not value:
+            return True  # HTTP/1.0 等不带 Host 的极端客户端不误伤
+        value = value.strip().lower()
+        if value.startswith("["):  # [::1]:8765
+            end = value.find("]")
+            value = value[1:end] if end > 0 else value.strip("[]")
+        elif value.count(":") > 1:  # 裸 IPv6（无端口）
+            pass
+        else:
+            value = value.rsplit(":", 1)[0]
+        return value in ("127.0.0.1", "localhost", "::1")
+
+    @classmethod
+    def _origin_loopback(cls, origin):
+        if not origin:
+            return True  # curl/自测等非浏览器客户端通常不带 Origin
+        match = re.match(r"^[a-z][a-z0-9+.-]*://([^/?#]+)", origin.strip().lower())
+        return bool(match) and cls._loopback_host(match.group(1))
+
+    def _reject_foreign(self):
+        """本地面板防线：Host 与 Origin 必须回环。恶意网页对 127.0.0.1 面板的
+        跨源写入（CSRF：改设置/写配置/恢复备份）与 DNS 重绑定读取在此被拒。"""
+        if not self._loopback_host(self.headers.get("Host", "")) \
+                or not self._origin_loopback(self.headers.get("Origin", "")):
+            self._send(403, {"error": "拒绝非本机来源的请求"})
+            return True
+        return False
+
     def _oknte(self):
         return OkNte(STATE.settings["oknte_root"])
 
     # ---- GET ----
     def do_GET(self):
         path = self.path.split("?", 1)[0]
+        if path.startswith("/api/") and self._reject_foreign():
+            return
         if path in ("/", "/index.html"):
             try:
                 with open(os.path.join(WEB_DIR, "index.html"), "rb") as f:
@@ -444,12 +489,19 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/backups":
             self._send(200, {"backups": self._oknte().list_backups()})
         elif path == "/api/game-data":
-            self._send(200, game_data.load())
+            data = self._game_data_or_none()
+            if data is None:
+                self._send(500, {"error": "游戏目录 data/game_data.json 无法读取，请检查该文件"})
+                return
+            self._send(200, data)
         elif path == "/api/compat-report":
             self._send(200, build_compat_report(self._oknte()),
                        "text/markdown; charset=utf-8")
         elif path == "/api/common-costs":
-            data = game_data.load()
+            data = self._game_data_or_none()
+            if data is None:
+                self._send(500, {"error": "游戏目录 data/game_data.json 无法读取，请检查该文件"})
+                return
             costs = _common_costs()
             self._send(200, {"defaults": game_data.COMMON_COST_DEFAULTS,
                              "costs": costs,
@@ -460,6 +512,8 @@ class Handler(BaseHTTPRequestHandler):
     # ---- POST ----
     def do_POST(self):
         path = self.path.split("?", 1)[0]
+        if self._reject_foreign():
+            return
         body = self._body()
         if body is None:
             self._send(400, {"error": "请求体不是合法 JSON"})
@@ -470,30 +524,37 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/settings":
-            STATE.data["settings"] = _sanitize_settings(body)
-            STATE.save()
+            with STATE.lock:  # 写 STATE.data 一律持锁：与执行线程/并发请求互斥
+                clean = _sanitize_settings(body)
+                STATE.data["settings"] = clean
+                STATE.save()
             self._send(200, {"ok": True, "settings": STATE.settings})
         elif path == "/api/characters":
             if not isinstance(body.get("characters"), list):
                 self._send(400, {"error": "characters 必须是数组"})
                 return
-            STATE.data["characters"] = [_sanitize_character(c) for c in body["characters"][:50]]
-            STATE.save()
+            with STATE.lock:
+                STATE.data["characters"] = [_sanitize_character(c) for c in body["characters"][:50]]
+                STATE.save()
             self._send(200, {"ok": True, "characters": STATE.characters})
         elif path == "/api/inventory":
             inv = body.get("inventory")
             if not isinstance(inv, dict):
                 self._send(400, {"error": "inventory 必须是对象"})
                 return
-            STATE.data["inventory"] = {
-                str(k): _clamp_int(v, 0, 10**8, 0)
-                for k, v in inv.items() if str(k) in planner.ALL_ORDER  # 全量目录
-            }
-            STATE.save()
+            with STATE.lock:
+                STATE.data["inventory"] = {
+                    str(k): _clamp_int(v, 0, 10**8, 0)
+                    for k, v in inv.items() if str(k) in planner.ALL_ORDER  # 全量目录
+                }
+                STATE.save()
             self._send(200, {"ok": True, "inventory": STATE.inventory})
         elif path == "/api/game-data/import":
             action = str(body.get("action", ""))
-            data = game_data.load()
+            data = self._game_data_or_none()
+            if data is None:
+                self._send(500, {"error": "游戏目录 data/game_data.json 无法读取，请检查该文件"})
+                return
             if action == "libraries":
                 char_names, weapon_names = game_data.library_names(data)
                 libs = _sanitize_libraries({"char_library": char_names,
@@ -519,14 +580,19 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError as e:
                     self._send(404, {"error": str(e)})
                     return
-                STATE.data["characters"] = STATE.data["characters"][:50]
-                if len(STATE.data["characters"]) >= 50:
+                with STATE.lock:  # 读-改-写：与并发请求互斥，防丢更新
+                    STATE.data["characters"] = STATE.data["characters"][:50]
+                    if len(STATE.data["characters"]) < 50:
+                        clean = _sanitize_character(raw)
+                        STATE.data["characters"].append(clean)
+                        STATE.save()
+                        payload = {"ok": True, "character": clean}
+                    else:
+                        payload = None
+                if payload is None:
                     self._send(409, {"error": "角色数量已达上限（50）"})
-                    return
-                clean = _sanitize_character(raw)
-                STATE.data["characters"].append(clean)
-                STATE.save()
-                self._send(200, {"ok": True, "character": clean})
+                else:
+                    self._send(200, payload)
             else:
                 self._send(400, {"error": "action 必须是 libraries 或 character"})
         elif path == "/api/common-costs/save":
@@ -537,7 +603,10 @@ class Handler(BaseHTTPRequestHandler):
                 STATE.save()
             self._send(200, {"ok": True, "costs": _common_costs()})
         elif path == "/api/common-costs/apply":
-            data = game_data.load()
+            data = self._game_data_or_none()
+            if data is None:
+                self._send(500, {"error": "游戏目录 data/game_data.json 无法读取，请检查该文件"})
+                return
             costs = _common_costs()
             rows = {r["name"]: r for r in _common_mapping_rows(data, costs)}
             name = str(body.get("name", "")).strip()
@@ -567,9 +636,10 @@ class Handler(BaseHTTPRequestHandler):
                              "notes": notes})
         elif path == "/api/libraries":
             libs = _sanitize_libraries(body)
-            STATE.data["char_library"] = libs["char_library"]
-            STATE.data["weapon_library"] = libs["weapon_library"]
-            STATE.save()
+            with STATE.lock:
+                STATE.data["char_library"] = libs["char_library"]
+                STATE.data["weapon_library"] = libs["weapon_library"]
+                STATE.save()
             self._send(200, {"ok": True,
                              "char_library": STATE.data["char_library"],
                              "weapon_library": STATE.data["weapon_library"]})

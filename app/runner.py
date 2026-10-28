@@ -101,6 +101,15 @@ def _reconcile_used_stamina(oknte):
     return False, scanned
 
 
+def _actual_gain(step, spent):
+    """实际产出：按实际消耗体力折算。ok-nte 提前完成/追猎部分失败汇总
+    （spent < 计划消耗）时按比例记账，绝不按计划满额多记库存。"""
+    planned = int(step.get("stamina") or 0)
+    if planned > 0 and 0 <= spent < planned:
+        return int(round(int(step.get("gain") or 0) * spent / planned))
+    return int(step.get("gain") or 0)
+
+
 class Runner:
     def __init__(self):
         self.lock = threading.RLock()
@@ -315,9 +324,10 @@ class Runner:
         try:
             self._run_loop(mode)
         except OkNteError as e:
-            self._finish("error", f"环境错误：{e}")
+            self._finish("error", f"环境错误：{e}", preserve_execution=True)
         except Exception as e:  # 兜底：任何异常都要落到面板可见的状态里
-            self._finish("error", f"内部错误：{type(e).__name__}: {e}")
+            self._finish("error", f"内部错误：{type(e).__name__}: {e}",
+                         preserve_execution=True)
         finally:
             STATE.save()
 
@@ -609,6 +619,9 @@ class Runner:
                     break
                 continue
             if status == "skipped":
+                if not continuous:  # 与日常口径一致：一次性模式遇跳过即收工，不无限重查
+                    self._finish("done", "ok-nte 跳过了追猎任务，收工")
+                    return
                 if not self._wait("ok-nte 跳过了追猎任务，稍后重查"):
                     break
                 continue
@@ -652,7 +665,7 @@ class Runner:
             STATE.data["history"] = STATE.data["history"][-500:]
             if status == "done":
                 inv = STATE.data["inventory"]
-                inv[step["mat_id"]] = int(inv.get(step["mat_id"], 0) or 0) + int(step["gain"])
+                inv[step["mat_id"]] = int(inv.get(step["mat_id"], 0) or 0) + _actual_gain(step, spent)
             elif status == "failed":
                 marker = f"hunt:{step['boss']}"
                 today.setdefault("blacklist", []).append(marker)
@@ -688,7 +701,7 @@ class Runner:
             STATE.data["history"] = STATE.data["history"][-500:]
             if status == "done":
                 inv = STATE.data["inventory"]
-                inv[step["mat_id"]] = int(inv.get(step["mat_id"], 0) or 0) + int(step["gain"])
+                inv[step["mat_id"]] = int(inv.get(step["mat_id"], 0) or 0) + _actual_gain(step, spent)
             elif status == "failed":
                 today.setdefault("blacklist", []).append(step["mat_id"])
                 today["blacklist"] = list(dict.fromkeys(today["blacklist"]))
@@ -706,13 +719,18 @@ class Runner:
         if status == "failed":
             self._log(f"{step['name']} 今日不再尝试（已加入当日黑名单）")
 
-    def _finish(self, state, message):
+    def _finish(self, state, message, preserve_execution=False):
+        """收尾：落状态与 runtime。preserve_execution=True（执行中异常崩溃）时保留
+        launched/exited 的未记账槽位，下次启动对账仍能看到并处理；正常路径清空。"""
         with self.lock:
             self.status["state"] = state
             self.status["message"] = message
             self.status["finished_at"] = datetime.now().strftime("%H:%M:%S")
             self.status["current"] = None
-            self._write_runtime(state="stopped", execution=None)
+            record = self._runtime.get("execution")
+            in_flight = isinstance(record, dict) and record.get("phase") in ("launched", "exited")
+            self._write_runtime(
+                state="stopped", execution=record if (preserve_execution and in_flight) else None)
 
 
 RUNNER = Runner()

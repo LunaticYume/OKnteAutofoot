@@ -44,10 +44,16 @@ def main():
     # ---- 1) 属性→技能书系（多数派提示；技能书系按角色个体为准——存在跨属性例外）----
     attr_votes = {}
     for material, members in mysqil["charSkillBook"].items():
-        n = SKILL_BOOK_TO_N[material]
+        n = SKILL_BOOK_TO_N.get(material)
+        if n is None:
+            print(f"  警告：未登记的技能书系『{material}』，跳过属性投票")
+            continue
         for member in members:
             name = member.replace("「", "").replace("」", "")
-            entry = next(c for c in game["characters"] if c["name"] == name)
+            entry = next((c for c in game["characters"] if c["name"] == name), None)
+            if entry is None:
+                print(f"  警告：书系『{material}』成员『{name}』不在角色目录，跳过")
+                continue
             attr_votes.setdefault(entry["attribute"], {}).setdefault(n, []).append(name)
     attr_map = {}
     exceptions = []
@@ -82,7 +88,11 @@ def main():
             print(f"  {name}: mysqil 未覆盖，保留既有调研值"
                   f"（skill={entry.get('skill_series')}）")
             continue
-        entry["skill_series"] = f"ability_{SKILL_BOOK_TO_N[skill_book]}"
+        book_n = SKILL_BOOK_TO_N.get(skill_book)
+        if book_n is None:
+            print(f"  {name}: 技能书系『{skill_book}』未登记，跳过该角色")
+            continue
+        entry["skill_series"] = f"ability_{book_n}"
         entry["skill_confidence"] = "high"
         entry["skill_book_name"] = skill_book
         entry["boss_material"] = {"mat_id": BOSS_MAT_ID[boss_mat], "boss": BOSS_NAME[boss_mat],
@@ -92,14 +102,12 @@ def main():
                                     "total": 8 + 3,  # 技能段 8 + 天赋 3（mysqil skillUpgrade/talentUnlock）
                                     "confidence": "high"}
         entry["mob_family"] = FIELD_FAMILY_SHORT[field]
-        entry["mob_base_total"] = (sum(v[0] for v in mysqil["charBreak"].values())  # 突破小怪白当量
+        entry["mob_base_total"] = (sum(v[1] for v in mysqil["charBreak"].values())  # 突破小怪白当量（charBreak 第2列；第1列是BOSS材料86）
                                    + sum(v[1] for v in mysqil["skillUpgrade"].values()))  # 技能段白当量
         entry.pop("_note", None)
         updated += 1
     print(f"角色映射重写: {updated} 名（全部 high）")
     game["source"] = "https://wiki.mysqil.com/tools/cultivation（DetailedCalc.js 权威数值，2026-10-28 抓取）"
-    json.dump(game, open(os.path.join(DATA, "game_data.json"), "w", encoding="utf-8"),
-              ensure_ascii=False, indent=2)
 
     # ---- 3) requirements.json：mysqil 精确分段 ----
     def seg(items):
@@ -156,8 +164,6 @@ def main():
                               "_note": "井屑消耗 mysqil 未收录，待校准"},
         },
     }
-    json.dump(requirements, open(os.path.join(DATA, "requirements.json"), "w", encoding="utf-8"),
-              ensure_ascii=False, indent=2)
     print("requirements.json: char_level 7段 / ability 10段 / arc 7段（mysqil 权威）")
 
     # ---- 4) yields.json：鉴别7 每局掉落 ----
@@ -171,8 +177,6 @@ def main():
     y["note"] = ("per_run：体力本每轮(40体力)掉落，口径=鉴别7（游戏内材料鉴别等级，站内实测权威值，"
                  "可按你实际鉴别等级调整）。hunter_yield：追猎每局(60体力)BOSS掉落（50级约8个）。"
                  "coin 已按鉴别7 校准为 12万/局，无需再手填。")
-    json.dump(y, open(os.path.join(DATA, "yields.json"), "w", encoding="utf-8"),
-              ensure_ascii=False, indent=2)
     print("yields.json: coin=12万 / exp_char=22.5万 / exp_arc=12.5万 / 书·罐头=18（鉴别7）")
 
     # ---- 5) 交叉验证 ----
@@ -182,6 +186,15 @@ def main():
         + sum(v[2] for v in mysqil["charBreak"].values())
     print(f"交叉验证: BOSS 合计 {boss_total}（=86 ✓）；"
           f"角色硬币合计 {coin_total:,}（独立调研 215万 ✓）")
+
+    # ---- 6) 全部落盘（全部计算与校验通过后才写：中途崩溃不会留下半套互相矛盾的数据）----
+    json.dump(game, open(os.path.join(DATA, "game_data.json"), "w", encoding="utf-8"),
+              ensure_ascii=False, indent=2)
+    json.dump(requirements, open(os.path.join(DATA, "requirements.json"), "w", encoding="utf-8"),
+              ensure_ascii=False, indent=2)
+    json.dump(y, open(os.path.join(DATA, "yields.json"), "w", encoding="utf-8"),
+              ensure_ascii=False, indent=2)
+    print("已落盘: game_data.json / requirements.json / yields.json")
 
 
 if __name__ == "__main__":
