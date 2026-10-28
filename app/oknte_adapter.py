@@ -127,8 +127,27 @@ class OkNte:
         elif not isinstance(hunter, dict):
             warnings.append("daily_anomaly_hunter 段不是对象，追猎预留将无法写入")
 
+    # 进程检测结果短缓存（类级，跨实例共享——main 每个请求都会新建 OkNte 实例）。
+    # 仅供展示类调用复用；写配置前的安全检测必须走 is_running() 实时判定。
+    RUN_CACHE_TTL = 5.0
+    _RUN_CACHE = {}  # root -> (result: bool, monotonic 时间戳)
+
     def is_running(self):
-        """ok-nte.exe 或其 python 主进程是否在运行。检测失败按运行中处理（保守）。"""
+        """ok-nte.exe 或其 python 主进程是否在运行。检测失败按运行中处理（保守）。
+        结果写入类级短缓存，供 is_running_cached() 在 TTL 内复用（省去 2~3s 的 PowerShell 查询）。"""
+        result = self._detect_running()
+        OkNte._RUN_CACHE[self.root] = (result, time.monotonic())
+        return result
+
+    def is_running_cached(self, ttl=None):
+        """展示用：TTL 内直接返回上次检测结果，过期才重新检测。"""
+        ttl = OkNte.RUN_CACHE_TTL if ttl is None else ttl
+        hit = OkNte._RUN_CACHE.get(self.root)
+        if hit is not None and (time.monotonic() - hit[1]) < ttl:
+            return hit[0]
+        return self.is_running()
+
+    def _detect_running(self):
         try:
             out = subprocess.run(
                 ["tasklist", "/FI", "IMAGENAME eq ok-nte.exe", "/NH"],
