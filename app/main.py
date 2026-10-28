@@ -323,7 +323,7 @@ def perform_dry_run(oknte):
     与真实执行共用 planner.make_plan、compat_check、build_anomaly_patch（单一逻辑源）。
     """
     compat = oknte.compat_check()
-    result = {"compat": compat, "oknte_running": oknte.is_running()}
+    result = {"compat": compat, "oknte_running": oknte.is_running_cached()}
     if compat["status"] == "incompatible":
         result.update({"ok": False, "error": "兼容性检查失败，未生成补丁", "patch": None})
         return result
@@ -451,7 +451,7 @@ class Handler(BaseHTTPRequestHandler):
                 "game_characters": gd_chars,
                 "compat": oknte.compat_check(),
                 "admin": is_admin(),
-                "oknte_running": oknte.is_running(),
+                "oknte_running": oknte.is_running_cached(),
             })
         elif path == "/api/status":
             snap = RUNNER.snapshot()
@@ -488,7 +488,7 @@ class Handler(BaseHTTPRequestHandler):
             oknte = self._oknte()
             self._send(200, {
                 "plan": planner.make_plan(oknte),
-                "oknte_running": oknte.is_running(),
+                "oknte_running": oknte.is_running_cached(),
             })
         elif path == "/api/export":
             self._send(200, build_export())
@@ -706,7 +706,7 @@ class Handler(BaseHTTPRequestHandler):
             oknte = self._oknte()
             self._send(200, {
                 "plan": planner.make_plan(oknte),
-                "oknte_running": oknte.is_running(),
+                "oknte_running": oknte.is_running_cached(),
             })
         elif path == "/api/dry-run":
             # 纯读预演：运行中也不修改任何数据，故豁免"运行中禁改"拦截
@@ -988,6 +988,10 @@ def _run_panel():
 
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
+    # 预热进程检测缓存：面板打开时 bootstrap/计划接口直接命中缓存，省 2~3s 首屏等待
+    threading.Thread(
+        target=lambda: OkNte(STATE.settings["oknte_root"]).is_running_cached(),
+        daemon=True).start()
     ui = _resolve_ui_mode()
     try:
         if ui == "none":  # 纯服务模式（自动化测试）：不开任何 UI
