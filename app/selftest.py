@@ -2168,6 +2168,10 @@ def test_game_data_custom_overlay():
 def test_wiki_fetch_parse_offline():
     """离线解析器自测：直接解析仓库内 DetailedCalc.fresh.js 夹具，不触网。"""
     from app import wiki_fetch as wf
+    if not wf.FRESH_JS.is_file():
+        # dist 等精简环境未随包 mysqil/ 快照：仓库全量自测已覆盖，此处跳过
+        print("（无 mysqil 快照，跳过离线解析断言）")
+        return
     groups = wf.parse_groupings(wf.FRESH_JS.read_text(encoding="utf-8"))
     for key in wf.GROUP_KEYS:
         assert key in groups and isinstance(groups[key], dict), key
