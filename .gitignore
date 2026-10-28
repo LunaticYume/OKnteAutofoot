@@ -16,3 +16,7 @@ tools/_build/
 data/backups/
 data/*.bak
 data/runtime.json
+
+# 图鉴覆盖层（用户手录的角色/武器；属用户数据不入库）
+data/game_data_custom.json
+data/game_data_custom.json.bak

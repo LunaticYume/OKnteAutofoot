@@ -2119,6 +2119,109 @@ def compat_status_in(report):
     return "compatible" in report
 
 
+# ---------- 用例 18：图鉴覆盖层 + wiki 解析器（阶段19） ----------
+
+@case
+def test_game_data_custom_overlay():
+    tmp = tempfile.mkdtemp(prefix="oknte_codex_")
+    orig_custom = game_data_mod.CUSTOM_FILE
+    game_data_mod.CUSTOM_FILE = os.path.join(tmp, "game_data_custom.json")
+    try:
+        base_bytes = open(game_data_mod.GAME_DATA_FILE, "rb").read()
+        # 1) 新增基础目录没有的自定义角色
+        entry = {"name": "图鉴测试角色", "rarity": "S", "live": True,
+                 "attribute": "光", "matter_state": None, "version": "手工测试",
+                 "skill_series": "ability_2", "skill_confidence": "manual",
+                 "boss_material": {"mat_id": "boss_x", "boss": "测试BOSS",
+                                   "total": 86, "confidence": "manual"},
+                 "weekly_material": None, "mob_family": "絮语", "mob_base_total": 390}
+        game_data_mod.upsert_custom("characters", entry)
+        names = [c["name"] for c in game_data_mod.load()["characters"]]
+        assert "图鉴测试角色" in names, names[-3:]
+        # 2) 同名覆盖既有目录条目（整条替换语义），且基础文件绝不被修改
+        game_data_mod.upsert_custom("characters", {"name": "浔", "rarity": "S",
+                                                   "live": True, "version": "手工覆盖"})
+        xun = next(c for c in game_data_mod.load()["characters"] if c["name"] == "浔")
+        assert xun["version"] == "手工覆盖", xun
+        assert open(game_data_mod.GAME_DATA_FILE, "rb").read() == base_bytes, \
+            "基础 game_data.json 不得被覆盖层写入"
+        # 3) 武器 upsert 幂等（同名覆盖）+ 删除
+        game_data_mod.upsert_custom("weapons", {"name": "图鉴测试弓", "rarity": "S"})
+        game_data_mod.upsert_custom("weapons", {"name": "图鉴测试弓", "rarity": "A"})
+        assert game_data_mod.custom_entries()["weapons"][0]["rarity"] == "A"
+        assert game_data_mod.remove_custom("weapons", "图鉴测试弓") is True
+        assert game_data_mod.remove_custom("weapons", "图鉴测试弓") is False
+        # 4) 全部删空后目录恢复原样
+        game_data_mod.remove_custom("characters", "图鉴测试角色")
+        game_data_mod.remove_custom("characters", "浔")
+        assert game_data_mod.custom_entries()["characters"] == []
+        merged3 = game_data_mod.load()
+        assert all(c["name"] != "图鉴测试角色" for c in merged3["characters"])
+        xun3 = next(c for c in merged3["characters"] if c["name"] == "浔")
+        assert xun3.get("version") != "手工覆盖", "删除覆盖层后应回落基础目录值"
+    finally:
+        game_data_mod.CUSTOM_FILE = orig_custom
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_wiki_fetch_parse_offline():
+    """离线解析器自测：直接解析仓库内 DetailedCalc.fresh.js 夹具，不触网。"""
+    from app import wiki_fetch as wf
+    groups = wf.parse_groupings(wf.FRESH_JS.read_text(encoding="utf-8"))
+    for key in wf.GROUP_KEYS:
+        assert key in groups and isinstance(groups[key], dict), key
+    assert sum(len(v) for v in groups["charSkillBook"].values()) == 20, "权威覆盖 20 名角色"
+    assert wf.reverse_lookup(groups, "浔") == {
+        "charSkillBook": "雏鸟的希冀", "charBossMat": "倾诉花种",
+        "charWeeklyMat": "名为炫耀的裙袂", "charFieldMat": "失落絮语"}
+    p = wf.build_prefill(groups, "浔")
+    assert p["found"], p
+    assert p["prefill"]["skill_series"] == "ability_2"
+    assert p["prefill"]["boss_material"] == {"mat_id": "boss_flower_seed",
+                                             "boss": "塞润尼缇", "total": 86,
+                                             "confidence": "manual"}
+    assert p["prefill"]["mob_base_total"] == 390
+    assert wf.build_prefill(groups, "零")["found"], "「零」括号规则"
+    p2 = wf.build_prefill(groups, "灵可")
+    assert not p2["found"] and set(p2["missing"]) == set(wf.GROUP_KEYS), "未覆盖角色如实报告"
+
+
+@case
+def test_codex_custom_material():
+    import app.main as main_mod
+    tmp = tempfile.mkdtemp(prefix="oknte_codex_mat_")
+    orig_main_datadir = main_mod.DATA_DIR
+    orig_planner_datadir = planner.DATA_DIR
+    main_mod.DATA_DIR = tmp
+    planner.DATA_DIR = tmp
+    # 预置三张表副本（add_custom_material 内部的 reload_tables 需要同目录三表齐全）
+    for name in ("materials.json", "yields.json", "requirements.json"):
+        shutil.copy(os.path.join(orig_planner_datadir, name), os.path.join(tmp, name))
+    try:
+        entry = main_mod.add_custom_material({"id": "boss_test_new",
+                                              "display_name": "测试新材料",
+                                              "category": "BOSS掉落",
+                                              "obtain": "hunter", "source": "测试来源"})
+        assert entry["id"] == "boss_test_new" and entry["obtain"] == "hunter"
+        saved = json.load(open(os.path.join(tmp, "materials.json"), encoding="utf-8"))
+        assert "boss_test_new" in [m["id"] for m in saved["extra_materials"]]
+        assert "boss_test_new" in planner.ALL_ORDER, "登记后应进入全量目录白名单"
+        for bad in ({"id": "boss_test_new", "display_name": "重复"},
+                    {"id": "BAD ID", "display_name": "x"},
+                    {"id": "boss_ok", "display_name": ""}):
+            try:
+                main_mod.add_custom_material(bad)
+                raise AssertionError(f"应拒绝：{bad}")
+            except ValueError:
+                pass
+    finally:
+        main_mod.DATA_DIR = orig_main_datadir
+        planner.DATA_DIR = orig_planner_datadir
+        planner.reload_tables()  # 恢复生产内存表
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 # ---------- 汇总 ----------
 
 def main():

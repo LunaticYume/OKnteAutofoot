@@ -233,6 +233,7 @@
     <nav id="nav">
       <button data-t="overview" class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></svg><span>总览</span></button>
       <button data-t="chars"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>角色</span></button>
+      <button data-t="codex"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg><span>图鉴数据</span></button>
       <button data-t="common"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 3h15"/><path d="M6 3v16a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V3"/><path d="M6 14h12"/></svg><span>通用材料</span></button>
       <button data-t="inv"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg><span>库存</span></button>
       <button data-t="tables"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/><path d="M12 3v18"/></svg><span>数据表</span></button>
@@ -1172,8 +1173,180 @@ async function renderHistory(){
   });
 }
 
+/* ---------- 图鉴数据（手动录入新角色/武器 + wiki 拉取预填） ---------- */
+let CODEX_CUSTOM = {characters: [], weapons: []};
+const CX_FAMILIES = ["絮语", "掠影", "数符", "幻妄"];
+
+async function renderCodex(){
+  const r = await api("/api/game-data").catch(e=>({error:e.message}));
+  if(r.error){ $("#main").innerHTML=`<div class="card"><div class="banner warn">${esc(r.error)}</div></div>`; return; }
+  CODEX_CUSTOM = r.custom || {characters: [], weapons: []};
+  const attrs = Object.keys(r.attribute_to_skill_series||{}).filter(k=>k!=="_note" && r.attribute_to_skill_series[k]);
+  const states = Object.keys(r.matter_state_to_can||{}).filter(k=>k!=="_note" && r.matter_state_to_can[k]);
+  const opt = (list, cur)=>list.map(v=>`<option value="${esc(v)}" ${v===cur?"selected":""}>${esc(v)}</option>`).join("");
+  $("#main").innerHTML=`
+    <div class="card"><h3>角色录入<span class="h-sub">写入覆盖层（同名即更新，如 1.5 上线把未上线角色翻启用）；不会被未来数据落库冲掉</span></h3>
+      <div class="set-row"><label>角色名</label><input id="cx_name" placeholder="如 曳尔沐" style="width:140px">
+        <label>稀有度</label><select id="cx_rarity"><option>S</option><option>A</option></select>
+        <label>属性</label><select id="cx_attr"><option value="">（未填）</option>${opt(attrs)}</select>
+        <label>物态</label><select id="cx_state"><option value="">（未填）</option>${opt(states)}</select>
+        <label>上线版本</label><input id="cx_version" placeholder="如 1.5上半(约11/5)" style="width:140px">
+        <label class="switch" title="是否已实装"><input type="checkbox" id="cx_live" checked><span class="sl"></span></label><span class="muted">已实装</span></div>
+      <div class="set-row"><label>专武</label><input id="cx_weapon" placeholder="专武名（可空）" style="width:170px">
+        <button class="btn sec mini" id="btnWikiFetch">🌐 从 wiki 拉取养成预填</button>
+        <span id="cx_wiki_info" class="muted"></span></div>
+      <div class="banner info" id="cx_wiki_summary" style="display:none"></div>
+      <div class="set-row"><label>技能书系</label><select id="cx_skill"><option value="">（未填）</option>${[1,2,3,4,5].map(n=>`<option value="ability_${n}">ability_${n}</option>`).join("")}</select>
+        <label>书系名</label><input id="cx_book" placeholder="如 雏鸟的希冀" style="width:130px">
+        <label>小怪族</label><select id="cx_family"><option value="">（未填）</option>${opt(CX_FAMILIES)}</select>
+        <label>小怪白当量</label><input type="number" id="cx_mob" value="390" style="width:80px"></div>
+      <div class="set-row"><label>BOSS 材料</label><input id="cx_boss_id" placeholder="mat_id 如 boss_x" style="width:150px">
+        <label>BOSS 名</label><input id="cx_boss_name" placeholder="如 海囚" style="width:100px">
+        <label>总量</label><input type="number" id="cx_boss_total" value="86" style="width:70px">
+        <label>周本材料</label><input id="cx_wk_id" placeholder="mat_id 如 wk_x" style="width:130px">
+        <label>总量</label><input type="number" id="cx_wk_total" value="11" style="width:70px"></div>
+      <div class="row"><button class="btn" id="btnCharSave">保存角色到图鉴</button>
+        <button class="btn sec" id="btnCharReset">清空表单</button>
+        <span class="muted">BOSS/周本若是全新材料，请先在下方「新材料登记」登记 id</span></div>
+    </div>
+    <div class="card"><h3>武器录入<span class="h-sub">与目录 weapons 条目同构；同名即更新</span></h3>
+      <div class="set-row"><label>武器名</label><input id="w_name" placeholder="如 专武名" style="width:170px">
+        <label>稀有度</label><select id="w_rarity"><option>S</option><option>A</option></select>
+        <label>物态</label><select id="w_state"><option value="">（未填）</option>${opt(states)}</select>
+        <label>适用角色</label><input id="w_owner" placeholder="角色名（可空）" style="width:130px">
+        <label>获取途径</label><input id="w_acq" placeholder="如 限定·特别研募" style="width:160px">
+        <button class="btn" id="btnWeaponSave">保存武器到图鉴</button></div>
+    </div>
+    <div class="card"><h3>自定义条目清单<span class="h-sub">存于 data/game_data_custom.json，加载时按名字覆盖基础目录；删除不影响基础目录</span></h3>
+      <div id="cx_custom_list"></div>
+    </div>
+    <div class="card"><h3>新材料登记<span class="h-sub">新角色的 BOSS/周本/小怪材料先登记 id（小写蛇形），角色导入的直接需求才会收</span></h3>
+      <div class="set-row"><label>材料 id</label><input id="m_id" placeholder="如 boss_new_x / wk_new_x" style="width:170px">
+        <label>显示名</label><input id="m_display" placeholder="如 新BOSS材料" style="width:140px">
+        <label>分类</label><input id="m_category" placeholder="如 BOSS掉落（角色突破）" style="width:170px">
+        <label>来源</label><select id="m_obtain"><option value="external">外部</option><option value="hunter">追猎</option></select>
+        <label>说明</label><input id="m_source" placeholder="来源描述（可空）" style="width:160px"></div>
+      <button class="btn" id="btnMatSave">登记新材料</button>
+    </div>`;
+  $("#btnWikiFetch").onclick = onCodexWikiFetch;
+  $("#btnCharSave").onclick = onCodexCharSave;
+  $("#btnCharReset").onclick = ()=>{["cx_name","cx_version","cx_weapon","cx_book","cx_boss_id","cx_boss_name","cx_wk_id"].forEach(id=>{const el=document.getElementById(id); if(el) el.value="";});
+    ["cx_attr","cx_state","cx_skill","cx_family"].forEach(id=>{const el=document.getElementById(id); if(el) el.value="";});
+    $("#cx_live").checked=true; $("#cx_mob").value=390; $("#cx_boss_total").value=86; $("#cx_wk_total").value=11;
+    $("#cx_wiki_info").textContent=""; $("#cx_wiki_summary").style.display="none";};
+  $("#btnWeaponSave").onclick = onCodexWeaponSave;
+  $("#btnMatSave").onclick = onCodexMatSave;
+  renderCodexCustomList();
+}
+async function onCodexWikiFetch(){
+  const name=$("#cx_name").value.trim();
+  if(!name){toast("请先填写角色名","err");return;}
+  const info=$("#cx_wiki_info"); info.textContent="拉取中…";
+  $("#cx_wiki_summary").style.display="none";
+  try{
+    const r2=await api("/api/game-data/wiki-fetch?name="+encodeURIComponent(name));
+    if(r2.wiki_summary)
+      info.textContent=`wiki 四组成员数：${Object.entries(r2.wiki_summary.groups).map(([k,v])=>k+"="+v).join(" / ")}（${r2.wiki_summary.fetched_at}）`;
+    if(!r2.ok){toast(r2.error||"拉取失败","err");return;}
+    if(!r2.found){toast(r2.note||"wiki 未收录该角色","err");return;}
+    const p=r2.prefill;
+    $("#cx_skill").value=p.skill_series||"";
+    $("#cx_book").value=p.skill_book_name||"";
+    $("#cx_family").value=p.mob_family||"";
+    $("#cx_mob").value=p.mob_base_total??390;
+    if(p.boss_material){$("#cx_boss_id").value=p.boss_material.mat_id;$("#cx_boss_name").value=p.boss_material.boss||"";$("#cx_boss_total").value=p.boss_material.total;}
+    if(p.weekly_material){$("#cx_wk_id").value=p.weekly_material.mat_id;$("#cx_wk_total").value=p.weekly_material.total;}
+    const s=$("#cx_wiki_summary"); s.style.display="flex";
+    s.innerHTML=`已从 wiki 预填：书系 <b>${esc(p.skill_series)}</b>（${esc(p.skill_book_name)}）· BOSS <b>${esc(p.boss_material.mat_id)}</b>（${esc(p.boss_material.boss)}×${p.boss_material.total}）· 周本 <b>${esc(p.weekly_material.mat_id)}</b> · 小怪族 <b>${esc(p.mob_family)}</b>（白当量 ${p.mob_base_total}）——保存前请核对`;
+    toast("wiki 预填完成，请核对后保存");
+  }catch(e){ info.textContent=""; alertErr(e); }
+}
+async function onCodexCharSave(){
+  const name=$("#cx_name").value.trim();
+  if(!name){toast("角色名必填","err");return;}
+  const entry={name, rarity:$("#cx_rarity").value,
+    attribute:$("#cx_attr").value||null, matter_state:$("#cx_state").value||null,
+    version:$("#cx_version").value.trim()||null, live:$("#cx_live").checked,
+    signature_weapon:$("#cx_weapon").value.trim()||null,
+    skill_series:$("#cx_skill").value||null, skill_book_name:$("#cx_book").value.trim()||null,
+    boss_material:$("#cx_boss_id").value.trim()?{mat_id:$("#cx_boss_id").value.trim(),
+      boss:$("#cx_boss_name").value.trim(), total:+$("#cx_boss_total").value||86}:null,
+    weekly_material:$("#cx_wk_id").value.trim()?{mat_id:$("#cx_wk_id").value.trim(),
+      total:+$("#cx_wk_total").value||11}:null,
+    mob_family:$("#cx_family").value||null,
+    mob_base_total:$("#cx_family").value?(+$("#cx_mob").value||390):null};
+  try{
+    await api("/api/game-data/custom",{action:"upsert_character",entry});
+    toast(`已保存角色「${name}」到图鉴覆盖层`);
+    renderCodex();
+  }catch(e){alertErr(e);}
+}
+async function onCodexWeaponSave(){
+  const name=$("#w_name").value.trim();
+  if(!name){toast("武器名必填","err");return;}
+  const entry={name, rarity:$("#w_rarity").value, matter_state:$("#w_state").value||null,
+    owner:$("#w_owner").value.trim()||null, acquisition:$("#w_acq").value.trim()||null};
+  try{
+    await api("/api/game-data/custom",{action:"upsert_weapon",entry});
+    toast(`已保存武器「${name}」到图鉴覆盖层`);
+    renderCodex();
+  }catch(e){alertErr(e);}
+}
+async function onCodexMatSave(){
+  const body={id:$("#m_id").value.trim(), display_name:$("#m_display").value.trim(),
+    category:$("#m_category").value.trim(), obtain:$("#m_obtain").value, source:$("#m_source").value.trim()};
+  if(!body.id||!body.display_name){toast("材料 id 与显示名必填","err");return;}
+  try{
+    const r2=await api("/api/game-data/custom-material",body);
+    toast(`新材料「${r2.added.display_name}」已登记`);
+    ["m_id","m_display","m_category","m_source"].forEach(id=>{const el=document.getElementById(id); if(el) el.value="";});
+  }catch(e){alertErr(e);}
+}
+function fillCodexCharForm(e){
+  $("#cx_name").value=e.name||""; $("#cx_rarity").value=e.rarity||"S";
+  $("#cx_attr").value=e.attribute||""; $("#cx_state").value=e.matter_state||"";
+  $("#cx_version").value=e.version||""; $("#cx_live").checked=!!e.live;
+  $("#cx_weapon").value=e.signature_weapon||""; $("#cx_skill").value=e.skill_series||"";
+  $("#cx_book").value=e.skill_book_name||""; $("#cx_family").value=e.mob_family||"";
+  $("#cx_mob").value=e.mob_base_total??390;
+  $("#cx_boss_id").value=(e.boss_material||{}).mat_id||""; $("#cx_boss_name").value=(e.boss_material||{}).boss||"";
+  $("#cx_boss_total").value=(e.boss_material||{}).total??86;
+  $("#cx_wk_id").value=(e.weekly_material||{}).mat_id||""; $("#cx_wk_total").value=(e.weekly_material||{}).total??11;
+  window.scrollTo({top:0,behavior:"smooth"});
+}
+function fillCodexWeaponForm(e){
+  $("#w_name").value=e.name||""; $("#w_rarity").value=e.rarity||"S";
+  $("#w_state").value=e.matter_state||""; $("#w_owner").value=e.owner||"";
+  $("#w_acq").value=e.acquisition||"";
+  window.scrollTo({top:0,behavior:"smooth"});
+}
+function renderCodexCustomList(){
+  const host=$("#cx_custom_list"); if(!host)return;
+  const mk=(kind,label)=>{
+    const list=CODEX_CUSTOM[kind]||[];
+    return `<div style="margin:6px 0"><div class="muted">${label}（${list.length}）</div>
+      <div class="row" style="gap:6px;flex-wrap:wrap;margin-top:4px">
+      ${list.length?list.map(e=>`<span class="lib-chip">${esc(e.name)}
+        <button data-cx-edit="${kind}" data-name="${esc(e.name)}" title="编辑回填表单" style="color:var(--acc);border:none;background:none;cursor:pointer">✎</button>
+        <button data-cx-del="${kind}" data-name="${esc(e.name)}" title="删除" style="border:none;background:none;cursor:pointer">×</button></span>`).join("")
+        :'<span class="muted">（暂无）</span>'}</div></div>`;
+  };
+  host.innerHTML=mk("characters","角色")+mk("weapons","武器");
+  host.querySelectorAll("[data-cx-del]").forEach(btn=>btn.onclick=async()=>{
+    if(!(await qConfirm(`从图鉴覆盖层删除「${btn.dataset.name}」？（基础目录不受影响）`)))return;
+    try{await api("/api/game-data/custom",{action:"delete",kind:btn.dataset.cxDel,name:btn.dataset.name});
+      toast("已删除"); renderCodex();}catch(e){alertErr(e);}
+  });
+  host.querySelectorAll("[data-cx-edit]").forEach(btn=>btn.onclick=()=>{
+    const list=CODEX_CUSTOM[btn.dataset.cxEdit]||[];
+    const e=list.find(x=>x.name===btn.dataset.name); if(!e)return;
+    if(btn.dataset.cxEdit==="characters") fillCodexCharForm(e); else fillCodexWeaponForm(e);
+  });
+}
+
 /* ---------- 框架 ---------- */
 const PAGE_TITLES={overview:["总览","当日计划 · 执行控制 · 推演"],chars:["角色","养成目标与直接材料需求"],
+  codex:["图鉴数据","手动录入新角色/武器 + wiki 拉取预填"],
   common:["通用材料","每角色通用数量 → 具体材料映射"],inv:["库存","全量材料持有量"],
   tables:["数据表","产量 · 需求表 · 材料名校准"],settings:["设置","执行策略 · 体力模型 · 导入导出"],
   history:["历史","执行记录与产量校准闭环"]};
@@ -1200,7 +1373,7 @@ function switchPage(t){
   $("#pageSub").textContent=title[1];
   clearInterval(TIMER);
   if(!BOOT) return;  // bootstrap 未完成（兼容检测约需数秒）：先记下目标页，boot 完成后按 CURRENT 渲染
-  ({overview:renderOverview,chars:renderChars,common:renderCommon,inv:renderInv,
+  ({overview:renderOverview,chars:renderChars,codex:renderCodex,common:renderCommon,inv:renderInv,
     tables:renderTables,settings:renderSettings,history:renderHistory})[t]();
   if(t==="overview") TIMER=setInterval(refreshStatus,2000);
 }

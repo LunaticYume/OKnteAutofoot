@@ -14,6 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from app import planner
 from app import game_data
+from app import wiki_fetch
 from app.oknte_adapter import OkNte, OkNteError
 from app.runner import RUNNER
 from app.state import (DATA_DIR, ROOT, STATE, STATE_SCHEMA, new_character,
@@ -124,6 +125,84 @@ def _sanitize_settings(raw):
             current[key] = bool(raw[key])
     current["daily_reset_hour"] = _clamp_int(current["daily_reset_hour"], 0, 23, 4)
     return current
+
+
+def _sanitize_custom_character(raw):
+    """图鉴覆盖层角色条目消毒：name 必填；养成字段可空；置信度固定 manual。"""
+    if not isinstance(raw, dict):
+        raise ValueError("角色条目必须是对象")
+    name = str(raw.get("name", "")).strip()
+    if not name:
+        raise ValueError("角色名必填")
+
+    def _text(key, limit=32):
+        value = raw.get(key)
+        return value.strip()[:limit] if isinstance(value, str) and value.strip() else None
+
+    def _mat_block(raw_block, default_total):
+        if not isinstance(raw_block, dict):
+            return None
+        mat_id = str(raw_block.get("mat_id", "")).strip()
+        if not mat_id:
+            return None
+        return {"mat_id": mat_id[:48], "boss": str(raw_block.get("boss", "")).strip()[:32],
+                "total": _clamp_int(raw_block.get("total"), 0, 10 ** 6, default_total),
+                "confidence": "manual"}
+
+    entry = {"name": name[:32],
+             "rarity": raw.get("rarity") if raw.get("rarity") in ("S", "A") else "S",
+             "live": bool(raw.get("live", True))}
+    for key in ("attribute", "matter_state", "version", "signature_weapon",
+                "skill_series", "skill_book_name", "mob_family"):
+        entry[key] = _text(key)
+    entry["boss_material"] = _mat_block(raw.get("boss_material"), 86)
+    entry["weekly_material"] = _mat_block(raw.get("weekly_material"), 11)
+    if entry["mob_family"]:
+        # 小怪白当量：留空取全角色统一口径 390（206 突破 + 184 技能）
+        entry["mob_base_total"] = _clamp_int(raw.get("mob_base_total"), 0, 10 ** 6, 390)
+    else:
+        entry["mob_base_total"] = None
+    entry["skill_confidence"] = "manual"
+    return entry
+
+
+def _sanitize_custom_weapon(raw):
+    """图鉴覆盖层武器条目消毒（与基础 weapons 条目同构：name/rarity/matter_state/owner/acquisition）。"""
+    if not isinstance(raw, dict):
+        raise ValueError("武器条目必须是对象")
+    name = str(raw.get("name", "")).strip()
+    if not name:
+        raise ValueError("武器名必填")
+    entry = {"name": name[:32],
+             "rarity": raw.get("rarity") if raw.get("rarity") in ("S", "A") else "S"}
+    for key in ("matter_state", "owner", "acquisition"):
+        value = raw.get(key)
+        entry[key] = value.strip()[:48] if isinstance(value, str) and value.strip() else None
+    return entry
+
+
+def add_custom_material(body):
+    """图鉴页新材料登记：追加进 materials.json 的 extra_materials（按 id 查重）。
+
+    新角色的 BOSS/周本/小怪材料必须先登记，extra_needs 的白名单（planner.ALL_ORDER）
+    才会收——否则角色导入的预填会被静默丢弃。
+    """
+    mat_id = str((body or {}).get("id", "")).strip()
+    if not re.fullmatch(r"[a-z0-9_]+", mat_id):
+        raise ValueError("材料 id 只允许小写字母/数字/下划线（如 boss_new_x）")
+    display = str(body.get("display_name", "")).strip()[:64]
+    if not display:
+        raise ValueError("材料显示名必填")
+    if mat_id in planner.TARGETS or mat_id in planner.EXTRA:
+        raise ValueError(f"材料 id『{mat_id}』已存在")
+    entry = {"id": mat_id, "display_name": display,
+             "category": str(body.get("category", "")).strip()[:32] or "自定义",
+             "obtain": body.get("obtain") if body.get("obtain") in ("hunter", "external") else "external",
+             "source": str(body.get("source", "")).strip()[:96]}
+    planner.MATERIALS.setdefault("extra_materials", []).append(entry)
+    _save_json_atomic(os.path.join(DATA_DIR, "materials.json"), planner.MATERIALS)
+    planner.reload_tables()
+    return entry
 
 
 def _sanitize_libraries(raw):
@@ -499,7 +578,21 @@ class Handler(BaseHTTPRequestHandler):
             if data is None:
                 self._send(500, {"error": "游戏目录 data/game_data.json 无法读取，请检查该文件"})
                 return
+            data["custom"] = game_data.custom_entries()
             self._send(200, data)
+        elif path == "/api/game-data/wiki-fetch":
+            name = ""
+            if "name=" in self.path:
+                from urllib.parse import unquote
+                name = unquote(self.path.split("name=", 1)[1].split("&")[0]).strip()
+            if not name:
+                self._send(400, {"ok": False, "error": "缺少 name 参数"})
+                return
+            try:
+                self._send(200, wiki_fetch.build_prefill_for(name))
+            except (OSError, ValueError) as e:
+                self._send(502, {"ok": False, "found": False,
+                                 "error": f"wiki 拉取失败：{e}"})
         elif path == "/api/compat-report":
             self._send(200, build_compat_report(self._oknte()),
                        "text/markdown; charset=utf-8")
@@ -601,6 +694,38 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, payload)
             else:
                 self._send(400, {"error": "action 必须是 libraries 或 character"})
+        elif path == "/api/game-data/custom":
+            action = str(body.get("action", ""))
+            try:
+                if action == "upsert_character":
+                    raw = body.get("entry") if isinstance(body.get("entry"), dict) else body
+                    entry = _sanitize_custom_character(raw)
+                    game_data.upsert_custom("characters", entry)
+                elif action == "upsert_weapon":
+                    raw = body.get("entry") if isinstance(body.get("entry"), dict) else body
+                    entry = _sanitize_custom_weapon(raw)
+                    game_data.upsert_custom("weapons", entry)
+                elif action == "delete":
+                    kind = body.get("kind")
+                    name = str(body.get("name", "")).strip()
+                    if kind not in game_data.CUSTOM_KINDS or not name:
+                        self._send(400, {"error": "kind 必须是 characters/weapons，且 name 必填"})
+                        return
+                    game_data.remove_custom(kind, name)
+                else:
+                    self._send(400, {"error": "action 必须是 upsert_character/upsert_weapon/delete"})
+                    return
+            except ValueError as e:
+                self._send(400, {"error": str(e)})
+                return
+            self._send(200, {"ok": True, "custom": game_data.custom_entries()})
+        elif path == "/api/game-data/custom-material":
+            try:
+                entry = add_custom_material(body)
+            except ValueError as e:
+                self._send(400, {"error": str(e)})
+                return
+            self._send(200, {"ok": True, "added": entry, "materials": planner.MATERIALS})
         elif path == "/api/common-costs/save":
             clean = _sanitize_common_costs(body)
             with STATE.lock:

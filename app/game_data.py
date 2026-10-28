@@ -2,13 +2,19 @@
 
 目录与用户状态严格分离（阶段13既定原则）：本模块只读目录、生成预填数据，
 绝不直接改用户状态——落库由 main.py 的 API 在校验后执行。
+
+图鉴覆盖层（阶段19）：用户在「图鉴数据」页手动录入/更新的角色与武器写入
+data/game_data_custom.json（按 name 覆盖合并，绝不写回基础 game_data.json），
+因此不会被未来的 mysqil_ingest 或官方数据更新冲掉。
 """
 import json
 import os
 
-from .state import DATA_DIR
+from .state import DATA_DIR, load_json, save_json_atomic
 
 GAME_DATA_FILE = os.path.join(DATA_DIR, "game_data.json")
+CUSTOM_FILE = os.path.join(DATA_DIR, "game_data_custom.json")
+CUSTOM_KINDS = ("characters", "weapons")
 
 _MOB_FAMILY_TO_IDS = {
     "絮语": ("mob_whisper_c", "mob_whisper_b", "mob_whisper_a"),
@@ -38,7 +44,76 @@ COMMON_COST_DEFAULTS = {
 
 def load():
     with open(GAME_DATA_FILE, encoding="utf-8") as f:
-        return json.load(f)
+        data = json.load(f)
+    return _merge_custom(data)
+
+
+def _merge_custom(data):
+    """把图鉴覆盖层按 name 合并进目录副本：同名覆盖（如 1.5 上线把未上线角色翻 live）、
+    新名字追加；基础 game_data.json 永不被修改。覆盖层缺失/损坏时静默跳过。"""
+    custom = load_json(CUSTOM_FILE)
+    if not isinstance(custom, dict):
+        return data
+    for kind in CUSTOM_KINDS:
+        entries = custom.get(kind)
+        if not isinstance(entries, list):
+            continue
+        base_list = data.setdefault(kind, [])
+        index = {e.get("name"): i for i, e in enumerate(base_list)
+                 if isinstance(e, dict) and e.get("name")}
+        for entry in entries:
+            if not isinstance(entry, dict) or not entry.get("name"):
+                continue
+            name = entry["name"]
+            if name in index:
+                base_list[index[name]] = entry
+            else:
+                base_list.append(entry)
+                index[name] = len(base_list) - 1
+    return data
+
+
+def custom_entries():
+    """覆盖层原始内容（供 /api/game-data 展示与 UI 编辑回填）。"""
+    doc = load_json(CUSTOM_FILE)
+    if not isinstance(doc, dict):
+        doc = {}
+    return {"version": doc.get("version", 1),
+            "characters": doc.get("characters") or [],
+            "weapons": doc.get("weapons") or []}
+
+
+def upsert_custom(kind, entry):
+    """新增/更新一条覆盖层条目（kind ∈ characters/weapons；按 name 覆盖）。"""
+    if kind not in CUSTOM_KINDS:
+        raise ValueError(f"kind 必须是 {'/'.join(CUSTOM_KINDS)}")
+    name = entry.get("name")
+    if not name:
+        raise ValueError("条目缺少 name")
+    doc = custom_entries()
+    lst = doc.setdefault(kind, [])
+    for i, existing in enumerate(lst):
+        if existing.get("name") == name:
+            lst[i] = entry
+            break
+    else:
+        lst.append(entry)
+    save_json_atomic(CUSTOM_FILE, doc)
+    return entry
+
+
+def remove_custom(kind, name):
+    """从覆盖层删除一条；返回是否真的删除了（不存在的名字不算错误）。"""
+    if kind not in CUSTOM_KINDS:
+        raise ValueError(f"kind 必须是 {'/'.join(CUSTOM_KINDS)}")
+    doc = custom_entries()
+    lst = doc.setdefault(kind, [])
+    kept = [e for e in lst if e.get("name") != name]
+    if len(kept) == len(lst):
+        return False
+    doc[kind] = kept
+    save_json_atomic(CUSTOM_FILE, doc)
+    return True
 
 
 def find_character(data, name):
