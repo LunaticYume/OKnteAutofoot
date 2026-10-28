@@ -6,67 +6,247 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   :root{
-    --bg:#101418; --panel:#171d24; --panel2:#1d252e; --line:#2a3441;
-    --txt:#dbe4ee; --dim:#8a99ab; --acc:#4da3ff; --ok:#3ecf8e; --warn:#f0b429; --err:#ff6b6b;
+    --bg:#0b0f14; --panel:#131a22; --panel2:#1a232e; --panel3:#212d3b;
+    --line:#223041; --line2:#2d3d51;
+    --txt:#e6eef7; --dim:#8fa2b7; --faint:#5f7186;
+    --acc:#53b6ff; --acc-deep:#1f6fbd; --acc-soft:rgba(83,182,255,.12);
+    --ok:#3ecf8e; --warn:#f5b544; --err:#ff6b6b;
+    --r:14px; --shadow:0 8px 28px rgba(0,0,0,.35);
   }
   *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--txt);font:14px/1.6 "Microsoft YaHei",system-ui,sans-serif}
-  header{display:flex;align-items:center;gap:14px;padding:10px 20px;background:var(--panel);border-bottom:1px solid var(--line)}
-  header h1{font-size:17px;margin:0}
-  header .sub{color:var(--dim);font-size:12px}
-  nav{display:flex;gap:4px;padding:8px 16px;background:var(--panel);border-bottom:1px solid var(--line)}
-  nav button{background:none;border:1px solid transparent;color:var(--dim);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:14px}
-  nav button.on{color:var(--txt);background:var(--panel2);border-color:var(--line)}
-  main{padding:18px 20px;max-width:1080px;margin:0 auto}
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:14px}
-  .card h3{margin:0 0 10px;font-size:14px;color:var(--acc)}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--txt);font:14px/1.65 "Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+  b,strong{font-weight:600}
+  ::selection{background:var(--acc-deep);color:#fff}
+
+  /* ===== 布局骨架 ===== */
+  .app{display:flex;min-height:100vh}
+  .side{width:232px;flex-shrink:0;display:flex;flex-direction:column;background:var(--panel);
+    border-right:1px solid var(--line);position:sticky;top:0;height:100vh;z-index:5}
+  .logo{padding:18px 18px 14px;border-bottom:1px solid var(--line)}
+  .logo b{font-size:16px;letter-spacing:.5px;display:flex;align-items:center;gap:9px}
+  .logo b::before{content:"";width:26px;height:26px;border-radius:8px;flex-shrink:0;
+    background:linear-gradient(135deg,var(--acc),var(--acc2,#7c5cff));
+    box-shadow:0 0 14px rgba(83,182,255,.45)}
+  .logo span{display:block;font-size:11px;color:var(--faint);margin-top:3px;padding-left:35px}
+  nav#nav{display:flex;flex-direction:column;gap:2px;padding:12px 10px;flex:1;overflow-y:auto}
+  nav#nav button{display:flex;align-items:center;gap:11px;width:100%;text-align:left;
+    background:none;border:1px solid transparent;color:var(--dim);padding:9px 12px;
+    border-radius:10px;cursor:pointer;font-size:14px;transition:background .15s,color .15s}
+  nav#nav button svg{width:17px;height:17px;flex-shrink:0}
+  nav#nav button:hover{color:var(--txt);background:var(--panel2)}
+  nav#nav button.on{color:var(--txt);background:var(--acc-soft);border-color:rgba(83,182,255,.35)}
+  nav#nav button.on svg{color:var(--acc)}
+  .side-foot{padding:12px 14px;border-top:1px solid var(--line);font-size:12px}
+  .side-foot .tag{display:flex;justify-content:center;margin-bottom:6px}
+  .side-foot .tag:last-child{margin-bottom:0}
+  .content{flex:1;min-width:0;display:flex;flex-direction:column}
+  .topbar{display:flex;align-items:baseline;gap:12px;padding:16px 24px 0;max-width:1200px;width:100%;margin:0 auto}
+  .topbar h1{font-size:20px;margin:0;font-weight:650}
+  .topbar .sub{color:var(--faint);font-size:12px}
+  main{padding:14px 24px 40px;max-width:1200px;width:100%;margin:0 auto}
+  @media (max-width:920px){
+    .side{width:60px}
+    .logo b{font-size:0;gap:0;justify-content:center}.logo b::before{margin:0}
+    .logo span{display:none}
+    nav#nav button{justify-content:center;padding:10px 0}
+    nav#nav button svg{width:19px;height:19px}
+    .side-foot{display:none}
+  }
+
+  /* ===== 卡片与通用 ===== */
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
+    padding:16px 18px;margin-bottom:14px;box-shadow:var(--shadow)}
+  .card h3{margin:0 0 12px;font-size:14px;color:var(--txt);display:flex;align-items:center;gap:8px}
+  .card h3::before{content:"";width:3px;height:14px;border-radius:2px;background:var(--acc);flex-shrink:0}
+  .card h3 .h-sub{font-size:12px;color:var(--faint);font-weight:normal}
   .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
   .grid{display:grid;gap:8px}
+  .muted{color:var(--dim);font-size:12px}
+  .num{font-variant-numeric:tabular-nums}
+  .grow{flex:1}
   label{font-size:13px;color:var(--dim)}
-  input,select,textarea{background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:6px;padding:5px 8px;font-size:13px}
+
+  input,select,textarea{background:var(--panel2);border:1px solid var(--line);color:var(--txt);
+    border-radius:8px;padding:6px 10px;font-size:13px;outline:none;transition:border .15s,box-shadow .15s}
+  input:focus,select:focus,textarea:focus{border-color:var(--acc);box-shadow:0 0 0 3px var(--acc-soft)}
   input[type=number]{width:90px}
   textarea{width:100%;min-height:300px;font-family:Consolas,monospace;font-size:12px}
+  input[type=checkbox]{accent-color:var(--acc);width:15px;height:15px;cursor:pointer}
+
+  .btn{background:linear-gradient(180deg,#5fbfff,#3d9df0);border:none;color:#04121f;
+    padding:8px 18px;border-radius:9px;cursor:pointer;font-size:13.5px;font-weight:600;
+    transition:filter .15s,transform .05s;display:inline-flex;align-items:center;gap:6px}
+  .btn:hover{filter:brightness(1.1)}
+  .btn:active{transform:translateY(1px)}
+  .btn.sec{background:var(--panel2);color:var(--txt);border:1px solid var(--line2);font-weight:normal}
+  .btn.sec:hover{border-color:var(--acc);filter:none;background:var(--panel3)}
+  .btn.danger{background:linear-gradient(180deg,#ff7d7d,#e85555);color:#210707}
+  .btn.mini{padding:3px 10px;font-size:12px;border-radius:7px}
+  .btn.big{padding:11px 26px;font-size:15px;border-radius:11px}
+  .btn:disabled{opacity:.4;cursor:not-allowed;filter:none}
+
+  .pill{display:inline-flex;align-items:center;gap:6px;padding:2px 11px;border-radius:999px;
+    font-size:12px;font-weight:600;border:1px solid var(--line2);color:var(--dim);background:var(--panel2)}
+  .pill::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--faint)}
+  .pill.run{color:var(--ok);border-color:rgba(62,207,142,.5);background:rgba(62,207,142,.08)}
+  .pill.run::before{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+  .pill.wait{color:var(--warn);border-color:rgba(245,181,68,.5);background:rgba(245,181,68,.08)}
+  .pill.wait::before{background:var(--warn)}
+  .pill.err{color:var(--err);border-color:rgba(255,107,107,.5);background:rgba(255,107,107,.08)}
+  .pill.err::before{background:var(--err)}
+  .pill.off{color:var(--err)}
+  .pill.off::before{background:var(--err)}
+  .pill.on{color:var(--ok)}
+  .pill.on::before{background:var(--ok)}
+
+  .tag{display:inline-flex;align-items:center;gap:5px;padding:1px 9px;border-radius:999px;
+    font-size:11.5px;border:1px solid var(--line2);color:var(--dim);background:var(--panel2)}
+  .tag.ok{color:var(--ok);border-color:rgba(62,207,142,.45)}
+  .tag.err{color:var(--err);border-color:rgba(255,107,107,.45)}
+  .tag.warn{color:var(--warn);border-color:rgba(245,181,68,.45)}
+  .tag.acc{color:var(--acc);border-color:rgba(83,182,255,.45)}
+
+  .chip{display:inline-flex;align-items:center;padding:1px 9px;border-radius:7px;font-size:12px;
+    background:var(--panel3);color:var(--txt);border:1px solid var(--line2);font-variant-numeric:tabular-nums}
+  .chip.ok{color:var(--ok);border-color:rgba(62,207,142,.4);background:rgba(62,207,142,.07)}
+  .chip.acc{color:var(--acc);border-color:rgba(83,182,255,.4);background:rgba(83,182,255,.07)}
+  .chip.warn{color:var(--warn);border-color:rgba(245,181,68,.4);background:rgba(245,181,68,.07)}
+
   table{width:100%;border-collapse:collapse;font-size:13px}
-  th,td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}
-  th{color:var(--dim);font-weight:normal}
-  .btn{background:var(--acc);border:none;color:#08121d;padding:7px 18px;border-radius:6px;cursor:pointer;font-size:14px;font-weight:bold}
-  .btn.sec{background:var(--panel2);color:var(--txt);border:1px solid var(--line);font-weight:normal}
-  .btn.danger{background:var(--err);color:#1a0808}
-  .btn.mini{padding:3px 10px;font-size:12px}
-  .btn:disabled{opacity:.45;cursor:not-allowed}
-  .tag{display:inline-block;padding:1px 9px;border-radius:10px;font-size:12px;border:1px solid var(--line)}
-  .tag.ok{color:var(--ok);border-color:var(--ok)}
-  .tag.err{color:var(--err);border-color:var(--err)}
-  .tag.warn{color:var(--warn);border-color:var(--warn)}
-  .stat{display:flex;gap:26px;flex-wrap:wrap}
-  .stat b{display:block;font-size:22px;color:var(--txt)}
-  .stat span{font-size:12px;color:var(--dim)}
-  #log{background:#0b0f13;border:1px solid var(--line);border-radius:8px;padding:10px;height:240px;overflow-y:auto;font:12px/1.7 Consolas,monospace;white-space:pre-wrap}
-  .char{border:1px solid var(--line);border-radius:8px;margin-bottom:10px;overflow:hidden}
-  .char .head{display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--panel2)}
-  .char .body{padding:10px 12px;display:none}
+  th,td{padding:7px 9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}
+  th{color:var(--faint);font-weight:normal;font-size:12px;white-space:nowrap}
+  tbody tr:hover{background:rgba(83,182,255,.04)}
+
+  .banner{display:flex;gap:8px;align-items:flex-start;padding:8px 12px;border-radius:10px;
+    font-size:12.5px;margin:8px 0;border:1px solid}
+  .banner.warn{color:var(--warn);border-color:rgba(245,181,68,.35);background:rgba(245,181,68,.06)}
+  .banner.info{color:var(--dim);border-color:var(--line2);background:var(--panel2)}
+
+  .empty{display:flex;flex-direction:column;align-items:center;gap:8px;padding:34px 10px;
+    color:var(--faint);font-size:13px;border:1px dashed var(--line2);border-radius:var(--r)}
+  .empty svg{width:30px;height:30px;opacity:.5}
+
+  /* ===== 总览 ===== */
+  .hero{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;align-items:center;
+    background:linear-gradient(120deg,var(--panel) 55%,rgba(83,182,255,.06))}
+  .run-line{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .run-line b{font-size:16px}
+  .hero .desc{color:var(--faint);font-size:12px;margin-top:6px;max-width:560px}
+  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:14px;margin-bottom:14px}
+  .tile{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
+    padding:14px 16px;display:flex;align-items:center;gap:14px;box-shadow:var(--shadow)}
+  .tile .t-main b{display:block;font-size:21px;font-variant-numeric:tabular-nums;line-height:1.25}
+  .tile .t-main span{font-size:12px;color:var(--dim)}
+  .ring{width:74px;height:74px;flex-shrink:0}
+  .ring-bg{fill:none;stroke:var(--panel3);stroke-width:7}
+  .ring-fg{fill:none;stroke:var(--acc);stroke-width:7;stroke-linecap:round;
+    transform:rotate(-90deg);transform-origin:50% 50%;transition:stroke-dashoffset .6s}
+  .ring-fg.hot{stroke:var(--warn)}
+  .ring-fg.full{stroke:var(--err)}
+  .ring-txt{fill:var(--txt);font-size:15px;font-weight:600;font-variant-numeric:tabular-nums}
+
+  .steps{display:flex;flex-direction:column}
+  .step{display:flex;gap:12px;padding:10px 2px;border-bottom:1px dashed var(--line)}
+  .step:last-child{border-bottom:none}
+  .step-n{width:24px;height:24px;border-radius:8px;flex-shrink:0;display:flex;align-items:center;
+    justify-content:center;background:var(--acc-soft);color:var(--acc);font-size:12.5px;font-weight:700;
+    border:1px solid rgba(83,182,255,.35);margin-top:2px}
+  .step-main{flex:1;min-width:0}
+  .step-reason{color:var(--dim);font-size:12px;margin-top:3px}
+
+  .pend-item{border:1px solid rgba(245,181,68,.35);background:rgba(245,181,68,.05);
+    border-radius:12px;padding:10px 14px;margin-bottom:8px}
+  .pend-item:last-child{margin-bottom:0}
+
+  .term{background:#080c11;border:1px solid var(--line);border-radius:12px;padding:12px 14px;
+    height:250px;overflow-y:auto;font:12px/1.75 Consolas,"Cascadia Mono",monospace;white-space:pre-wrap}
+  .term .ln{color:#a9bcd0}
+  .term .ln.ok{color:var(--ok)}
+  .term .ln.warn{color:var(--warn)}
+  .term .ln.err{color:var(--err)}
+  .term::-webkit-scrollbar{width:8px}
+  .term::-webkit-scrollbar-thumb{background:var(--line2);border-radius:4px}
+
+  .pv-days{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px}
+  .pv-day{border:1px solid var(--line);border-radius:12px;padding:10px 13px;background:var(--panel2)}
+  .pv-day.today{border-color:rgba(83,182,255,.5);background:var(--acc-soft)}
+  .pv-day .pv-date{font-weight:600;font-size:13px}
+  .pv-day .pv-budget{font-size:12px;color:var(--acc);margin:2px 0 6px;font-variant-numeric:tabular-nums}
+  .pv-day .pv-steps{font-size:12px;color:var(--dim);min-height:34px}
+  .pv-day .pv-foot{font-size:11.5px;color:var(--faint);margin-top:6px;font-variant-numeric:tabular-nums}
+
+  /* ===== 角色卡 ===== */
+  .char{border:1px solid var(--line);border-radius:12px;margin-bottom:10px;overflow:hidden;
+    background:var(--panel);transition:border-color .15s}
+  .char:hover{border-color:var(--line2)}
+  .char .head{display:flex;align-items:center;gap:9px;padding:9px 13px;background:var(--panel2);flex-wrap:wrap}
+  .char .body{padding:12px 14px;display:none;border-top:1px solid var(--line)}
   .char.open .body{display:block}
-  .muted{color:var(--dim);font-size:12px}
-  .kv{display:flex;justify-content:space-between;padding:3px 0;font-size:13px}
   .need-row{display:grid;grid-template-columns:2fr 70px 70px 70px 60px;gap:6px;align-items:center}
+  .lib-chip{display:inline-flex;align-items:center;gap:5px;padding:3px 6px 3px 11px;border-radius:999px;
+    background:var(--panel3);border:1px solid var(--line2);font-size:12.5px}
+  .lib-chip button{border:none;background:none;color:var(--err);cursor:pointer;font-size:14px;
+    padding:0 5px;border-radius:50%;line-height:1}
+  .lib-chip button:hover{background:rgba(255,107,107,.15)}
+
+  /* ===== 开关 ===== */
+  .switch{position:relative;display:inline-flex;align-items:center;cursor:pointer;flex-shrink:0}
+  .switch input{position:absolute;opacity:0;width:0;height:0}
+  .switch .sl{width:38px;height:21px;border-radius:999px;background:var(--panel3);
+    border:1px solid var(--line2);position:relative;transition:background .15s}
+  .switch .sl::after{content:"";position:absolute;top:2px;left:2px;width:15px;height:15px;
+    border-radius:50%;background:var(--dim);transition:transform .15s,background .15s}
+  .switch input:checked+.sl{background:var(--acc-deep);border-color:var(--acc-deep)}
+  .switch input:checked+.sl::after{transform:translateX(17px);background:#fff}
+  .set-row{display:flex;align-items:center;gap:12px;margin-bottom:11px;flex-wrap:wrap}
+  .set-row>label:first-child{width:170px;flex-shrink:0;text-align:right}
+  .set-row .note{font-size:12px;color:var(--faint);flex:1;min-width:200px}
+  @media (max-width:700px){.set-row>label:first-child{width:100%;text-align:left}}
+
+  .kv{display:flex;justify-content:space-between;padding:3px 0;font-size:13px}
+  .mat-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:8px}
+  .mat-item{display:flex;gap:8px;align-items:center;background:var(--panel2);
+    border:1px solid var(--line);border-radius:10px;padding:7px 10px}
+  .mat-item label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+  /* ===== Toast 与对话框 ===== */
+  #toasts{position:fixed;right:18px;top:18px;z-index:99;display:flex;flex-direction:column;gap:8px}
+  .toast{background:var(--panel3);border:1px solid var(--line2);border-left:3px solid var(--acc);
+    color:var(--txt);padding:10px 16px;border-radius:10px;font-size:13px;max-width:380px;
+    box-shadow:var(--shadow);animation:tin .25s ease}
+  .toast.ok{border-left-color:var(--ok)}
+  .toast.err{border-left-color:var(--err)}
+  .toast.out{opacity:0;transform:translateX(12px);transition:all .3s}
+  @keyframes tin{from{opacity:0;transform:translateX(16px)}to{opacity:1;transform:none}}
+  .modal-ov{position:fixed;inset:0;background:rgba(4,8,12,.62);z-index:98;display:flex;
+    align-items:center;justify-content:center;backdrop-filter:blur(2px)}
+  .modal{background:var(--panel);border:1px solid var(--line2);border-radius:14px;
+    padding:20px 22px;max-width:440px;width:calc(100% - 40px);box-shadow:var(--shadow)}
+  .modal-msg{font-size:13.5px;line-height:1.7;white-space:pre-wrap}
 </style>
 </head>
 <body>
-<header>
-  <h1>异环养成规划器</h1>
-  <span class="sub">基于 ok-nte 配置与无界面运行 · 不改其源码</span>
-  <span id="envTags" class="row" style="margin-left:auto"></span>
-</header>
-<nav id="nav">
-  <button data-t="overview" class="on">总览</button>
-  <button data-t="chars">角色</button>
-  <button data-t="common">通用材料</button>
-  <button data-t="inv">库存</button>
-  <button data-t="tables">数据表</button>
-  <button data-t="settings">设置</button>
-  <button data-t="history">历史</button>
-</nav>
-<main id="main"></main>
+<div class="app">
+  <aside class="side">
+    <div class="logo"><b>异环养成规划器</b><span>OKnteAutofoot · 不改 ok-nte 源码</span></div>
+    <nav id="nav">
+      <button data-t="overview" class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></svg><span>总览</span></button>
+      <button data-t="chars"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>角色</span></button>
+      <button data-t="common"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 3h15"/><path d="M6 3v16a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V3"/><path d="M6 14h12"/></svg><span>通用材料</span></button>
+      <button data-t="inv"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg><span>库存</span></button>
+      <button data-t="tables"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/><path d="M12 3v18"/></svg><span>数据表</span></button>
+      <button data-t="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg><span>设置</span></button>
+      <button data-t="history"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg><span>历史</span></button>
+    </nav>
+    <div class="side-foot" id="envTags"></div>
+  </aside>
+  <div class="content">
+    <header class="topbar"><h1 id="pageTitle">总览</h1><span class="sub" id="pageSub"></span></header>
+    <main id="main"></main>
+  </div>
+</div>
+<div id="toasts"></div>
 
 <script>
 "use strict";
@@ -74,9 +254,33 @@ const $ = (s,el=document)=>el.querySelector(s);
 const esc = s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 let BOOT=null, TIMER=null;
 
+/* ---------- Toast 与对话框（替代 alert/confirm） ---------- */
+function toast(msg, kind="ok"){
+  const host=document.getElementById("toasts");
+  const t=document.createElement("div");
+  t.className="toast "+kind; t.textContent=msg;
+  host.appendChild(t);
+  setTimeout(()=>{t.classList.add("out");setTimeout(()=>t.remove(),320);},3400);
+}
+function alertErr(e){toast("操作失败："+e.message,"err");}
+function qConfirm(msg){
+  return new Promise(res=>{
+    const ov=document.createElement("div"); ov.className="modal-ov";
+    ov.innerHTML=`<div class="modal"><div class="modal-msg"></div>
+      <div class="row" style="justify-content:flex-end;margin:16px 0 0">
+      <button class="btn sec" data-q="0">取消</button><button class="btn" data-q="1">确定</button></div></div>`;
+    ov.querySelector(".modal-msg").textContent=msg;
+    const done=v=>{ov.remove();res(v);};
+    ov.querySelectorAll("[data-q]").forEach(b=>b.onclick=()=>done(b.dataset.q==="1"));
+    ov.onclick=e=>{if(e.target===ov)done(false);};
+    document.body.appendChild(ov);
+  });
+}
+
 async function api(path, body){
   const opt = body===undefined ? {} : {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)};
-  const res = await fetch(path, opt);
+  // 本地面板不该有请求挂死：15 秒超时兜底，失败走「加载失败」横幅而不是无限空白
+  const res = await fetch(path, {...opt, signal: AbortSignal.timeout(15000)});
   const data = await res.json().catch(()=>({}));
   if(!res.ok) throw new Error(data.error||res.status);
   return data;
@@ -84,7 +288,6 @@ async function api(path, body){
 
 /* ---------- 数据工具 ---------- */
 function allMaterials(){
-  // 统一材料目录：体力本目标（obtain=stamina）+ extra（hunter/external）
   const M=BOOT.tables.materials;
   const list=(M.targets||[]).map(t=>({id:t.id,display:t.display_name||t.name,category:t.category,
     source:t.source||"",obtain:"stamina",name:t.name}));
@@ -102,6 +305,18 @@ function matOptions(sel){
     return `<option value="${t.id}" ${t.id===sel?"selected":""}>${esc(d)}</option>`;}).join("");
 }
 function matName(id){return matAllName(id);}
+function obtainTag(o){
+  return o==="stamina"?`<span class="tag acc">体力本</span>`
+    :o==="hunter"?`<span class="tag warn">追猎</span>`:`<span class="tag">外部</span>`;
+}
+function ringSvg(pct){
+  const r=33, c=2*Math.PI*r, p=Math.min(1,Math.max(0,pct));
+  const cls = p>=1?"ring-fg full":p>=.8?"ring-fg hot":"ring-fg";
+  return `<svg class="ring" viewBox="0 0 84 84">
+    <circle cx="42" cy="42" r="${r}" class="ring-bg"/>
+    <circle cx="42" cy="42" r="${r}" class="${cls}" stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${(c*(1-p)).toFixed(1)}"/>
+    <text x="42" y="47" text-anchor="middle" class="ring-txt">${Math.round(p*100)}%</text></svg>`;
+}
 
 /* ---------- 总览 ---------- */
 async function renderOverview(){
@@ -111,46 +326,60 @@ async function renderOverview(){
   const pend = run.pending||[];
   const limit = st.settings.daily_stamina_limit;
   const p = plan.plan||{}, steps = p.steps||[], d = p.detail;
-  const planHtml = plan.error ? `<span class="tag err">${esc(plan.error)}</span>` :
-    (steps.length ? `<table><tr><th>顺序</th><th>目标</th><th>轮数</th><th>体力</th><th>预计产出</th><th>缺口角色</th><th>为什么刷</th></tr>${
-      steps.map((s,i)=>`<tr><td>${i+1}</td><td>${esc(s.name)}</td><td>${s.runs}</td><td>${s.stamina}</td><td>+${s.gain}</td><td class="muted">${esc(s.character)}</td><td class="muted" style="max-width:380px" title="${esc(s.reason?.text||"")}">${esc(s.reason?.text||"")}</td></tr>`).join("")
-    }</table>` : `<div class="muted">${p.reason?`<span class="tag">${esc(p.no_op_reason||"")}</span> ${esc(p.reason)}`:"暂无可执行步骤"}</div>`);
-  const budgetLine = d ? `<div class="muted" style="margin-top:6px">${esc(d.stamina_used_note||"")}；限额 ${d.stamina_limit}${d.hunter_reserved?` − 追猎预留 ${d.hunter_reserved}`:""} = 可规划 ${d.budget_total}，本计划安排 ${d.planned_stamina} 体力（${d.planned_runs} 轮），剩余 ${d.budget_remaining}。${(d.skipped_blacklisted||[]).length?` 当日拉黑跳过：${esc(d.skipped_blacklisted.join("、"))}。`:""}</div>` : "";
-  const warns = (p.warnings||[]).map(w=>`<div class="tag warn">${esc(w)}</div>`).join(" ");
-  const pendHtml = pend.length ? `<div class="card"><h3>未决执行（上次异常退出遗留，需手动对账）</h3>
-    <table><tr><th>任务</th><th>计划</th><th>启动时间</th><th>PID</th><th>状态</th><th>处理</th></tr>${
-      pend.map(p=>`<tr><td>${esc(p.step?.name??"?")}</td><td>${p.step?.runs??0}轮 / ${p.step?.stamina??0}体力</td>
-      <td class="muted">${esc(p.started_at||"")}</td><td>${p.pid??""}</td>
-      <td>${p.alive?`<span class="tag warn">仍在运行</span>`:`<span class="tag err">已结束·未记账</span>`}</td>
-      <td><button class="btn mini" data-rid="${esc(p.execution_id||"")}" data-res="inventory_done">已核对库存</button>
-      <button class="btn sec mini" data-rid="${esc(p.execution_id||"")}" data-res="discard">放弃记账</button></td></tr>
-      <tr><td colspan="6" class="muted">${esc(p.reason||"结果未知")}</td></tr>`).join("")
-    }</table>
-    <div class="muted" style="margin-top:6px">处理前不会开始新的执行。请先按 ok-nte 日志/背包实际数量在『库存』页校准，再点“已核对库存”；若确定没刷或无需记账，点“放弃记账”（不修改库存与额度）。规划器绝不把预计产出当作实际产出。</div></div>` : "";
+  const used = today.used_stamina??0;
+  const stepsHtml = steps.length ? `<div class="steps">${steps.map((s,i)=>`
+      <div class="step"><div class="step-n">${i+1}</div>
+        <div class="step-main">
+          <div class="row" style="gap:7px"><b>${esc(s.name)}</b>
+            <span class="chip acc num">${s.runs} 轮</span><span class="chip num">${s.stamina} 体力</span>
+            <span class="chip ok num">+${s.gain}</span><span class="muted">${esc(s.character)}</span></div>
+          <div class="step-reason">${esc(s.reason?.text||"")}</div>
+        </div></div>`).join("")}</div>`
+    : `<div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+       ${p.reason?`<span class="tag">${esc(p.no_op_reason||"")}</span>${esc(p.reason)}`:"暂无可执行步骤"}</div>`;
+  const budgetLine = d ? `<div class="banner info num">${esc(d.stamina_used_note||"")}；限额 ${d.stamina_limit} = 可规划 ${d.budget_total}，本计划安排 ${d.planned_stamina} 体力（${d.planned_runs} 轮），剩余 ${d.budget_remaining}。${(d.skipped_blacklisted||[]).length?` 当日拉黑跳过：${esc(d.skipped_blacklisted.join("、"))}。`:""}</div>` : "";
+  const warns = (p.warnings||[]).map(w=>`<div class="banner warn">${esc(w)}</div>`).join("");
+  const planErr = plan.error ? `<div class="banner warn">${esc(plan.error)}</div>` : "";
+  const pendHtml = pend.length ? `<div class="card"><h3>未决执行<span class="h-sub">上次异常退出遗留，需手动对账；处理前不会开始新的执行</span></h3>
+    ${pend.map(p=>`<div class="pend-item">
+      <div class="row"><b>${esc(p.step?.name??"?")}</b><span class="chip num">${p.step?.runs??0} 轮 / ${p.step?.stamina??0} 体力</span>
+        ${p.alive?`<span class="pill wait">仍在运行</span>`:`<span class="pill err">已结束·未记账</span>`}
+        <span class="muted num">启动 ${esc(p.started_at||"")} · PID ${p.pid??""}</span>
+        <span class="grow"></span>
+        <button class="btn mini" data-rid="${esc(p.execution_id||"")}" data-res="inventory_done">已核对库存</button>
+        <button class="btn sec mini" data-rid="${esc(p.execution_id||"")}" data-res="discard">放弃记账</button></div>
+      <div class="muted" style="margin-top:4px">${esc(p.reason||"结果未知")}</div></div>`).join("")}
+    <div class="muted" style="margin-top:8px">请先按 ok-nte 日志/背包实际数量在『库存』页校准，再点“已核对库存”；若确定没刷或无需记账，点“放弃记账”（不修改库存与额度）。规划器绝不把预计产出当作实际产出。</div></div>` : "";
+  const hunterPct = (st.settings.anomaly_hunter_stamina||180) > 0
+    ? (today.hunter_spent??0)/(st.settings.anomaly_hunter_stamina||180) : 0;
   $("#main").innerHTML = `
-    <div class="card"><div class="row" style="justify-content:space-between">
-      <div class="stat">
-        <div><b>${today.used_stamina??0}<span class="muted" style="font-size:13px">/${limit}</span></b><span>今日已耗体力(含手动)</span></div>
-        <div><b>${p.budget??0}</b><span>日常剩余额度</span></div>
-        <div><b>${today.hunter_spent??0}<span class="muted" style="font-size:13px">/${st.settings.anomaly_hunter_stamina??180}</span></b><span>追猎已耗/额度</span></div>
+    <div class="card hero">
+      <div>
+        <div class="run-line"><span class="pill" id="statePill"></span><b id="runState"></b></div>
+        <div class="desc">日常与追猎共用一个执行器，同一时刻只跑一个（ok-nte 中两者互斥）。</div>
+        <div id="waitInfo" style="margin-top:6px"></div>
       </div>
       <div class="row">
-        <button class="btn" id="btnStart" ${(run.state==="running"||run.state==="waiting"||pend.length)?"disabled":""}>▶ 开始日常</button>
-        <button class="btn" id="btnStartHunter" ${(run.state==="running"||run.state==="waiting"||pend.length)?"disabled":""}>🎯 开始追猎</button>
+        <button class="btn big" id="btnStart" ${(run.state==="running"||run.state==="waiting"||pend.length)?"disabled":""}>▶ 开始日常</button>
+        <button class="btn sec" id="btnStartHunter" ${(run.state==="running"||run.state==="waiting"||pend.length)?"disabled":""}>🎯 开始追猎</button>
         <button class="btn sec" id="btnDry">👁 预演（不落盘）</button>
-        <button class="btn sec" id="btnCompat">⬇ 导出兼容报告</button>
+        <button class="btn sec" id="btnCompat">⬇ 兼容报告</button>
         <button class="btn danger" id="btnStop" ${(run.state!=="running"&&run.state!=="waiting")?"disabled":""}>■ 停止</button>
       </div>
     </div>
-    <div class="muted" style="margin-top:8px">状态：<b id="runState">${esc(runStateText(run))}</b> <span id="waitInfo">${waitInfoText(run)}</span>
-      <span class="muted">（日常与追猎共用一个执行器，同一时刻只跑一个；ok-nte 中两者互斥）</span></div>
+    <div class="tiles">
+      <div class="tile">${ringSvg(limit>0?used/limit:0)}
+        <div class="t-main"><b class="num">${used}<span style="font-size:13px;color:var(--faint)">/${limit}</span></b><span>今日已耗体力（含手动）</span></div></div>
+      <div class="tile"><div class="t-main"><b class="num">${p.budget??0}</b><span>日常剩余额度</span></div></div>
+      <div class="tile">${ringSvg(hunterPct)}
+        <div class="t-main"><b class="num">${today.hunter_spent??0}<span style="font-size:13px;color:var(--faint)">/${st.settings.anomaly_hunter_stamina??180}</span></b><span>追猎已耗 / 额度</span></div></div>
     </div>
     ${pendHtml}
-    <div class="card"><h3>日常体力计划${warns?" "+warns:""}</h3>${planHtml}${budgetLine}
-      <div class="muted" style="margin-top:6px">策略：按角色优先级顺序补齐缺口；每次执行刷一个目标，完成自动切换下一个；ok-nte 的循环模式由本规划器接管（置为停用）。追猎已拆分为独立计划（下方）。</div>
+    <div class="card"><h3>日常体力计划</h3>${planErr}${warns}${stepsHtml}${budgetLine}
+      <div class="muted" style="margin-top:8px">策略：按角色优先级顺序补齐缺口；每次执行刷一个目标，完成自动切换下一个；ok-nte 的循环模式由本规划器接管（置为停用）。</div>
     </div>
-    <div class="card"><h3>追猎计划（独立开始；BOSS 每局 60 体力，掉落对应角色突破材料）</h3>
-      <div class="row" style="gap:8px;margin-bottom:6px">
+    <div class="card"><h3>追猎计划<span class="h-sub">独立开始 · BOSS 每局 60 体力 · 掉落对应角色突破材料</span></h3>
+      <div class="row" style="gap:8px;margin-bottom:10px">
         <label>目标 BOSS</label>
         <select id="hBoss">${(BOOT.tables.materials.hunter_bosses||[]).map(b=>
           `<option ${st.settings.anomaly_hunter_target===b.name?"selected":""}>${esc(b.name)}</option>`).join("")}</select>
@@ -158,15 +387,15 @@ async function renderOverview(){
         <input type="number" id="hFixed" min="0" value="0" style="width:70px" title="0=按材料缺口自动；>0=本次固定打这么多局">
         <button class="btn sec mini" id="btnHunterPlan">生成追猎计划</button>
       </div>
-      <div id="hunterBody"><div class="muted">点「生成追猎计划」预览（按所选 BOSS 掉落材料的缺口自动算局数，受追猎每日额度封顶）。</div></div>
-      <div class="muted" style="margin-top:6px">对应材料缺口在『角色→直接材料需求』或『库存』里体现（如 海之泪←海囚）。</div>
+      <div id="hunterBody"><div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>点「生成追猎计划」预览（按所选 BOSS 掉落材料的缺口自动算局数，受追猎每日额度封顶）</div></div>
+      <div class="muted" style="margin-top:8px">对应材料缺口在『角色→直接材料需求』或『库存』里体现（如 海之泪←海囚）。</div>
     </div>
-    <div class="card"><h3>未来 3 天预览（推演：体力恢复按每日限额假设，实际以游戏为准）</h3>
+    <div class="card"><h3>未来 3 天推演<span class="h-sub">体力恢复按每日限额假设，实际以游戏为准</span></h3>
       <div class="row"><button class="btn sec" id="btnPreview">生成未来 3 天推演</button>
       <span id="pvStamina" class="muted"></span></div>
-      <div id="pvBody" style="margin-top:8px"></div></div>
-    <div id="dryCard" style="display:none" class="card"><h3>Dry Run 预演结果（纯读：不写文件、不启动 ok-nte、不改额度与库存）</h3><div id="dryBody"></div></div>
-    <div class="card"><h3>执行日志</h3><div id="log"></div></div>`;
+      <div id="pvBody" style="margin-top:10px"></div></div>
+    <div id="dryCard" style="display:none" class="card"><h3>Dry Run 预演结果<span class="h-sub">纯读：不写文件、不启动 ok-nte、不改额度与库存</span></h3><div id="dryBody"></div></div>
+    <div class="card"><h3>执行日志</h3><div id="log" class="term"></div></div>`;
   $("#btnStart").onclick = ()=>startRun("daily");
   $("#btnStartHunter").onclick = startHunterRun;
   $("#btnDry").onclick = doDryRun;
@@ -179,11 +408,19 @@ async function renderOverview(){
       a.href=URL.createObjectURL(blob);
       a.download=`OKntePlanner-compat-${new Date().toISOString().slice(0,10)}.md`;
       a.click(); URL.revokeObjectURL(a.href);
+      toast("兼容报告已下载");
     }catch(e){alertErr(e);}
   };
   $("#btnPreview").onclick = doPreview;
   $("#btnHunterPlan").onclick = doHunterPlan;
   $("#btnStop").onclick = ()=>api("/api/stop").then(refreshStatus).catch(alertErr);
+  document.querySelectorAll("[data-rid]").forEach(btn=>btn.onclick=async()=>{
+    try{ const r=await api("/api/reconcile",{execution_id:btn.dataset.rid,resolution:btn.dataset.res});
+      toast(r.message||"已处理"); renderOverview();
+    }catch(e){alertErr(e);}
+  });
+  const sp0=$("#statePill"); sp0.className=statePillClass(run); sp0.textContent=stateShort(run);
+  $("#runState").textContent = run.message && run.state!=="waiting" ? run.message : "";
   drawLog(run.lines||[]);
 }
 async function doHunterPlan(){
@@ -195,12 +432,16 @@ async function doHunterPlan(){
     const r=await api(`/api/hunter/plan?boss=${boss}&fixed_runs=${fixed}`);
     const steps=r.steps||[];
     body.innerHTML = steps.length
-      ? `<table><tr><th>BOSS</th><th>掉落材料</th><th>局数</th><th>体力</th><th>预计产出</th><th>为什么</th></tr>${
-        steps.map(s=>`<tr><td>${esc(s.boss)}</td><td>${esc(s.name)}</td><td>${s.runs}</td><td>${s.stamina}</td><td>+${s.gain}</td>
-        <td class="muted" style="max-width:380px">${esc(s.reason?.text||"")}</td></tr>`).join("")}</table>
-        <div class="muted" style="margin-top:4px">追猎额度：${r.detail?.hunter_limit??0} − 已耗 ${r.detail?.hunter_spent??0} = 可用 ${r.budget}。</div>`
-      : `<div class="muted">${r.reason?`<span class="tag">${esc(r.no_op_reason||"")}</span> ${esc(r.reason)}`:"追猎无步骤"}</div>`;
-  }catch(e){ body.innerHTML=`<span class="tag err">推演失败：${esc(e.message)}</span>`; }
+      ? `<div class="steps">${steps.map(s=>`
+          <div class="step"><div class="step-n">🎯</div><div class="step-main">
+            <div class="row" style="gap:7px"><b>${esc(s.boss)}</b>→${esc(s.name)}
+              <span class="chip acc num">${s.runs} 局</span><span class="chip num">${s.stamina} 体力</span>
+              <span class="chip ok num">+${s.gain}</span></div>
+            <div class="step-reason">${esc(s.reason?.text||"")}</div>
+          </div></div>`).join("")}</div>
+        <div class="muted num" style="margin-top:6px">追猎额度：${r.detail?.hunter_limit??0} − 已耗 ${r.detail?.hunter_spent??0} = 可用 ${r.budget}。</div>`
+      : `<div class="empty">${r.reason?`<span class="tag">${esc(r.no_op_reason||"")}</span>${esc(r.reason)}`:"追猎无步骤"}</div>`;
+  }catch(e){ body.innerHTML=`<div class="banner warn">推演失败：${esc(e.message)}</div>`; }
 }
 async function doPreview(){
   const body=$("#pvBody"), stam=$("#pvStamina");
@@ -209,15 +450,21 @@ async function doPreview(){
     const r = await api("/api/preview?days=3");
     stam.textContent = r.projected_stamina_now!=null
       ? `当前体力估计：${r.projected_stamina_now}` : "（设置页填写\"当前体力\"后显示估计值）";
-    const warns=(r.warnings||[]).map(w=>`<div class="tag warn">${esc(w)}</div>`).join(" ");
-    const rows=r.days.map((d,i)=>`
-      <tr><td>${esc(d.date)}${i===0?"（今天）":""}</td><td>${d.budget}</td>
-      <td>${d.steps.length?d.steps.map(s=>`${esc(s.name)}×${s.runs}轮(${s.stamina}体力,+${s.gain})`).join("；"):`<span class="muted">无（未达标缺口为空${d.open_gaps?`，${d.open_gaps} 个缺口待续`:""}）</span>`}</td>
-      <td>${d.remaining}</td></tr>`).join("");
-    body.innerHTML=`${warns?`<div class="row" style="margin-bottom:6px">${warns}</div>`:""}
-      ${r.complete_on?`<div class="muted" style="margin-bottom:6px">按此推演：<b>${esc(r.complete_on)}</b> 全部达标</div>`:`<div class="muted" style="margin-bottom:6px">3 天内无法全部达标（可增加天数视角：调整限额/目标）</div>`}
-      <table><tr><th>日期</th><th>额度</th><th>安排</th><th>剩余</th></tr>${rows}</table>`;
-  }catch(e){ body.innerHTML=`<span class="tag err">推演失败：${esc(e.message)}</span>`; }
+    const warns=(r.warnings||[]).map(w=>`<div class="banner warn">${esc(w)}</div>`).join("");
+    const days=r.days.map((d,i)=>`
+      <div class="pv-day ${i===0?"today":""}">
+        <div class="pv-date">${esc(d.date)}${i===0?" · 今天":""}</div>
+        <div class="pv-budget">额度 ${d.budget}</div>
+        <div class="pv-steps">${d.steps.length
+          ?d.steps.map(s=>`${esc(s.name)}<span class="chip acc num" style="margin:1px 2px">${s.runs}轮</span>`).join("<br>")
+          :`<span class="muted">无安排${d.open_gaps?`（${d.open_gaps} 个缺口待续）`:""}`}</div>
+        <div class="pv-foot">剩余 ${d.remaining}</div>
+      </div>`).join("");
+    body.innerHTML=`${warns}
+      ${r.complete_on?`<div class="banner info">按此推演：<b>${esc(r.complete_on)}</b> 全部达标</div>`
+        :`<div class="banner info">3 天内无法全部达标（可增加天数视角：调整限额/目标）</div>`}
+      <div class="pv-days">${days}</div>`;
+  }catch(e){ body.innerHTML=`<div class="banner warn">推演失败：${esc(e.message)}</div>`; }
 }
 async function doDryRun(){
   const card=$("#dryCard"), body=$("#dryBody");
@@ -226,35 +473,33 @@ async function doDryRun(){
   try{
     const r = await api("/api/dry-run");
     if(!r.ok){
-      body.innerHTML=`<span class="tag err">${esc(r.error||"预演失败")}</span>` +
+      body.innerHTML=`<div class="banner warn">${esc(r.error||"预演失败")}</div>` +
         (r.compat?.problems?.length?`<div class="muted" style="margin-top:6px">${r.compat.problems.map(esc).join("；")}</div>`:"");
       return;
     }
     const steps=r.plan?.steps||[], s0=steps[0];
     let html="";
     if(s0){
-      html+=`<div style="margin-bottom:8px">本轮将执行：<b>${esc(s0.name)}</b> × ${s0.runs} 轮（${s0.stamina} 体力，预计 +${s0.gain}）`+
+      html+=`<div class="banner info">本轮将执行：<b>${esc(s0.name)}</b> × ${s0.runs} 轮（${s0.stamina} 体力，预计 +${s0.gain}）`+
         `；今日额度安排 ${r.plan.detail?`${r.plan.detail.planned_stamina}`:s0.stamina} 体力，剩余 ${r.plan.budget}。</div>`;
       if(r.patch){
-        html+=`<div class="muted" style="margin-bottom:4px">将修改文件：<code>${esc(r.patch.file)}</code>（只列差异）</div>`+
+        html+=`<div class="muted" style="margin:6px 0">将修改文件：<code>${esc(r.patch.file)}</code>（只列差异）</div>`+
           `<table><tr><th>配置段</th><th>字段</th><th>当前值</th><th>将改为</th></tr>${
-            r.patch.diff.map(d=>`<tr><td>${esc(d.section)}</td><td>${esc(d.key)}</td><td class="muted">${esc(String(d.old??"（新增）"))}</td><td><b>${esc(String(d.new))}</b></td></tr>`).join("")
+            r.patch.diff.map(d=>`<tr><td>${esc(d.section)}</td><td>${esc(d.key)}</td><td class="muted num">${esc(String(d.old??"（新增）"))}</td><td class="num"><b>${esc(String(d.new))}</b></td></tr>`).join("")
           }</table>`;
-        if(r.hunter_note) html+=`<div class="muted" style="margin-top:4px">${esc(r.hunter_note)}</div>`;
+        if(r.hunter_note) html+=`<div class="muted" style="margin-top:6px">${esc(r.hunter_note)}</div>`;
       }
     }else{
-      html=`<div class="muted">当前无需执行：${esc(r.plan?.reason||"")}</div>`;
+      html=`<div class="empty">当前无需执行：${esc(r.plan?.reason||"")}</div>`;
     }
-    if(r.oknte_running) html+=`<div class="tag warn" style="margin-top:6px">ok-nte 当前正在运行：真实执行会等其退出后再写配置</div>`;
+    if(r.oknte_running) html+=`<div class="banner warn" style="margin-top:8px">ok-nte 当前正在运行：真实执行会等其退出后再写配置</div>`;
     body.innerHTML=html;
-  }catch(e){ body.innerHTML=`<span class="tag err">预演失败：${esc(e.message)}</span>`; }
+  }catch(e){ body.innerHTML=`<div class="banner warn">预演失败：${esc(e.message)}</div>`; }
 }
-function runStateText(run){
-  const map={idle:"空闲",running:"运行中",stopping:"停止中",waiting:"等待中",done:"已完成",error:"出错"};
+function stateShort(run){
+  const map={idle:"空闲",running:"运行中",stopping:"停止中",waiting:"等待中",done:"已完成",error:"出错",interrupted:"已中断"};
   const mode = run.mode==="hunter"?"【追猎】":run.mode==="daily"?"【日常】":"";
-  let t = mode + (map[run.state]||run.state);
-  if(run.message && run.state!=="waiting") t += ` — ${run.message}`;  // 等待中的详情由 waitInfoText 展示
-  return t;
+  return mode + (map[run.state]||run.state);
 }
 function waitInfoText(run){
   if(run.state!=="waiting") return "";
@@ -263,16 +508,33 @@ function waitInfoText(run){
     const target=new Date(String(run.next_retry_at).replace(" ","T"));
     if(!isNaN(target)){
       const left=Math.max(0,Math.ceil((target.getTime()-Date.now())/1000));
-      html+=`${html?" · ":""}距下次重试 ${Math.floor(left/60)}:${String(left%60).padStart(2,"0")}（${esc(run.next_retry_at)}）`;
+      html+=`${html?" · ":""}距下次重试 <b class="num">${Math.floor(left/60)}:${String(left%60).padStart(2,"0")}</b>（${esc(run.next_retry_at)}）`;
     }
   }
-  return html?`<span class="tag warn">${html}</span>`:"";
+  return html?`<div class="banner warn">${html}</div>`:"";
 }
-function drawLog(lines){const el=$("#log"); if(!el)return; el.textContent=lines.join("\n")||"（暂无日志）"; el.scrollTop=el.scrollHeight;}
+function drawLog(lines){
+  const el=$("#log"); if(!el)return;
+  el.innerHTML = lines.length? lines.map(l=>{
+    const e=esc(l);
+    if(/失败|错误|error/i.test(l)) return `<div class="ln err">${e}</div>`;
+    if(/等待|重试|警告|warn/i.test(l)) return `<div class="ln warn">${e}</div>`;
+    if(/完成|成功|已备份|已开始|已校准/.test(l)) return `<div class="ln ok">${e}</div>`;
+    return `<div class="ln">${e}</div>`;
+  }).join("") : '<span class="muted">（暂无日志）</span>';
+  el.scrollTop=el.scrollHeight;
+}
+function statePillClass(run){
+  if(run.state==="running") return "pill run";
+  if(run.state==="waiting"||run.state==="stopping") return "pill wait";
+  if(run.state==="error"||run.state==="interrupted") return "pill err";
+  return "pill";
+}
 async function refreshStatus(){
   try{
     const run = await api("/api/status");
-    const el=$("#runState"); if(el) el.textContent = runStateText(run);
+    const sp=$("#statePill"); if(sp){sp.className=statePillClass(run);sp.textContent=stateShort(run);}
+    const el=$("#runState"); if(el) el.textContent = run.message && run.state!=="waiting" ? run.message : "";
     const w=$("#waitInfo"); if(w) w.innerHTML = waitInfoText(run);
     const b1=$("#btnStart"),bh=$("#btnStartHunter"),b2=$("#btnStop");
     const active = run.state==="running"||run.state==="waiting";
@@ -285,6 +547,7 @@ async function refreshStatus(){
 async function startRun(mode){
   try{
     await api("/api/start",{mode});
+    toast("已开始执行");
     refreshStatus();
   }catch(e){alertErr(e);}
 }
@@ -293,23 +556,23 @@ async function startHunterRun(){
     const boss=$("#hBoss")?.value;
     if(boss) await api("/api/settings",{anomaly_hunter_target:boss});
     await api("/api/start",{mode:"hunter",fixed_runs:+$("#hFixed")?.value||0});
+    toast("已开始追猎计划");
     refreshStatus();
   }catch(e){alertErr(e);}
 }
-function alertErr(e){alert("操作失败："+e.message);}
 
 /* ---------- 角色（含角色库/武器库） ---------- */
-function libraryCard(title, key){
+function libraryCard(title, key, hint){
   const names=BOOT.state[key]||[];
   return `<div class="card"><div class="row" style="justify-content:space-between">
-      <h3 style="margin:0">${esc(title)}</h3>
+      <h3 style="margin:0">${esc(title)}<span class="h-sub">${esc(hint||"")}</span></h3>
       <div class="row" style="gap:6px">
         <input class="lib-input" data-lib="${key}" placeholder="输入名字后添加" style="width:180px">
         <button class="btn sec mini" data-lib-add="${key}">＋ 添加</button>
       </div></div>
-    <div class="row" style="gap:6px;flex-wrap:wrap;margin-top:8px">
-      ${names.length?names.map(n=>`<span class="tag">${esc(n)}
-        <button class="btn sec mini" data-lib-del="${key}" data-name="${esc(n)}" style="padding:0 4px;border:none;background:none;color:var(--err)">×</button></span>`).join("")
+    <div class="row" style="gap:6px;flex-wrap:wrap;margin-top:10px">
+      ${names.length?names.map(n=>`<span class="lib-chip">${esc(n)}
+        <button data-lib-del="${key}" data-name="${esc(n)}" title="删除">×</button></span>`).join("")
         :'<span class="muted">（空，手动添加后可在下方角色行下拉选择）</span>'}
     </div></div>`;
 }
@@ -317,7 +580,7 @@ function bindLibraryHandlers(){
   document.querySelectorAll("[data-lib-add]").forEach(btn=>btn.onclick=async()=>{
     const key=btn.dataset.libAdd;
     const inp=document.querySelector(`.lib-input[data-lib="${key}"]`);
-    const name=(inp.value||"").trim(); if(!name){alert("请输入名字");return;}
+    const name=(inp.value||"").trim(); if(!name){toast("请输入名字","err");return;}
     const list=[...(BOOT.state[key]||[])];
     if(!list.includes(name)) list.push(name);
     try{const r=await api("/api/libraries",{[key]:list});
@@ -327,7 +590,7 @@ function bindLibraryHandlers(){
   });
   document.querySelectorAll("[data-lib-del]").forEach(btn=>btn.onclick=async()=>{
     const key=btn.dataset.libDel, name=btn.dataset.name;
-    if(!confirm(`从${key==="char_library"?"角色库":"武器库"}删除「${name}」？（角色行里的已选值会保留）`))return;
+    if(!(await qConfirm(`从${key==="char_library"?"角色库":"武器库"}删除「${name}」？（角色行里的已选值会保留）`)))return;
     const list=(BOOT.state[key]||[]).filter(n=>n!==name);
     try{const r=await api("/api/libraries",{[key]:list});
       BOOT.state.char_library=r.char_library;BOOT.state.weapon_library=r.weapon_library;
@@ -339,37 +602,37 @@ function renderChars(){
   const st = BOOT.state;
   const tracks = BOOT.tables.requirements.tracks||{};
   $("#main").innerHTML = `
-    <div class="card"><h3>游戏目录（调研预填：23+2 角色 / 50 弧盘，含属性·物态·材料归属与置信度）</h3>
+    <div class="card"><h3>游戏目录导入<span class="h-sub">调研预填：属性·物态·材料归属与置信度，低置信字段导入后标黄或留空</span></h3>
       <div class="row" style="gap:8px">
-        <button class="btn sec" id="btnImportLibs">⬇ 导入全角色/全武器到库</button>
         <select id="gdChar">${(BOOT.game_characters||[]).map(n=>`<option>${esc(n)}</option>`).join("")}</select>
-        <button class="btn sec" id="btnImportChar">⬇ 按目录导入角色（自动预填材料需求）</button>
-        <span class="muted">低置信/未查到的字段导入后标黄或留空，请按游戏内核对</span>
+        <button class="btn" id="btnImportChar">⬇ 按目录导入角色（自动预填材料需求）</button>
+        <button class="btn sec" id="btnImportLibs">⬇ 导入全角色/全武器到库</button>
       </div></div>
-    ${libraryCard("角色库（手动添加，供下方角色行下拉选择）","char_library")}
-    ${libraryCard("武器库（弧盘/武器名字，手动添加，供角色行下拉选择）","weapon_library")}
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:14px">
+      <div>${libraryCard("角色库","char_library","手动添加，供角色行下拉选择")}</div>
+      <div>${libraryCard("武器库","weapon_library","弧盘/武器名，供角色行下拉选择")}</div>
+    </div>
     <div class="card"><div class="row" style="justify-content:space-between">
-      <h3 style="margin:0">角色列表（列表顺序 = 补齐优先级，从上到下）</h3>
-      <button class="btn sec" id="addChar">＋ 新建角色</button>
-    </div>
-    <div class="muted">名字/武器从上面的库下拉选择（也支持手输新名字）；每个角色选择对应的材料系（异能/弧盘/空幕），填写当前/目标练度；『直接材料需求』里可用全量材料（含 BOSS 掉落/周本/小怪素材）手动填缺口。</div>
-    </div>
+      <h3 style="margin:0">角色列表<span class="h-sub">列表顺序 = 补齐优先级，从上到下；每个角色选择材料系并填写当前/目标练度</span></h3>
+      <button class="btn" id="addChar">＋ 新建角色</button>
+    </div></div>
     <div id="charList"></div>
-    <button class="btn" id="saveChars">保存角色</button>`;
+    <div class="row" style="margin-top:12px"><button class="btn big" id="saveChars">保存角色</button></div>`;
   const list = $("#charList");
-  if(!st.characters.length) list.innerHTML = `<div class="card muted">还没有角色，点右上角新建。</div>`;
+  if(!st.characters.length) list.innerHTML = `<div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>还没有角色，点上方「新建角色」或按游戏目录导入</div>`;
   st.characters.forEach((c,i)=>list.appendChild(charCard(c,i,tracks)));
   $("#addChar").onclick = ()=>{
     st.characters.push({id:Math.random().toString(16).slice(2,10),name:"新角色",enabled:true,
       weapon:"",mats:{ability:1,arc:1,console:1},
       tracks:Object.fromEntries(Object.keys(tracks).map(k=>[k,{cur:1,tgt:1}])),extra_needs:{}});
-    list.appendChild(charCard(st.characters[st.characters.length-1], st.characters.length-1, tracks));
+    const el=charCard(st.characters[st.characters.length-1], st.characters.length-1, tracks);
+    el.classList.add("open");
+    list.appendChild(el);
+    el.scrollIntoView({behavior:"smooth",block:"center"});
   };
   $("#saveChars").onclick = async ()=>{
-    // 从 DOM 收集
     const chars=[];
     document.querySelectorAll(".char").forEach(el=>{
-      // 换位/删除后 DOM 序与数组序不一致，基础数据按角色 id 取，避免互换
       const base=st.characters.find(ch=>ch.id===el.dataset.cid) || st.characters[+el.dataset.idx];
       const tracks={};
       el.querySelectorAll("[data-track]").forEach(inp=>{tracks[inp.dataset.track]=tracks[inp.dataset.track]||{};tracks[inp.dataset.track][inp.dataset.tk]=+inp.value||0;});
@@ -386,22 +649,22 @@ function renderChars(){
         mats:{ability:+el.querySelector(".c-ability").value,arc:+el.querySelector(".c-arc").value,console:+el.querySelector(".c-console").value},
         tracks, extra_needs:extra});
     });
-    try{ await api("/api/characters",{characters:chars}); BOOT.state.characters=chars; alert("已保存"); renderChars(); }catch(e){alertErr(e);}
+    try{ await api("/api/characters",{characters:chars}); BOOT.state.characters=chars; toast(`已保存 ${chars.length} 个角色`); renderChars(); }catch(e){alertErr(e);}
   };
   $("#btnImportLibs").onclick = async ()=>{
-    if(!confirm("把游戏目录中的全部角色（23+2）与弧盘（50）合并进角色库/武器库？（自定义名字保留，不覆盖）"))return;
+    if(!(await qConfirm("把游戏目录中的全部角色与弧盘合并进角色库/武器库？（自定义名字保留，不覆盖）")))return;
     try{
       const r=await api("/api/game-data/import",{action:"libraries"});
       BOOT.state.char_library=r.char_library; BOOT.state.weapon_library=r.weapon_library;
-      alert(`已导入：角色库 ${r.char_library.length} 项 / 武器库 ${r.weapon_library.length} 项`);
+      toast(`已导入：角色库 ${r.char_library.length} 项 / 武器库 ${r.weapon_library.length} 项`);
       renderChars();
     }catch(e){alertErr(e);}
   };
   $("#btnImportChar").onclick = async ()=>{
     const raw=$("#gdChar").value;
     const name=raw.replace(/（未上线）$/,"");
-    if(!name){alert("请先选择角色");return;}
-    if(!confirm(`按游戏目录导入「${name}」？将新建一行预填角色（材料系/专武/BOSS材料/周本/小怪素材），低置信字段需你核对。`))return;
+    if(!name){toast("请先选择角色","err");return;}
+    if(!(await qConfirm(`按游戏目录导入「${name}」？将新建一行预填角色（材料系/专武/BOSS材料/周本/小怪素材），低置信字段需你核对。`)))return;
     try{
       const r=await api("/api/game-data/import",{action:"character",name});
       BOOT.state.characters.push(r.character);
@@ -411,7 +674,7 @@ function renderChars(){
       if(c.game_confidence?.skill==="low") low.push("技能书系未查到（请手动选）");
       if(c.game_confidence?.boss && c.game_confidence.boss!=="high") low.push("BOSS 材料归属置信度："+c.game_confidence.boss);
       if(c.game_confidence?.notes) low.push(c.game_confidence.notes);
-      alert(`已导入「${c.name}」。`+(low.length?` 注意：${low.join("；")}`:"全部字段高/中置信。"));
+      toast(`已导入「${c.name}」。`+(low.length?` 注意：${low.join("；")}`:"全部字段高/中置信。"), low.length?"err":"ok");
     }catch(e){alertErr(e);}
   };
   bindLibraryHandlers();
@@ -422,22 +685,22 @@ function libOptions(key, current, allowEmpty){
   if(allowEmpty) opts.push(`<option value="" ${!current?"selected":""}>（未选择）</option>`);
   names.forEach(n=>opts.push(`<option value="${esc(n)}" ${n===current?"selected":""}>${esc(n)}</option>`));
   if(current && !names.includes(current))
-    opts.push(`<option value="${esc(current)}" selected>${esc(current)}（不在库中）</option>`);
+    opts.push(`<option value="${esc(current)}" selected>${esc(current)}（自定义）</option>`);
   return opts.join("");
 }
 function charCard(c,i,tracks){
   const div=document.createElement("div");
   div.className="char"; div.dataset.idx=i; div.dataset.cid=c.id;
   const trackRows = Object.entries(tracks).map(([k,t])=>`
-    <div class="row" style="gap:6px"><label style="width:90px">${esc(t.name)}</label>
-      <input type="number" data-track="${k}" data-tk="cur" value="${c.tracks?.[k]?.cur??1}" min="0"> →
+    <div class="row" style="gap:6px"><label style="width:92px">${esc(t.name)}</label>
+      <input type="number" data-track="${k}" data-tk="cur" value="${c.tracks?.[k]?.cur??1}" min="0"> <span class="muted">→</span>
       <input type="number" data-track="${k}" data-tk="tgt" value="${c.tracks?.[k]?.tgt??1}" min="0" max="${t.max??999}">
       <button class="btn sec mini" data-act="maxTrack" data-max="${t.max??999}" title="目标一键设为满级">满级</button>
     </div>`).join("");
   const extraRows = Object.entries(c.extra_needs||{}).map(([m,v])=>extraRow(m,v)).join("") || `<div class="muted extra-empty">（未填写）</div>`;
   div.innerHTML=`
     <div class="head">
-      <input type="checkbox" class="c-enabled" ${c.enabled?"checked":""}>
+      <label class="switch" title="启用/停用"><input type="checkbox" class="c-enabled" ${c.enabled?"checked":""}><span class="sl"></span></label>
       <select class="c-name" style="width:150px">${libOptions("char_library",c.name,false)}
         ${c.name&&!(BOOT.state.char_library||[]).includes(c.name)?`<option value="${esc(c.name)}" selected>${esc(c.name)}（自定义）</option>`:""}
       </select>
@@ -445,18 +708,18 @@ function charCard(c,i,tracks){
       <span class="muted">异能系</span><select class="c-ability">${[1,2,3,4,5].map(n=>`<option ${c.mats?.ability===n?"selected":""}>${n}</option>`).join("")}</select>
       <span class="muted">罐头系</span><select class="c-arc">${[1,2,3,4,5].map(n=>`<option ${c.mats?.arc===n?"selected":""}>${n}</option>`).join("")}</select>
       <span class="muted">空幕</span><select class="c-console">${[1,2,3,4,5,6].map(n=>`<option ${c.mats?.console===n?"selected":""}>${n}</option>`).join("")}</select>
+      <span class="grow"></span>
       <button class="btn sec mini" data-act="maxAll" title="四条轨道目标全部设为满级">全部满级</button>
-      <span style="flex:1"></span>
-      <button class="btn sec mini" data-act="up">↑</button>
-      <button class="btn sec mini" data-act="down">↓</button>
+      <button class="btn sec mini" data-act="up" title="上移（优先级更高）">↑</button>
+      <button class="btn sec mini" data-act="down" title="下移">↓</button>
       <button class="btn sec mini" data-act="del">删除</button>
-      <button class="btn sec mini" data-act="fold">展开/收起</button>
+      <button class="btn sec mini" data-act="fold">详情</button>
     </div>
     <div class="body">
-      <div class="grid" style="margin-bottom:8px">${trackRows}</div>
-      <h3 style="font-size:13px;color:var(--acc);margin:6px 0">直接材料需求（全量材料含 BOSS 掉落/周本/小怪素材；与练度换算叠加）</h3>
+      <div class="grid" style="margin-bottom:10px">${trackRows}</div>
+      <div style="font-size:13px;color:var(--acc);margin:6px 0">直接材料需求 <span class="muted">（全量材料含 BOSS 掉落/周本/小怪素材；与练度换算叠加）</span></div>
       <div class="grid extra-list">${extraRows}</div>
-      <button class="btn sec mini" data-act="addExtra" style="margin-top:6px">＋ 添加材料</button>
+      <button class="btn sec mini" data-act="addExtra" style="margin-top:8px">＋ 添加材料</button>
     </div>`;
   div.querySelector('[data-act="fold"]').onclick=()=>div.classList.toggle("open");
   div.querySelector('[data-act="del"]').onclick=()=>{div.remove();};
@@ -491,23 +754,21 @@ function renderInv(){
   const inv=BOOT.state.inventory||{};
   const cats={};
   allMaterials().forEach(m=>{(cats[m.category]=cats[m.category]||[]).push(m);});
-  const obtainTag=o=>o==="stamina"?`<span class="tag ok">体力本</span>`
-    :o==="hunter"?`<span class="tag warn">追猎</span>`:`<span class="tag">外部</span>`;
   $("#main").innerHTML=`
-    <div class="card"><h3>材料库存（全量材料：体力本 + BOSS掉落/周本/小怪等外部来源；先按背包实际填写，之后规划器自动累加）</h3>
+    <div class="card"><h3>材料库存<span class="h-sub">全量材料：体力本 + BOSS掉落/周本/小怪等外部来源；先按背包实际填写，之后规划器自动累加</span></h3>
     ${Object.entries(cats).map(([cat,items])=>`
-      <h3 style="font-size:13px;color:var(--dim)">${esc(cat)}</h3>
-      <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(300px,1fr))">
-      ${items.map(m=>`<div class="row" style="gap:8px">
-        <label style="flex:1" title="${esc(m.source)}">${esc(m.display)} ${obtainTag(m.obtain)}</label>
+      <div style="font-size:13px;color:var(--faint);margin:12px 0 8px">${esc(cat)}</div>
+      <div class="mat-grid">
+      ${items.map(m=>`<div class="mat-item">
+        <label title="${esc(m.source)}">${esc(m.display)}</label>${obtainTag(m.obtain)}
         <input type="number" min="0" data-inv="${m.id}" value="${inv[m.id]??0}"></div>`).join("")}
       </div>`).join("")}
     </div>
-    <button class="btn" id="saveInv">保存库存</button>`;
+    <div class="row"><button class="btn big" id="saveInv">保存库存</button></div>`;
   $("#saveInv").onclick=async()=>{
     const inventory={};
     document.querySelectorAll("[data-inv]").forEach(inp=>{const v=+inp.value||0; if(v>0)inventory[inp.dataset.inv]=v;});
-    try{await api("/api/inventory",{inventory});BOOT.state.inventory=inventory;alert("已保存");}catch(e){alertErr(e);}
+    try{await api("/api/inventory",{inventory});BOOT.state.inventory=inventory;toast("库存已保存");}catch(e){alertErr(e);}
   };
 }
 
@@ -518,53 +779,53 @@ function renderTables(){
   const y=BOOT.tables.yields.per_run, hy=BOOT.tables.yields.hunter_yield||{};
   const M=BOOT.tables.materials, all=allMaterials();
   $("#main").innerHTML=`
-    <div class="card"><h3>每轮产出（体力本 40体力/轮，务必校准）</h3>
-      <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(280px,1fr))">
-      ${M.targets.map(t=>`<div class="row" style="gap:8px"><label style="flex:1" title="${esc(t.source||"")}">${esc(t.display_name||t.name)}</label>
+    <div class="card"><h3>每轮产出<span class="h-sub">体力本 40 体力/轮，务必校准：掉落随世界等级变化；填小=多刷，填大=少刷</span></h3>
+      <div class="mat-grid">
+      ${M.targets.map(t=>`<div class="mat-item"><label title="${esc(t.source||"")}">${esc(t.display_name||t.name)}</label>
         <input type="number" min="0" data-y="${t.id}" value="${y[t.id]??1}"></div>`).join("")}
       </div>
-      <div class="muted" style="margin:8px 0">掉落随世界等级变化；填小=多刷，填大=少刷。执行几次后按实际掉落回填（也可用『历史』页的实际获得确认闭环）。</div>
-      <button class="btn" id="saveYields">保存产量表</button>
+      <div class="row" style="margin-top:10px"><button class="btn" id="saveYields">保存产量表</button>
+      <span class="muted">执行几次后按实际掉落回填（也可用『历史』页的实际获得确认闭环）。</span></div>
     </div>
-    <div class="card"><h3>BOSS 掉落产量（异象追猎 60体力/局，50级默认约8个）</h3>
-      <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(280px,1fr))">
+    <div class="card"><h3>BOSS 掉落产量<span class="h-sub">异象追猎 60 体力/局，50级默认约 8 个</span></h3>
+      <div class="mat-grid">
       ${(M.hunter_bosses||[]).map(b=>{const m=allMaterials().find(x=>x.id===b.mat_id);
-        return `<div class="row" style="gap:8px"><label style="flex:1">${esc(b.name)} → ${esc(m?m.display:b.mat_id)}</label>
+        return `<div class="mat-item"><label>${esc(b.name)} → ${esc(m?m.display:b.mat_id)}</label>
         <input type="number" min="0" data-hy="${esc(b.name)}" value="${hy[b.name]??8}"></div>`;}).join("")}
       </div>
-      <button class="btn" id="saveHY" style="margin-top:8px">保存 BOSS 产量</button>
+      <button class="btn" id="saveHY" style="margin-top:10px">保存 BOSS 产量</button>
     </div>
-    <div class="card"><h3>材料名称与来源（预填调研名；技能书/罐头系的 1~5 号顺序请按游戏内核对后修改，立即生效）</h3>
-      <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(340px,1fr))">
-      ${all.map(m=>`<div class="row" style="gap:6px">
+    <div class="card"><h3>材料名称与来源<span class="h-sub">技能书/罐头系的 1~5 号顺序请按游戏内核对后修改，立即生效</span></h3>
+      <div class="mat-grid" style="grid-template-columns:repeat(auto-fill,minmax(340px,1fr))">
+      ${all.map(m=>`<div class="mat-item">
         <input style="width:45%" data-mn="${m.id}" value="${esc(m.display)}" title="显示名">
         <input style="flex:1" data-ms="${m.id}" value="${esc(m.source)}" title="来源" placeholder="来源">
-        <span class="muted" style="width:44px">${m.obtain==="stamina"?"体力本":m.obtain==="hunter"?"追猎":"外部"}</span></div>`).join("")}
+        <span style="width:44px;text-align:center">${obtainTag(m.obtain)}</span></div>`).join("")}
       </div>
-      <button class="btn" id="saveNames" style="margin-top:8px">保存名称与来源</button>
+      <button class="btn" id="saveNames" style="margin-top:10px">保存名称与来源</button>
     </div>
-    <div class="card"><h3>养成需求表（等级段→材料数量，表单编辑）</h3>
+    <div class="card"><h3>养成需求表<span class="h-sub">等级段 → 材料数量，表单编辑</span></h3>
       <div id="reqEditor"></div>
-      <div class="muted" style="margin-top:6px">角色经验/弧盘经验/技能书/罐头/空幕为通用键，会按每个角色选择的系自动对应具体材料；BOSS 掉落等实名材料直接选。</div>
-      <button class="btn" id="saveReq" style="margin-top:8px">保存需求表</button>
+      <div class="muted" style="margin:8px 0">角色经验/弧盘经验/技能书/罐头/空幕为通用键，会按每个角色选择的系自动对应具体材料；BOSS 掉落等实名材料直接选。</div>
+      <button class="btn" id="saveReq">保存需求表</button>
     </div>`;
   buildReqEditor();
   $("#saveYields").onclick=async()=>{
     const per_run={};
     document.querySelectorAll("[data-y]").forEach(inp=>per_run[inp.dataset.y]=+inp.value||0);
-    try{const r=await api("/api/tables/yields",{per_run});BOOT.tables.yields=r.yields;alert("已保存");}catch(e){alertErr(e);}
+    try{const r=await api("/api/tables/yields",{per_run});BOOT.tables.yields=r.yields;toast("产量表已保存");}catch(e){alertErr(e);}
   };
   $("#saveHY").onclick=async()=>{
     const hunter_yield={};
     document.querySelectorAll("[data-hy]").forEach(inp=>hunter_yield[inp.dataset.hy]=+inp.value||0);
-    try{const r=await api("/api/tables/yields",{hunter_yield});BOOT.tables.yields=r.yields;alert("已保存");}catch(e){alertErr(e);}
+    try{const r=await api("/api/tables/yields",{hunter_yield});BOOT.tables.yields=r.yields;toast("BOSS 产量已保存");}catch(e){alertErr(e);}
   };
   $("#saveNames").onclick=async()=>{
     const display={};
     document.querySelectorAll("[data-mn]").forEach(inp=>{
       display[inp.dataset.mn]={display_name:inp.value,
         source:document.querySelector(`[data-ms="${inp.dataset.mn}"]`).value};});
-    try{const r=await api("/api/tables/materials",{display});BOOT.tables.materials=r.materials;alert(`已保存（${r.changed} 项）`);}catch(e){alertErr(e);}
+    try{const r=await api("/api/tables/materials",{display});BOOT.tables.materials=r.materials;toast(`已保存（${r.changed} 项）`);}catch(e){alertErr(e);}
   };
   $("#saveReq").onclick=async()=>{
     const obj={version:1,tracks:{}};
@@ -583,7 +844,7 @@ function renderTables(){
       obj.tracks[key]={name:card.querySelector(".t-name").value||key,
         max:+card.querySelector(".t-max").value||999, ladder};
     });
-    try{await api("/api/tables/requirements",obj);BOOT.tables.requirements=obj;alert("已保存");renderTables();}catch(e){alertErr(e);}
+    try{await api("/api/tables/requirements",obj);BOOT.tables.requirements=obj;toast("需求表已保存");renderTables();}catch(e){alertErr(e);}
   };
 }
 function buildReqEditor(){
@@ -598,19 +859,19 @@ function buildReqEditor(){
       <div class="head">
         <input class="t-name" value="${esc(t.name||key)}" style="width:130px" title="轨道名">
         <span class="muted">上限</span><input class="t-max" type="number" value="${t.max??999}" style="width:70px">
-        <span style="flex:1"></span>
+        <span class="grow"></span>
         <button class="btn sec mini" data-act="addBand">＋ 添加等级段</button>
       </div>
       <div class="body" style="display:block">
-        ${(t.ladder||[]).map(bandRow(b=>b)).join("")||`<div class="muted band-empty">（暂无等级段：本轨道不参与换算，可在角色『直接材料需求』里手填）</div>`}
+        ${(t.ladder||[]).map(b=>bandRow(b)).join("")||`<div class="muted band-empty">（暂无等级段：本轨道不参与换算，可在角色『直接材料需求』里手填）</div>`}
       </div>
     </div>`).join("");
   function bandRow(b){
-    return `<div class="band-row card" style="margin:6px 0;padding:8px">
-      <div class="row" style="gap:6px;margin-bottom:4px">
+    return `<div class="band-row card" style="margin:6px 0;padding:10px;box-shadow:none">
+      <div class="row" style="gap:6px;margin-bottom:6px">
         <span class="muted">从</span><input class="b-from" type="number" value="${b?.from??1}" style="width:70px">
         <span class="muted">到</span><input class="b-to" type="number" value="${b?.to??10}" style="width:70px">
-        <span style="flex:1"></span>
+        <span class="grow"></span>
         <button class="btn sec mini" data-act="addBandItem">＋ 材料</button>
         <button class="btn sec mini" data-act="delBand">删除本段</button>
       </div>
@@ -646,7 +907,7 @@ function buildReqEditor(){
   bindBandButtons(host);
 }
 
-/* ---------- 通用材料表（阶段15） ---------- */
+/* ---------- 通用材料表 ---------- */
 const COMMON_LABELS = {
   char_exp: ["角色 1→80 · 猎人攻略（特级口径）", "本"],
   ascension_boss: ["角色突破满级 · BOSS 材料（每角色一只对应BOSS，数量相同）", "个"],
@@ -663,7 +924,7 @@ const COMMON_LABELS = {
 };
 async function renderCommon(){
   const r = await api("/api/common-costs").catch(e=>({error:e.message}));
-  if(r.error){ $("#main").innerHTML=`<div class="card"><span class="tag err">${esc(r.error)}</span></div>`; return; }
+  if(r.error){ $("#main").innerHTML=`<div class="card"><div class="banner warn">${esc(r.error)}</div></div>`; return; }
   const listInput=(key,i,val)=>`<input type="number" min="0" data-cc="${key}" data-i="${i}" value="${val}" style="width:80px">`;
   const costRows = Object.entries(COMMON_LABELS).map(([key,[label,unit]])=>{
     const v=r.costs[key], def=r.defaults[key];
@@ -672,7 +933,7 @@ async function renderCommon(){
       Array.isArray(def) ? [0,1,2].map(i=>listInput(key,i,v?.[i]??def[i])).join(" ")
         : `<input type="number" min="0" data-cc="${key}" value="${v??def}" style="width:110px">`
     } <span class="muted">${unit}</span></td>
-    <td>${edited?`<span class="tag warn">已改（默认 ${JSON.stringify(def)}）</span>`:`<span class="muted">默认</span>`}</td></tr>`;
+    <td>${edited?`<span class="tag warn">已改（默认 ${JSON.stringify(def)}）</span>`:`<span class="tag">默认</span>`}</td></tr>`;
   }).join("");
   const skillName=id=>({"ability_1":"军衔系（灵可线）","ability_2":"鸽子系（浔线）","ability_3":"黑帽子系（残虹线）"}[id]||id);
   const canName=id=>({"arc_1":"戏剧芯（固态）","arc_2":"液态梦（等离子）","arc_3":"苹果核（液态）","arc_4":"螺旋乐（气态）","arc_5":"冷点心（聚合）"}[id]||id);
@@ -680,29 +941,27 @@ async function renderCommon(){
     const bossTxt=m.boss?`${esc(matAllName(m.boss.mat_id))} ← ${esc(m.boss.boss)}`:`<span class="tag warn">待核对</span>`;
     const wkTxt=m.weekly?`${esc(matAllName(m.weekly.mat_id))}`:`<span class="tag warn">待核对</span>`;
     const prefillTxt=Object.entries(m.prefill||[]).length
-      ? Object.entries(m.prefill).map(([mid,cnt])=>`${esc(matAllName(mid))}×${cnt}`).join("、")
+      ? Object.entries(m.prefill).map(([mid,cnt])=>`${esc(matAllName(mid))}<span class="chip num" style="margin-left:4px">${cnt}</span>`).join(" ")
       : `<span class="tag warn">${esc((m.skipped||[]).join("；")||"无映射")}</span>`;
-    return `<tr><td>${esc(m.name)}</td><td>${esc(m.attribute||"?")}</td>
+    return `<tr><td><b>${esc(m.name)}</b></td><td>${esc(m.attribute||"?")}</td>
       <td>${m.skill_series?esc(skillName(m.skill_series)):`<span class="tag warn">待核对</span>`}</td>
       <td>${m.can_series?esc(canName(m.can_series)):"?"}</td>
       <td>${bossTxt}</td><td>${wkTxt}</td><td class="muted">${esc(m.mob_family||"待核对")}</td>
-      <td class="muted" style="max-width:300px">${prefillTxt}</td></tr>`;
+      <td style="max-width:320px">${prefillTxt}</td></tr>`;
   }).join("");
   $("#main").innerHTML=`
-    <div class="card"><h3>一键应用：把通用数量按每角色的具体材料写进需求</h3>
+    <div class="card"><h3>一键应用<span class="h-sub">把通用数量按每角色的具体材料写进『直接材料需求』；同名键覆盖（幂等）；未查到映射的角色会跳过并说明</span></h3>
       <div class="row" style="gap:8px">
         <select id="ccTarget"><option value="全部">全部角色（已实装，按目录映射）</option>
           ${(r.mapping||[]).map(m=>`<option>${esc(m.name)}</option>`).join("")}</select>
-        <button class="btn" id="ccApply">应用到角色『直接材料需求』</button>
-        <span class="muted">同名键覆盖（幂等，可反复应用）；技能书/罐头/经验/硬币走练度轨道不在此列；未查到映射的角色会跳过并说明</span>
-      </div><div id="ccMsg" class="muted" style="margin-top:6px"></div></div>
-    <div class="card"><h3>通用数量参考（不同角色数量相同、材料不同；可编辑校准，保存后可重新应用）</h3>
+        <button class="btn" id="ccApply">应用到角色</button>
+      </div><div id="ccMsg" class="muted" style="margin-top:8px"></div></div>
+    <div class="card"><h3>通用数量参考<span class="h-sub">不同角色数量相同、材料不同；可编辑校准，保存后可重新应用</span></h3>
       <table><tr><th>养成环节</th><th>通用数量</th><th>状态</th></tr>${costRows}</table>
-      <button class="btn" id="ccSave" style="margin-top:8px">保存通用数量</button>
+      <button class="btn" id="ccSave" style="margin-top:10px">保存通用数量</button>
     </div>
-    <div class="card"><h3>角色 → 具体材料映射（依属性→技能书系 / 物态→罐头系 / BOSS·周本·小怪归属推导）</h3>
+    <div class="card"><h3>角色 → 具体材料映射<span class="h-sub">依属性→技能书系 / 物态→罐头系 / BOSS·周本·小怪归属推导；「待核对」= 调研未查到，导入/应用时自动跳过</span></h3>
       <table><tr><th>角色</th><th>属性</th><th>技能书系</th><th>罐头系</th><th>BOSS 材料</th><th>周本</th><th>小怪族</th><th>将写入的直接需求</th></tr>${mapRows}</table>
-      <div class="muted" style="margin-top:6px">「待核对」= 调研未查到，导入/应用时自动跳过；你在游戏内核对后可改『数据表→材料名称与来源』与 game_data。</div>
     </div>`;
   $("#ccSave").onclick=async()=>{
     const body={};
@@ -712,77 +971,66 @@ async function renderCommon(){
       else body[k]=+inp.value||0;
     });
     try{const r2=await api("/api/common-costs/save",body);
-      $("#ccMsg").textContent="已保存通用数量。要对角色生效请点上方「应用到角色」。";
+      toast("通用数量已保存。要对角色生效请点上方「应用到角色」。");
       renderCommon();
     }catch(e){alertErr(e);}
   };
   $("#ccApply").onclick=async()=>{
     const name=$("#ccTarget").value;
-    if(!confirm(`把通用数量按具体材料写入「${name==="全部"?"全部角色":name}」的直接材料需求？同名材料数量将被覆盖为当前通用值。`))return;
+    if(!(await qConfirm(`把通用数量按具体材料写入「${name==="全部"?"全部角色":name}」的直接材料需求？同名材料数量将被覆盖为当前通用值。`)))return;
     try{
       const r2=await api("/api/common-costs/apply",{name});
       const msg=[`已应用 ${r2.applied.length} 个角色`];
       if(r2.skipped?.length) msg.push("跳过："+r2.skipped.join("；"));
       if(r2.notes?.length) msg.push("注："+r2.notes.join("；"));
       $("#ccMsg").textContent=msg.join("。");
+      toast(`已应用到 ${r2.applied.length} 个角色`);
     }catch(e){$("#ccMsg").textContent="";alertErr(e);}
   };
 }
 /* ---------- 设置 ---------- */
+function setRow(label, control, note){
+  return `<div class="set-row"><label>${esc(label)}</label>${control}<span class="note">${esc(note||"")}</span></div>`;
+}
 function renderSettings(){
   const s=BOOT.state.settings;
   $("#main").innerHTML=`
     <div class="card"><h3>基本</h3>
-      <div class="row" style="margin-bottom:8px"><label style="width:150px">ok-nte 安装目录</label>
-        <input id="s_root" value="${esc(s.oknte_root)}" style="flex:1"></div>
-      <div class="row" style="margin-bottom:8px"><label style="width:150px">每日体力限额</label>
-        <input type="number" id="s_limit" value="${s.daily_stamina_limit}" min="0" max="999" step="20">
-        <span class="muted">ok-nte 在当日活跃度达标(180体力)后会自动跳过日常体力任务——多出的部分刷不到（上游行为）；这里只是规划上限。游戏内体力上限可经家具扩容（你现在 320）</span></div>
-      <div class="row" style="margin-bottom:8px"><label style="width:150px">每日重置小时(0-23)</label>
-        <input type="number" id="s_reset" value="${s.daily_reset_hour}" min="0" max="23"></div>
-      <div class="row" style="margin-bottom:8px"><label style="width:150px">单次运行时限(分钟)</label>
-        <input type="number" id="s_maxmin" value="${s.max_run_minutes}" min="10"></div>
-      <div class="row"><label style="width:150px">完成/失败通知</label>
-        <input type="checkbox" id="s_notify" ${s.notify_enabled?"checked":""}>
-        <span class="muted">Windows 气泡通知</span></div>
+      ${setRow("ok-nte 安装目录",`<input id="s_root" value="${esc(s.oknte_root)}" style="flex:1;min-width:260px">`)}
+      ${setRow("每日体力限额",`<input type="number" id="s_limit" value="${s.daily_stamina_limit}" min="0" max="999" step="20">`,
+        "ok-nte 在当日活跃度达标(180体力)后会自动跳过日常体力任务——多出的部分刷不到（上游行为）；这里只是规划上限。游戏内体力上限可经家具扩容。")}
+      ${setRow("每日重置小时(0-23)",`<input type="number" id="s_reset" value="${s.daily_reset_hour}" min="0" max="23">`)}
+      ${setRow("单次运行时限(分钟)",`<input type="number" id="s_maxmin" value="${s.max_run_minutes}" min="10">`)}
+      ${setRow("完成/失败通知",`<label class="switch"><input type="checkbox" id="s_notify" ${s.notify_enabled?"checked":""}><span class="sl"></span></label>`,"Windows 气泡通知")}
     </div>
     <div class="card"><h3>持续执行</h3>
-      <div class="row" style="margin-bottom:8px"><input type="checkbox" id="s_cont" ${s.continuous_mode?"checked":""}>
-        <span>持续执行模式：点开始后一直执行，跨天自动继续</span></div>
-      <div class="row"><label style="width:150px">繁忙重试等待(秒)</label>
-        <input type="number" id="s_retry" value="${s.busy_retry_seconds??300}" min="0" max="3600" step="30">
-        <span class="muted">遇到 ok-nte 占用、游戏内体力不足、当日额度用尽等情形时，等待这么久再自动重试（0~3600）</span></div>
+      ${setRow("持续执行模式",`<label class="switch"><input type="checkbox" id="s_cont" ${s.continuous_mode?"checked":""}><span class="sl"></span></label>`,
+        "点开始后一直执行，跨天自动继续；关闭则当日收工即结束")}
+      ${setRow("繁忙重试等待(秒)",`<input type="number" id="s_retry" value="${s.busy_retry_seconds??300}" min="0" max="3600" step="30">`,
+        "遇到 ok-nte 占用、游戏内体力不足、当日额度用尽等情形时，等待这么久再自动重试（0~3600）")}
     </div>
-    <div class="card"><h3>追猎计划（独立于日常计划，单独开始；ok-nte 中两者互斥）</h3>
-      <div class="row" style="margin-bottom:8px"><label style="width:150px">追猎每日体力额度</label>
-        <input type="number" id="s_hsta" value="${s.anomaly_hunter_stamina}" min="0" step="60">
-        <span class="muted">60体力/局；额度按追猎记账独立扣减</span></div>
-      <div class="row"><label style="width:150px">默认追猎目标</label>
-        <select id="s_htgt">${(BOOT.tables.materials.hunter_bosses||[]).map(b=>
-          `<option ${s.anomaly_hunter_target===b.name?"selected":""}>${esc(b.name)}</option>`).join("")}</select>
-        <span class="muted">也可在总览页追猎计划卡临时选择</span></div>
+    <div class="card"><h3>追猎计划<span class="h-sub">独立于日常计划，单独开始；ok-nte 中两者互斥</span></h3>
+      ${setRow("追猎每日体力额度",`<input type="number" id="s_hsta" value="${s.anomaly_hunter_stamina}" min="0" step="60">`,"60 体力/局；额度按追猎记账独立扣减")}
+      ${setRow("默认追猎目标",`<select id="s_htgt">${(BOOT.tables.materials.hunter_bosses||[]).map(b=>
+        `<option ${s.anomaly_hunter_target===b.name?"selected":""}>${esc(b.name)}</option>`).join("")}</select>`,"也可在总览页追猎计划卡临时选择")}
     </div>
-    <div class="card"><h3>体力恢复模型（用于估计与未来预览，不影响执行逻辑）</h3>
-      <div class="row" style="margin-bottom:8px"><label style="width:150px">体力上限</label>
-        <input type="number" id="s_cap" value="${s.stamina_cap??320}" min="1" max="999">
-        <span class="muted">游戏内体力上限：基础 240，家具「织梦结」等可扩容（你现在 320）</span></div>
-      <div class="row" style="margin-bottom:8px"><label style="width:150px">每小时恢复</label>
-        <input type="number" id="s_regen" value="${s.stamina_regen_per_hour??10}" min="0" max="999" step="0.5">
-        <span class="muted">默认 10/小时（即 6 分钟 1 点），按游戏实际填写</span></div>
-      <div class="row"><label style="width:150px">当前体力（选填）</label>
-        <input type="number" id="s_snow" value="${s.stamina_now??""}" min="0" max="9999" step="0.5" placeholder="如 132">
-        <span class="muted">保存时刻作为推算基准${s.stamina_now_at?`（上次：${esc(s.stamina_now_at)}）`:""}；清空即停用估计</span></div>
+    <div class="card"><h3>体力恢复模型<span class="h-sub">用于估计与未来预览，不影响执行逻辑</span></h3>
+      ${setRow("体力上限",`<input type="number" id="s_cap" value="${s.stamina_cap??320}" min="1" max="999">`,
+        "游戏内体力上限：基础 240，家具「织梦结」等可扩容")}
+      ${setRow("每小时恢复",`<input type="number" id="s_regen" value="${s.stamina_regen_per_hour??10}" min="0" max="999" step="0.5">`,
+        "默认 10/小时（即 6 分钟 1 点），按游戏实际填写")}
+      ${setRow("当前体力（选填）",`<input type="number" id="s_snow" value="${s.stamina_now??""}" min="0" max="9999" step="0.5" placeholder="如 132">`,
+        "保存时刻作为推算基准"+(s.stamina_now_at?`（上次：${esc(s.stamina_now_at)}）`:"")+"；清空即停用估计")}
     </div>
-    <div class="card"><h3>配置导入 / 导出</h3>
+    <div class="card"><h3>配置导入 / 导出<span class="h-sub">含设置/角色/库存/产量/需求表（不含历史）；导入前自动备份，非法文件整体拒绝</span></h3>
       <div class="row" style="gap:12px">
-        <button class="btn sec" id="btnExport">导出配置 JSON</button>
+        <button class="btn sec" id="btnExport">⬇ 导出配置 JSON</button>
         <input type="file" id="impFile" accept=".json" style="display:none">
-        <button class="btn sec" id="btnImport">导入配置 JSON</button>
-        <span class="muted">含设置/角色/库存/产量/需求表（不含历史）；导入前自动备份，非法文件整体拒绝</span>
-      </div><div id="impMsg" class="muted" style="margin-top:6px"></div></div>
-    <div class="card"><h3>ok-nte 配置备份与回滚（每次写入前自动备份，保留最近 20 份）</h3>
+        <button class="btn sec" id="btnImport">⬆ 导入配置 JSON</button>
+      </div><div id="impMsg" class="muted" style="margin-top:8px"></div></div>
+    <div class="card"><h3>ok-nte 配置备份与回滚<span class="h-sub">每次写入前自动备份，保留最近 20 份</span></h3>
       <div id="bkList" class="muted">读取中…</div></div>
-    <button class="btn" id="saveSettings">保存设置</button>`;
+    <div class="row"><button class="btn big" id="saveSettings">保存设置</button></div>`;
   $("#saveSettings").onclick=async()=>{
     const snowRaw=$("#s_snow").value.trim();
     try{await api("/api/settings",{
@@ -793,7 +1041,7 @@ function renderSettings(){
       anomaly_hunter_stamina:+$("#s_hsta").value||180, anomaly_hunter_target:$("#s_htgt").value,
       stamina_cap:+$("#s_cap").value||320, stamina_regen_per_hour:+$("#s_regen").value||0,
       stamina_now:snowRaw===""?null:+snowRaw});
-      alert("已保存"); await boot(); renderSettings();}catch(e){alertErr(e);}
+      toast("设置已保存"); await boot(); renderSettings();}catch(e){alertErr(e);}
   };
   $("#btnExport").onclick=async()=>{
     try{
@@ -803,6 +1051,7 @@ function renderSettings(){
       a.href=URL.createObjectURL(blob);
       a.download=`OKntePlanner-config-${new Date().toISOString().slice(0,10)}.json`;
       a.click(); URL.revokeObjectURL(a.href);
+      toast("配置已导出");
     }catch(e){alertErr(e);}
   };
   $("#btnImport").onclick=()=>$("#impFile").click();
@@ -813,9 +1062,10 @@ function renderSettings(){
     try{
       const payload=JSON.parse(await file.text());
       const n=(payload.characters||[]).length;
-      if(!confirm(`导入将覆盖当前设置/角色/库存/产量/需求表（会先自动备份），文件含 ${n} 个角色。继续？`))return;
+      if(!(await qConfirm(`导入将覆盖当前设置/角色/库存/产量/需求表（会先自动备份），文件含 ${n} 个角色。继续？`))){msg.textContent="";return;}
       const r=await api("/api/import",payload);
       msg.textContent=`导入成功：${r.characters} 个角色、${r.inventory_items} 项库存；原配置已备份到 ${r.backup}`;
+      toast("配置导入成功");
       await boot(); renderSettings();
     }catch(e){
       msg.textContent="";
@@ -829,23 +1079,22 @@ async function loadBackups(){
   try{
     const r=await api("/api/backups");
     const rows=(r.backups||[]).map(b=>`
-      <tr><td>${esc(b.name)}</td><td class="muted">${esc(b.mtime)}</td><td>${(b.size/1024).toFixed(1)} KB</td>
+      <tr><td class="num">${esc(b.name)}</td><td class="muted num">${esc(b.mtime)}</td><td class="num">${(b.size/1024).toFixed(1)} KB</td>
       <td><button class="btn sec mini" data-bk="${esc(b.name)}">恢复</button></td></tr>`).join("");
     el.innerHTML=rows?`<table><tr><th>备份</th><th>时间</th><th>大小</th><th>操作</th></tr>${rows}</table>`
       :'<span class="muted">还没有备份（首次执行写入时自动产生）</span>';
     el.querySelectorAll("[data-bk]").forEach(btn=>btn.onclick=async()=>{
       const name=btn.dataset.bk;
-      if(!confirm(`用「${name}」整体恢复 ok-nte 日常配置？当前配置会先自动备份（可再回滚）。ok-nte 必须已完全退出。`))return;
+      if(!(await qConfirm(`用「${name}」整体恢复 ok-nte 日常配置？当前配置会先自动备份（可再回滚）。ok-nte 必须已完全退出。`)))return;
       try{ const r=await api("/api/backups/restore",{name});
-        alert(`已恢复：${r.restored}（当前配置已另行备份）`); loadBackups();
+        toast(`已恢复：${r.restored}（当前配置已另行备份）`); loadBackups();
       }catch(e){alertErr(e);}
     });
-  }catch(e){ el.innerHTML=`<span class="tag err">备份列表读取失败：${esc(e.message)}</span>`; }
+  }catch(e){ el.innerHTML=`<div class="banner warn">备份列表读取失败：${esc(e.message)}</div>`; }
 }
 
 /* ---------- 历史 ---------- */
 function historyChart(history){
-  // 最近 14 天双系列 SVG 条形图（纯前端零依赖）：体力消耗=青、预计产出=绿
   const days = {};
   (history||[]).forEach(h=>{const d=days[h.day]=days[h.day]||{s:0,g:0,n:0};
     d.s+=h.stamina||0; d.g+=h.gain||0; d.n++;});
@@ -857,14 +1106,20 @@ function historyChart(history){
     const x=pad+i*((W-pad*2)/list.length)+( (W-pad*2)/list.length-bw)/2;
     const hs=Math.round((H-30)*d.s/maxV), hg=Math.round((H-30)*d.g/maxV);
     const t=`title="${day}：体力 ${d.s} / 产出 +${d.g}（${d.n} 次执行）"`;
-    return `<rect x="${x}" y="${H-22-hs}" width="${bw/2-1}" height="${hs}" fill="#4da3ff" ${t}/>
-      <rect x="${x+bw/2+1}" y="${H-22-hg}" width="${bw/2-1}" height="${hg}" fill="#3ecf8e" ${t}/>
-      <text x="${x+bw/2}" y="${H-8}" fill="#8a99ab" font-size="9" text-anchor="middle">${day.slice(5)}</text>`;
+    return `<rect x="${x}" y="${H-22-hs}" width="${bw/2-1}" height="${hs}" rx="2" fill="#53b6ff" ${t}/>
+      <rect x="${x+bw/2+1}" y="${H-22-hg}" width="${bw/2-1}" height="${hg}" rx="2" fill="#3ecf8e" ${t}/>
+      <text x="${x+bw/2}" y="${H-8}" fill="#5f7186" font-size="9" text-anchor="middle">${day.slice(5)}</text>`;
   }).join("");
-  return `<div class="card"><h3>最近 14 天（每日体力消耗/预计产出，悬停看明细）</h3>
+  return `<div class="card"><h3>最近 14 天<span class="h-sub">每日体力消耗 / 预计产出，悬停看明细</span></h3>
     <svg width="${W}" height="${H}" style="max-width:100%">${bars}
-      <text x="${pad}" y="14" fill="#4da3ff" font-size="11">■ 体力消耗</text>
+      <text x="${pad}" y="14" fill="#53b6ff" font-size="11">■ 体力消耗</text>
       <text x="${pad+90}" y="14" fill="#3ecf8e" font-size="11">■ 预计产出</text></svg></div>`;
+}
+function statusTag(st){
+  const map={done:["ok","完成"],short:["warn","体力不足"],skipped:["warn","跳过"],
+    failed:["err","失败"],reconciled:["acc","已对账"]};
+  const m=map[st]||["",""];
+  return m[0]?`<span class="tag ${m[0]}">${m[1]}</span>`:`<span class="tag">${esc(st)}</span>`;
 }
 async function renderHistory(){
   const r=await api("/api/history");
@@ -872,31 +1127,32 @@ async function renderHistory(){
   const rows=(r.history||[]).slice().reverse().map(h=>{
     const actualCell = h.status!=="done" ? `<span class="muted">—</span>` :
       (h.actual_gain!==undefined
-        ? `<b>${h.actual_gain}</b> <span class="muted">(${esc(h.confirmed_at||"已确认")})</span>`
+        ? `<b class="num">${h.actual_gain}</b> <span class="muted">(${esc(h.confirmed_at||"已确认")})</span>`
         : `<span class="row" style="gap:4px"><input type="number" min="0" style="width:70px" placeholder="实际" data-cf-day="${esc(h.day)}" data-cf-time="${esc(h.time)}" data-cf-mat="${esc(h.mat_id)}">
            <button class="btn sec mini" data-cf="1">确认</button></span>`);
-    return `<tr><td>${esc(h.day)} ${esc(h.time)}</td><td>${esc(h.name)}</td><td>${h.runs}</td>
-    <td>${h.stamina}</td><td>${h.gain>0?"+"+h.gain:"-"}</td><td>${actualCell}</td>
-    <td>${{done:"完成",short:"体力不足",skipped:"跳过",failed:"失败",reconciled:"已对账"}[h.status]||esc(h.status)}</td>
-    <td class="muted">${esc(h.note||"")}</td></tr>`;}).join("");
+    return `<tr><td class="muted num">${esc(h.day)} ${esc(h.time)}</td><td><b>${esc(h.name)}</b></td><td class="num">${h.runs}</td>
+    <td class="num">${h.stamina}</td><td class="num">${h.gain>0?"+"+h.gain:"-"}</td><td>${actualCell}</td>
+    <td>${statusTag(h.status)}</td>
+    <td class="muted" style="max-width:260px">${esc(h.note||"")}</td></tr>`;}).join("");
   const sug = await api("/api/yield-suggestions").catch(()=>({suggestions:[]}));
   const sugRows=(sug.suggestions||[]).map(s=>`
-    <tr><td>${esc(s.name)}</td><td>${s.configured_yield}</td>
-    <td>${s.confirmed_runs} 轮 / ${s.confirmed_gain} 个</td>
-    <td><b>${s.measured_yield}</b></td><td><b>${s.suggested_yield}</b></td>
+    <tr><td><b>${esc(s.name)}</b></td><td class="num">${s.configured_yield}</td>
+    <td class="num">${s.confirmed_runs} 轮 / ${s.confirmed_gain} 个</td>
+    <td class="num"><b>${s.measured_yield}</b></td><td class="num"><b>${s.suggested_yield}</b></td>
     <td>${s.suggested_yield!==s.configured_yield
       ?`<button class="btn mini" data-apply-mat="${esc(s.mat_id)}" data-apply-val="${s.suggested_yield}">应用</button>`
       :`<span class="tag ok">一致</span>`}</td></tr>`).join("");
-  const sugCard=(sug.suggestions||[]).length?`<div class="card"><h3>产量校准建议（基于已确认实际获得；只建议，应用后走产量表通道）</h3>
+  const sugCard=(sug.suggestions||[]).length?`<div class="card"><h3>产量校准建议<span class="h-sub">基于已确认实际获得；只建议，应用后走产量表通道</span></h3>
     <table><tr><th>材料</th><th>当前产量</th><th>已确认累计</th><th>实测每轮</th><th>建议值</th><th>操作</th></tr>${sugRows}</table>
-    <div class="muted" style="margin-top:6px">measured = Σ实际获得 ÷ Σ轮数（全部已确认的完成记录）；应用 = 把该材料的每轮产出改为建议值。样本少时建议先多确认几条再看。</div></div>`:"";
-  $("#main").innerHTML=`${chart}${sugCard}<div class="card"><h3>执行历史（最近200条）</h3>
-    ${rows?`<table><tr><th>时间</th><th>目标</th><th>轮数</th><th>体力</th><th>预计产出</th><th>实际获得</th><th>结果</th><th>备注</th></tr>${rows}</table>`:'<div class="muted">还没有记录</div>'}</div>`;
+    <div class="muted" style="margin-top:8px">measured = Σ实际获得 ÷ Σ轮数（全部已确认的完成记录）；应用 = 把该材料的每轮产出改为建议值。样本少时建议先多确认几条再看。</div></div>`:"";
+  $("#main").innerHTML=`${chart}${sugCard}<div class="card"><h3>执行历史<span class="h-sub">最近 200 条</span></h3>
+    ${rows?`<table><tr><th>时间</th><th>目标</th><th>轮数</th><th>体力</th><th>预计产出</th><th>实际获得</th><th>结果</th><th>备注</th></tr>${rows}</table>`
+      :`<div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>还没有执行记录</div>`}</div>`;
   document.querySelectorAll("[data-cf]").forEach(btn=>btn.onclick=async()=>{
     const wrap=btn.closest(".row");
     const inp=wrap.querySelector("input[data-cf-day]");
     const v=+inp.value;
-    if(!(v>=0)){alert("请填写非负整数");return;}
+    if(!(v>=0)){toast("请填写非负整数","err");return;}
     try{
       const res=await api("/api/history/confirm",{day:inp.dataset.cfDay,time:inp.dataset.cfTime,mat_id:inp.dataset.cfMat,actual_gain:v});
       if(!res.ok) throw new Error(res.message||res.error);
@@ -905,17 +1161,22 @@ async function renderHistory(){
   });
   document.querySelectorAll("[data-apply-mat]").forEach(btn=>btn.onclick=async()=>{
     const mat=btn.dataset.applyMat, val=+btn.dataset.applyVal;
-    if(!confirm(`把「${matName(mat)}」的每轮产出改为 ${val}？`))return;
+    if(!(await qConfirm(`把「${matName(mat)}」的每轮产出改为 ${val}？`)))return;
     try{
       const per_run={...BOOT.tables.yields.per_run,[mat]:val};
       const res=await api("/api/tables/yields",{per_run});
       BOOT.tables.yields=res.yields;
+      toast(`「${matName(mat)}」产量已改为 ${val}`);
       renderHistory();
     }catch(e){alertErr(e);}
   });
 }
 
 /* ---------- 框架 ---------- */
+const PAGE_TITLES={overview:["总览","当日计划 · 执行控制 · 推演"],chars:["角色","养成目标与直接材料需求"],
+  common:["通用材料","每角色通用数量 → 具体材料映射"],inv:["库存","全量材料持有量"],
+  tables:["数据表","产量 · 需求表 · 材料名校准"],settings:["设置","执行策略 · 体力模型 · 导入导出"],
+  history:["历史","执行记录与产量校准闭环"]};
 async function boot(){
   BOOT=await api("/api/bootstrap");
   const tags=[];
@@ -928,19 +1189,24 @@ async function boot(){
     tags.push(`<span class="tag ok">ok-nte ${esc(c.version||"?")}</span>`);
   tags.push(BOOT.admin?`<span class="tag ok">管理员</span>`:`<span class="tag warn">非管理员</span>`);
   tags.push(BOOT.oknte_running?`<span class="tag warn">ok-nte 运行中</span>`:`<span class="tag ok">ok-nte 已关闭</span>`);
-  $("#envTags").innerHTML=tags.join(" ");
+  $("#envTags").innerHTML=tags.join("");
 }
-document.querySelectorAll("#nav button").forEach(b=>b.onclick=()=>{
-  document.querySelectorAll("#nav button").forEach(x=>x.classList.remove("on"));
-  b.classList.add("on");
+let CURRENT="overview";
+function switchPage(t){
+  CURRENT=t;
+  document.querySelectorAll("#nav button").forEach(x=>x.classList.toggle("on",x.dataset.t===t));
+  const title=PAGE_TITLES[t]||[t,""];
+  $("#pageTitle").textContent=title[0];
+  $("#pageSub").textContent=title[1];
   clearInterval(TIMER);
-  const t=b.dataset.t;
+  if(!BOOT) return;  // bootstrap 未完成（兼容检测约需数秒）：先记下目标页，boot 完成后按 CURRENT 渲染
   ({overview:renderOverview,chars:renderChars,common:renderCommon,inv:renderInv,
     tables:renderTables,settings:renderSettings,history:renderHistory})[t]();
   if(t==="overview") TIMER=setInterval(refreshStatus,2000);
-});
-boot().then(()=>{renderOverview();TIMER=setInterval(refreshStatus,2000);}).catch(e=>{
-  $("#main").innerHTML=`<div class="card"><span class="tag err">加载失败：${esc(e.message)}</span></div>`;
+}
+document.querySelectorAll("#nav button").forEach(b=>b.onclick=()=>switchPage(b.dataset.t));
+boot().then(()=>switchPage(CURRENT)).catch(e=>{
+  $("#main").innerHTML=`<div class="card"><div class="banner warn">加载失败：${esc(e.message)}</div></div>`;
 });
 </script>
 </body>
