@@ -5,6 +5,7 @@ import sys
 import threading
 import uuid
 from datetime import datetime, timedelta
+from pathlib import Path
 
 if getattr(sys, "frozen", False):  # PyInstaller 等打包环境：用户数据放 EXE 旁边，不进临时解包目录
     ROOT = os.path.dirname(os.path.abspath(sys.executable))
@@ -21,9 +22,8 @@ def save_json_atomic(path, data):
     任何时刻崩溃，主文件要么是旧完整内容、要么是新完整内容，绝不出现半截 JSON；
     替换窗口内主文件短暂缺失时，读取方由 .bak 兜底（见 load_json）。
     """
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    tmp = Path(path + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     if os.path.exists(path):
         os.replace(path, path + ".bak")
     os.replace(tmp, path)

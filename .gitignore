@@ -1,8 +1,18 @@
+# Python 运行产物
 __pycache__/
 *.pyc
-data/backups/
-tools/_build/
+
+# 构建产物
 dist/
+tools/_build/
 *.tmp
+
+# 本机工具状态
 .zcode/
-data/requirements.json.bak
+.mimosa/
+*.log
+
+# 用户/运行时数据（只保留 data/ 下的数据表：materials/yields/requirements/game_data/mysqil）
+data/backups/
+data/*.bak
+data/runtime.json

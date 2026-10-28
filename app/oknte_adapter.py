@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import time
 from datetime import datetime
+from pathlib import Path
 
 from .state import DATA_DIR
 
@@ -234,10 +235,9 @@ class OkNte:
         if self.is_running():
             raise OkNteError("ok-nte 正在运行，拒绝写入配置（运行中的程序会把改动覆盖回去）")
         patch = self.build_anomaly_patch(target_config, stamina_target, hunter=hunter)
-        tmp = self.routine_config + ".planner.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(patch["patched"], f, ensure_ascii=False, indent=4)
-            f.write("\n")
+        tmp = Path(self.routine_config + ".planner.tmp")
+        tmp.write_text(json.dumps(patch["patched"], ensure_ascii=False, indent=4) + "\n",
+                       encoding="utf-8")
         os.replace(tmp, self.routine_config)
         return patch["diff"]
 
@@ -301,10 +301,9 @@ class OkNte:
         if not isinstance(content, dict) or not isinstance(content.get("daily_anomaly"), dict):
             raise OkNteError("备份内容不含 daily_anomaly 段，拒绝恢复")
         self.backup_routine_config()  # 恢复前留当前现状，回滚可逆
-        tmp = self.routine_config + ".planner.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(content, f, ensure_ascii=False, indent=4)
-            f.write("\n")
+        tmp = Path(self.routine_config + ".planner.tmp")
+        tmp.write_text(json.dumps(content, ensure_ascii=False, indent=4) + "\n",
+                       encoding="utf-8")
         os.replace(tmp, self.routine_config)
         return safe
 
@@ -349,10 +348,9 @@ class OkNte:
 
     @staticmethod
     def _atomic_write_json(path, data):
-        tmp = path + ".planner.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
-            f.write("\n")
+        tmp = Path(path + ".planner.tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=4) + "\n",
+                       encoding="utf-8")
         os.replace(tmp, path)
 
     def write_hunter_config(self, target, reward_count):

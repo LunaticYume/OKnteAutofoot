@@ -1,5 +1,6 @@
 """应用图标生成（纯标准库 BMP-in-ICO）：构建脚本与 dist 自测共用。"""
 import struct
+from pathlib import Path
 
 
 def generate_icon(path):
@@ -41,5 +42,4 @@ def generate_icon(path):
         data = images[size]
         out += struct.pack("<BBBBHHII", size, size, 0, 0, 1, 32, len(data), offset)
         offset += len(data)
-    with open(path, "wb") as f:
-        f.write(out + images[32] + images[16])
+    Path(path).write_bytes(out + images[32] + images[16])
