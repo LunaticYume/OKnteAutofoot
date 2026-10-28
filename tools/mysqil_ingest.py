@@ -55,7 +55,11 @@ def main():
             if entry is None:
                 print(f"  警告：书系『{material}』成员『{name}』不在角色目录，跳过")
                 continue
-            attr_votes.setdefault(entry["attribute"], {}).setdefault(n, []).append(name)
+            attribute = entry.get("attribute")
+            if not attribute:
+                print(f"  警告：角色『{name}』缺少 attribute 字段，跳过属性投票")
+                continue
+            attr_votes.setdefault(attribute, {}).setdefault(n, []).append(name)
     attr_map = {}
     exceptions = []
     for attribute, votes in sorted(attr_votes.items()):
@@ -76,7 +80,10 @@ def main():
     # ---- 2) 25 角色映射重写（boss/weekly/mob/skill 全覆盖，confidence high）----
     updated = 0
     for entry in game["characters"]:
-        name = entry["name"]
+        name = entry.get("name")
+        if not name:
+            print("  警告：characters 中存在缺少 name 的条目，跳过")
+            continue
         if not entry.get("live"):
             continue
         lookup = f"「{name}」" if name == "零" else name
