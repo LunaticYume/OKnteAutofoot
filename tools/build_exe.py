@@ -23,6 +23,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from io import FileIO
+from pathlib import Path
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
@@ -235,8 +237,7 @@ def build_dist():
     for name in TABLE_FILES:
         shutil.copy2(os.path.join(ROOT, "data", name),
                      os.path.join(DIST, "data", name))
-    with open(os.path.join(DIST, "使用说明.txt"), "w", encoding="utf-8") as f:
-        f.write(USAGE_TXT)
+    Path(DIST, "使用说明.txt").write_text(USAGE_TXT, encoding="utf-8")
     if os.path.isfile(os.path.join(ROOT, "README.md")):
         shutil.copy2(os.path.join(ROOT, "README.md"), DIST)
 
@@ -250,10 +251,9 @@ def build_dist():
     with tempfile.TemporaryDirectory(prefix="oknte_build_") as tmp:
         cs = os.path.join(tmp, "Launcher.cs")
         manifest = os.path.join(tmp, "app.manifest")
-        with open(cs, "w", encoding="utf-8-sig") as f:  # BOM：csc 才能按 UTF-8 读中文
-            f.write(LAUNCHER_CS)
-        with open(manifest, "w", encoding="utf-8") as f:
-            f.write(APP_MANIFEST)
+        # BOM：csc 才能按 UTF-8 读中文
+        Path(cs).write_text(LAUNCHER_CS, encoding="utf-8-sig")
+        Path(manifest).write_text(APP_MANIFEST, encoding="utf-8")
         exe = os.path.join(DIST, "异环养成规划器.exe")
         result = subprocess.run(
             [csc, "/nologo", "/codepage:65001", "/target:winexe",
@@ -369,14 +369,13 @@ def try_pyinstaller_single(py):
         for name in TABLE_FILES:
             shutil.copy2(os.path.join(ROOT, "data", name),
                          os.path.join(DIST_SINGLE, "data", name))
-        with open(os.path.join(DIST_SINGLE, "使用说明.txt"), "w", encoding="utf-8") as f:
-            f.write(USAGE_TXT)
+        Path(DIST_SINGLE, "使用说明.txt").write_text(USAGE_TXT, encoding="utf-8")
         # 探针（无 admin 标志）：验证冻结环境下数据目录落在 EXE 旁而非 _MEIPASS 临时目录
         probe_dir = os.path.join(ROOT, "tools", "_build", "probe")
         os.makedirs(probe_dir, exist_ok=True)
         probe_py = os.path.join(probe_dir, "probe.py")
-        with open(probe_py, "w", encoding="utf-8") as f:
-            f.write("from app.state import DATA_DIR\nprint(DATA_DIR)\n")
+        Path(probe_py).write_text(
+            "from app.state import DATA_DIR\nprint(DATA_DIR)\n", encoding="utf-8")
         r2 = subprocess.run(
             [py, "-m", "PyInstaller", "--noconfirm", "--onefile",
              "--name", "probe", "--distpath", probe_dir,
@@ -409,7 +408,7 @@ def _launch_and_probe(exe_path, port, ui_env, timeout=90):
     pristine = {os.path.join(base, n)
                 for base, _dirs, files in os.walk(exe_dir) for n in files}
     out_path = os.path.join(exe_dir, "_probe_out.log")
-    out_file = open(out_path, "wb")
+    out_file = FileIO(out_path, "wb")
     proc = subprocess.Popen(
         [exe_path], cwd=exe_dir, env={**os.environ,
                                       "OKNTE_PLANNER_PORT": str(port),
@@ -473,8 +472,7 @@ def _compile_test_launcher(out_exe):
         return None
     with tempfile.TemporaryDirectory(prefix="oknte_livecs_") as tmp:
         cs = os.path.join(tmp, "Launcher.cs")
-        with open(cs, "w", encoding="utf-8-sig") as f:
-            f.write(LAUNCHER_CS)
+        Path(cs).write_text(LAUNCHER_CS, encoding="utf-8-sig")
         result = subprocess.run(
             [csc, "/nologo", "/codepage:65001", "/target:winexe",
              f"/out:{out_exe}", cs], capture_output=True, text=True, timeout=120)

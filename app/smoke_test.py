@@ -18,10 +18,12 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 import tempfile
 import time
 import traceback
 import urllib.error
+import urllib.parse
 import urllib.request
 
 try:  # Windows 控制台中文输出保险
@@ -35,6 +37,8 @@ EMBEDDED_PY = r"D:\GamingAssistant\ok-nte\data\apps\ok-nte\python\python.exe"
 PY = EMBEDDED_PY if os.path.isfile(EMBEDDED_PY) else sys.executable
 PORT = 18765
 BASE = f"http://127.0.0.1:{PORT}"
+# 直连：系统代理/TUN 可能截获 127.0.0.1 请求导致假超时（与 build_exe 探针同口径）
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 SAMPLE_CHARACTER = {
     "name": "冒烟测试角色",
@@ -64,8 +68,7 @@ class _StateFileGuard:
     def __exit__(self, *exc):
         for path, (existed, raw) in self._files.items():
             if existed:
-                with open(path, "wb") as f:
-                    f.write(raw)
+                Path(path).write_bytes(raw)
             elif os.path.isfile(path):
                 os.remove(path)
         return False
@@ -73,14 +76,17 @@ class _StateFileGuard:
 
 def _request(path, payload=None, timeout=30):
     """GET（payload=None）/ POST JSON，非 2xx 抛 HTTPError。返回解析后的 JSON。"""
+    url = BASE + path
+    host = urllib.parse.urlsplit(url).hostname
+    assert host == "127.0.0.1", f"冒烟测试只允许访问本机面板，拒绝: {url}"
     if payload is None:
-        req = urllib.request.Request(BASE + path, method="GET")
+        req = urllib.request.Request(url, method="GET")
     else:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(
-            BASE + path, data=body, method="POST",
+            url, data=body, method="POST",
             headers={"Content-Type": "application/json; charset=utf-8"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with _OPENER.open(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
@@ -212,8 +218,10 @@ def _step_common_costs():
 
 
 def _step_compat_report():
-    req = urllib.request.Request(BASE + "/api/compat-report")
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    url = BASE + "/api/compat-report"
+    assert urllib.parse.urlsplit(url).hostname == "127.0.0.1", f"只允许本机: {url}"
+    req = urllib.request.Request(url)
+    with _OPENER.open(req, timeout=30) as resp:
         body = resp.read().decode("utf-8")
         assert resp.status == 200 and "兼容报告" in body and "首查清单" in body \
             and "兼容指纹" in body, f"报告内容异常: {body[:200]}"

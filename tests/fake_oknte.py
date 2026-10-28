@@ -7,7 +7,9 @@
   FAKE_DELAY  启动后先睡的秒数（默认0.05）
   FAKE_DELAY2 成功路径领取奖励前的秒数（默认0.05）
   FAKE_HANG   hang 模式常驻秒数（默认60）
-  FAKE_LOG    要追加日志的文件（working/logs/ok-script.log 的绝对路径）
+
+日志固定追加到 <cwd>/logs/ok-script.log（cwd 为伪造的 ok-nte working 目录，
+与 ok-nte 真实日志布局一致，无需额外传参）。
 
 日志行格式与 ok-nte 真实格式一致（oknte_adapter.RunMonitor/scan_used_stamina 的解析目标）。
 轮数从 runner 写入的配置（daily_anomaly.目标消耗体力）推导，模拟真实行为闭环。
@@ -17,19 +19,20 @@ import os
 import sys
 import time
 from datetime import datetime
+from pathlib import Path
 
 CONFIG_REL = os.path.join("configs", "DailyRoutineTaskConfigs.json")
 
 
 def _emit(log, text):
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with open(log, "a", encoding="utf-8", newline="\n") as f:
+    with Path(log).open("a", encoding="utf-8", newline="\n") as f:
         f.write(f"{stamp},100 INFO TaskExecutor DailyRoutineTask:{text}\n")
 
 
 def main():
     mode = os.environ.get("FAKE_MODE", "done")
-    log = os.environ["FAKE_LOG"]
+    log = os.path.join(os.getcwd(), "logs", "ok-script.log")
     stamina = 0
     try:
         with open(os.path.join(os.getcwd(), CONFIG_REL), encoding="utf-8") as f:

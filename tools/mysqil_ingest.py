@@ -8,6 +8,7 @@
 import json
 import os
 import sys
+from pathlib import Path
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(ROOT, "data")
@@ -188,12 +189,12 @@ def main():
           f"角色硬币合计 {coin_total:,}（独立调研 215万 ✓）")
 
     # ---- 6) 全部落盘（全部计算与校验通过后才写：中途崩溃不会留下半套互相矛盾的数据）----
-    json.dump(game, open(os.path.join(DATA, "game_data.json"), "w", encoding="utf-8"),
-              ensure_ascii=False, indent=2)
-    json.dump(requirements, open(os.path.join(DATA, "requirements.json"), "w", encoding="utf-8"),
-              ensure_ascii=False, indent=2)
-    json.dump(y, open(os.path.join(DATA, "yields.json"), "w", encoding="utf-8"),
-              ensure_ascii=False, indent=2)
+    (Path(DATA) / "game_data.json").write_text(
+        json.dumps(game, ensure_ascii=False, indent=2), encoding="utf-8")
+    (Path(DATA) / "requirements.json").write_text(
+        json.dumps(requirements, ensure_ascii=False, indent=2), encoding="utf-8")
+    (Path(DATA) / "yields.json").write_text(
+        json.dumps(y, ensure_ascii=False, indent=2), encoding="utf-8")
     print("已落盘: game_data.json / requirements.json / yields.json")
 
 

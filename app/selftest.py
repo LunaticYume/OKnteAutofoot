@@ -25,6 +25,7 @@ import tempfile
 import time
 import traceback
 from datetime import datetime
+from pathlib import Path
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
@@ -48,6 +49,31 @@ CASES = []
 def case(fn):
     CASES.append(fn)
     return fn
+
+
+# ---------- 路径安全（夹具写入必须经此，防路径穿越） ----------
+
+def _safe_path(base, *parts):
+    """把 parts 拼接到 base 下并校验结果不越出 base，返回归一化后的绝对路径。"""
+    root = os.path.realpath(base)
+    target = os.path.realpath(os.path.join(root, *parts))
+    if os.path.commonpath([root, target]) != root:
+        raise ValueError(f"夹具路径越界: {target} 不在 {root} 内")
+    return target
+
+
+def _contained(path, base):
+    """校验已生成的路径未越出 base，返回归一化后的绝对路径（用于 adapter 派生路径）。"""
+    root = os.path.realpath(base)
+    p = os.path.realpath(path)
+    if os.path.commonpath([root, p]) != root:
+        raise ValueError(f"夹具路径越界: {p} 不在 {root} 内")
+    return p
+
+
+# 唯一允许触碰的项目真实文件：data/state.json（_StateGuard 备份/恢复专用，经校验）
+_STATE_FILE_SAFE = _safe_path(os.path.dirname(os.path.abspath(STATE_FILE)),
+                              os.path.basename(STATE_FILE))
 
 
 # ---------- 公共工具 ----------
@@ -79,10 +105,9 @@ class _StateGuard:
         with STATE.lock:
             STATE.data = self.data_copy
             if self.existed:
-                with open(STATE_FILE, "wb") as f:
-                    f.write(self.raw)
-            elif os.path.isfile(STATE_FILE):
-                os.remove(STATE_FILE)
+                Path(_STATE_FILE_SAFE).write_bytes(self.raw)
+            elif os.path.isfile(_STATE_FILE_SAFE):
+                os.remove(_STATE_FILE_SAFE)
         return False
 
 
@@ -127,28 +152,26 @@ FAKE_ROUTINE_CONFIG = {
 
 def _build_fake_oknte(tmp, logs=None, cfg=None):
     """在 tmp 下伪造 ok-nte 目录结构（含配置与其他段），返回 OkNte 实例。"""
-    apps = os.path.join(tmp, "data", "apps", "ok-nte")
-    os.makedirs(os.path.join(apps, "working", "configs"), exist_ok=True)
-    os.makedirs(os.path.join(apps, "working", "logs"), exist_ok=True)
-    os.makedirs(os.path.join(apps, "python"), exist_ok=True)
-    os.makedirs(os.path.join(apps, "working", "ok"), exist_ok=True)
-    open(os.path.join(apps, "working", "ok", "__init__.py"), "wb").close()
-    open(os.path.join(apps, "working", "main.py"), "wb").close()
+    apps = _safe_path(tmp, "data", "apps", "ok-nte")
+    os.makedirs(_safe_path(apps, "working", "configs"), exist_ok=True)
+    os.makedirs(_safe_path(apps, "working", "logs"), exist_ok=True)
+    os.makedirs(_safe_path(apps, "python"), exist_ok=True)
+    os.makedirs(_safe_path(apps, "working", "ok"), exist_ok=True)
+    Path(_safe_path(apps, "working", "ok", "__init__.py")).touch()
+    Path(_safe_path(apps, "working", "main.py")).touch()
     # compat_check 只要求 python.exe 是个文件，放个空文件即可
-    with open(os.path.join(apps, "python", "python.exe"), "wb"):
-        pass
-    cfg_path = os.path.join(apps, "working", "configs", "DailyRoutineTaskConfigs.json")
-    with open(cfg_path, "w", encoding="utf-8") as f:
-        json.dump(cfg if cfg is not None else FAKE_ROUTINE_CONFIG, f,
-                  ensure_ascii=False, indent=4)
-    with open(os.path.join(apps, "working", "configs", "AnomalyHunter.json"),
-              "w", encoding="utf-8") as f:
-        json.dump({"追猎目标": "海囚", "领取奖励次数": 0}, f, ensure_ascii=False, indent=4)
+    Path(_safe_path(apps, "python", "python.exe")).touch()
+    cfg_path = _safe_path(apps, "working", "configs", "DailyRoutineTaskConfigs.json")
+    Path(cfg_path).write_text(
+        json.dumps(cfg if cfg is not None else FAKE_ROUTINE_CONFIG,
+                   ensure_ascii=False, indent=4), encoding="utf-8")
+    Path(_safe_path(apps, "working", "configs", "AnomalyHunter.json")).write_text(
+        json.dumps({"追猎目标": "海囚", "领取奖励次数": 0}, ensure_ascii=False, indent=4),
+        encoding="utf-8")
     for name, lines in (logs or {}).items():
         # newline="\n" 保证字节数与字符数一致（LogTail 按字节偏移读取）
-        with open(os.path.join(apps, "working", "logs", name), "w",
-                  encoding="utf-8", newline="\n") as f:
-            f.write("".join(line + "\n" for line in lines))
+        Path(_safe_path(apps, "working", "logs", name)).write_text(
+            "".join(line + "\n" for line in lines), encoding="utf-8", newline="\n")
     return OkNte(tmp)
 
 
@@ -213,10 +236,9 @@ def test_compat_fingerprint_patch_matrix():
         dirs.append(tmp)
         ok = _build_fake_oknte(os.path.join(tmp, "root"), cfg=cfg)
         if broken is not None:
-            with open(ok.routine_config, "w", encoding="utf-8") as f:
-                f.write(broken)
+            Path(_contained(ok.routine_config, ok.root)).write_text(broken, encoding="utf-8")
         if no_cfg:
-            os.remove(ok.routine_config)
+            os.remove(_contained(ok.routine_config, ok.root))
         ok.is_running = lambda: False  # 矩阵只测结构与补丁，不测进程检测
         return ok
 
@@ -411,11 +433,10 @@ def test_monitor_failed():
 def test_logtail_increment_and_rotate():
     tmp = tempfile.mkdtemp(prefix="oknte_selftest_")
     try:
-        path = os.path.join(tmp, "ok-script.log")
+        path = _safe_path(tmp, "ok-script.log")
 
         def write_all(text):
-            with open(path, "w", encoding="utf-8", newline="\n") as f:
-                f.write(text)
+            Path(path).write_text(text, encoding="utf-8", newline="\n")
 
         write_all("alpha\nbeta\n")
         tail = LogTail([path])
@@ -827,9 +848,10 @@ def test_scan_used_stamina_max():
         assert ok.scan_used_stamina("2026-10-24") == 132, \
             "两条 OCR 记录（96/132）应取最大值 132，且忽略前一日记录"
         # 带日期的轮转日志也应参与扫描
-        with open(os.path.join(ok.log_dir, "ok-script.2026-10-24.log"), "w",
-                  encoding="utf-8", newline="\n") as f:
-            f.write("2026-10-24 10:00:00,000 [INFO] ocr found used stamina 120\n")
+        Path(_contained(os.path.join(ok.log_dir, "ok-script.2026-10-24.log"),
+                        ok.root)).write_text(
+            "2026-10-24 10:00:00,000 [INFO] ocr found used stamina 120\n",
+            encoding="utf-8", newline="\n")
         assert ok.scan_used_stamina("2026-10-24") == 132, "跨日志文件仍应取最大值"
         assert ok.scan_used_stamina("2026-10-25") is None, "无匹配记录应返回 None"
     finally:
@@ -844,7 +866,8 @@ def test_recovery_crash_matrix():
     orig_runtime_file = runner_mod.RUNTIME_FILE
     orig_pid_alive = runner_mod._pid_alive
     orig_oknte_cls = runner_mod.OkNte
-    runner_mod.RUNTIME_FILE = os.path.join(tmp, "runtime.json")
+    rt_file = _safe_path(tmp, "runtime.json")
+    runner_mod.RUNTIME_FILE = rt_file
 
     class FakeOkNte:  # 与现有 runner 用例同规约：绝不真实写配置/拉起进程
         def __init__(self, root):
@@ -866,8 +889,8 @@ def test_recovery_crash_matrix():
             STATE.data["characters"] = []
 
             def seed_runtime(rt):
-                with open(runner_mod.RUNTIME_FILE, "w", encoding="utf-8") as f:
-                    json.dump(rt, f, ensure_ascii=False, indent=2)
+                Path(rt_file).write_text(json.dumps(rt, ensure_ascii=False, indent=2),
+                                         encoding="utf-8")
 
             def make_exec(phase, pid=12345):
                 return {"execution_id": "e1", "phase": phase, "pid": pid,
@@ -877,8 +900,8 @@ def test_recovery_crash_matrix():
                         "outcome": None}
 
             # 0) 首次启动（无 runtime 文件）→ 干净 stopped，无提示
-            if os.path.exists(runner_mod.RUNTIME_FILE):
-                os.remove(runner_mod.RUNTIME_FILE)
+            if os.path.exists(rt_file):
+                os.remove(rt_file)
             r = runner_mod.RUNNER.recover_on_startup()
             assert r["prev_state"] is None and r["pending"] == [] and not r["corrupt"], r
             assert runner_mod.RUNNER.snapshot()["state"] != "interrupted"
@@ -939,21 +962,19 @@ def test_recovery_crash_matrix():
             # 6) runtime.json 损坏且无备份 → interrupted + 提示人工核对（不猜测）
             #    （有 .bak 时 load_json 会按设计回退成功，走正常恢复路径，不算 corrupt）
             for suffix in ("", ".bak", ".corrupt"):
-                path = runner_mod.RUNTIME_FILE + suffix
+                path = _safe_path(tmp, "runtime.json" + suffix)
                 if os.path.exists(path):
                     os.remove(path)
-            with open(runner_mod.RUNTIME_FILE, "w", encoding="utf-8") as f:
-                f.write('{"version": 1, "state": "run')
+            Path(rt_file).write_text('{"version": 1, "state": "run', encoding="utf-8")
             r = runner_mod.RUNNER.recover_on_startup()
             assert r["corrupt"] is True, "损坏应上报 corrupt"
             assert runner_mod.RUNNER.snapshot()["state"] == "interrupted"
 
             # 7) JSON 写入中断（截断）+ .bak 兜底：load_json 回退到最后完好版本
-            demo = os.path.join(tmp, "demo.json")
-            with open(demo + ".bak", "w", encoding="utf-8") as f:
-                json.dump({"good": 1}, f)
-            with open(demo, "w", encoding="utf-8") as f:
-                f.write('{"good": 2, "brok')  # 写入中途的半截
+            demo = _safe_path(tmp, "demo.json")
+            demo_bak = _safe_path(tmp, "demo.json.bak")
+            Path(demo_bak).write_text(json.dumps({"good": 1}), encoding="utf-8")
+            Path(demo).write_text('{"good": 2, "brok', encoding="utf-8")  # 写入中途的半截
             from app.state import load_json
             assert load_json(demo) == {"good": 1}, "截断主文件应回退 .bak"
             assert os.path.isfile(demo + ".corrupt"), "损坏文件应留档供人工检查"
@@ -1029,8 +1050,8 @@ def test_dry_run_hundred_times():
             assert runner_mod.RUNNER.snapshot()["state"] == before_runtime_state, \
                 "runtime 不得进入 running"
             # incompatible 场景：配置损坏 → compat 失败且不生成补丁
-            with open(cfg_path, "w", encoding="utf-8") as f:
-                f.write('{"daily_anomaly": broken')
+            Path(_contained(cfg_path, ok.root)).write_text('{"daily_anomaly": broken',
+                                                           encoding="utf-8")
             r = perform_dry_run(ok)
             assert r["ok"] is False and r["patch"] is None \
                 and r["compat"]["status"] == "incompatible", \
@@ -1064,14 +1085,12 @@ class _E2EOkNte(OkNte):
         type(self).launches.append((time.time(), dict(self.mode_env)))
         env = dict(os.environ)
         env.update(self.mode_env)
-        env["FAKE_LOG"] = os.path.join(self.log_dir, "ok-script.log")
         return [sys.executable, FAKE_OKNTE], self.working, env
 
     def run_command_hunter(self):
         type(self).hunter_launches.append((time.time(), dict(self.mode_env)))
         env = dict(os.environ)
         env.update({**self.mode_env, "FAKE_MODE": "hunter"})
-        env["FAKE_LOG"] = os.path.join(self.log_dir, "ok-script.log")
         return [sys.executable, FAKE_OKNTE], self.working, env
 
     def is_running(self):
@@ -1109,9 +1128,9 @@ class _E2EGuard:
         STATE.data["today"] = _empty_today()
         STATE.data["characters"] = []
         # 日志文件必须先存在：LogTail 才能在拉起子进程前建立基线偏移
-        log_dir = os.path.join(self.root, "data", "apps", "ok-nte", "working", "logs")
+        log_dir = _safe_path(self.root, "data", "apps", "ok-nte", "working", "logs")
         os.makedirs(log_dir, exist_ok=True)
-        open(os.path.join(log_dir, "ok-script.log"), "a").close()
+        open(_safe_path(log_dir, "ok-script.log"), "a").close()
         if mode:
             _E2EOkNte.mode_env = {**_E2EOkNte.mode_env, "FAKE_MODE": mode}
 
@@ -1264,8 +1283,8 @@ def test_e2e_upstream_break_fail_closed():  # 场景G：上游配置损坏→不
         ok = _build_fake_oknte(e2e.root)
         broken = json.loads(json.dumps(FAKE_ROUTINE_CONFIG))
         del broken["daily_anomaly"]["任务类型"]
-        with open(ok.routine_config, "w", encoding="utf-8") as f:
-            json.dump(broken, f, ensure_ascii=False, indent=4)
+        Path(_contained(ok.routine_config, ok.root)).write_text(
+            json.dumps(broken, ensure_ascii=False, indent=4), encoding="utf-8")
         with open(ok.routine_config, "rb") as f:
             before = f.read()
         e2e.configure(continuous_mode=False)
@@ -1491,8 +1510,8 @@ def test_export_import_and_rollback():
     tmp = tempfile.mkdtemp(prefix="oknte_impexp_")
     orig_main_datadir = main_mod.DATA_DIR
     orig_adapter_datadir = adapter_mod.DATA_DIR
-    main_mod.DATA_DIR = os.path.join(tmp, "planner_data")
-    adapter_mod.DATA_DIR = os.path.join(tmp, "planner_data")  # 与 main 同一备份根
+    main_mod.DATA_DIR = _safe_path(tmp, "planner_data")
+    adapter_mod.DATA_DIR = main_mod.DATA_DIR  # 与 main 同一备份根
     os.makedirs(main_mod.DATA_DIR, exist_ok=True)
     try:
         with _StateGuard():
@@ -1540,13 +1559,12 @@ def test_export_import_and_rollback():
             root = os.path.join(tmp, "root")
             ok = _build_fake_oknte(root)
             ok.is_running = lambda: False
-            backups_dir = os.path.join(adapter_mod.DATA_DIR, "backups")
+            backups_dir = _safe_path(adapter_mod.DATA_DIR, "backups")
             os.makedirs(backups_dir, exist_ok=True)
             good = copy.deepcopy(FAKE_ROUTINE_CONFIG)
             good["daily_anomaly"]["目标消耗体力"] = 77
-            with open(os.path.join(backups_dir, f"{adapter_mod.ROUTINE_CONFIG_NAME}.20260101_000000"),
-                      "w", encoding="utf-8") as f:
-                json.dump(good, f, ensure_ascii=False, indent=4)
+            Path(_safe_path(backups_dir, f"{adapter_mod.ROUTINE_CONFIG_NAME}.20260101_000000")
+                 ).write_text(json.dumps(good, ensure_ascii=False, indent=4), encoding="utf-8")
             names = [b["name"] for b in ok.list_backups()]
             assert any("20260101_000000" in n for n in names), names
             restored = ok.restore_backup(f"{adapter_mod.ROUTINE_CONFIG_NAME}.20260101_000000")
@@ -1662,9 +1680,9 @@ def test_ui_mode_resolution():
 
     # Edge 探测：候选全部不存在 → None（降级浏览器）；命中真实文件 → 返回它
     assert _pick_edge([r"C:\nope\msedge.exe", ""]) is None
-    real = os.path.join(tempfile.gettempdir(), "oknte_fake_edge.exe")
+    real = _safe_path(tempfile.gettempdir(), "oknte_fake_edge.exe")
     try:
-        open(real, "wb").close()
+        Path(real).touch()
         assert _pick_edge([r"C:\nope\msedge.exe", real]) == real
     finally:
         os.remove(real)
@@ -1758,9 +1776,9 @@ def test_hunter_config_and_routine_patch():
         ok = _build_fake_oknte(os.path.join(tmp, "root"))
         ok.is_running = lambda: False
         # 正常写入：目标+次数；其他键保留
-        with open(ok.hunter_config, "w", encoding="utf-8") as f:
-            json.dump({"追猎目标": "黑之书", "领取奖励次数": 0, "上游未知键": [1]}, f,
-                      ensure_ascii=False)
+        Path(_contained(ok.hunter_config, ok.root)).write_text(
+            json.dumps({"追猎目标": "黑之书", "领取奖励次数": 0, "上游未知键": [1]},
+                       ensure_ascii=False), encoding="utf-8")
         changed = ok.write_hunter_config("海囚", 3)
         with open(ok.hunter_config, encoding="utf-8") as f:
             cfg = json.load(f)
@@ -1773,7 +1791,7 @@ def test_hunter_config_and_routine_patch():
         except OkNteError as e:
             raise AssertionError(f"无变化的写入不应失败: {e}")
         # 文件不存在 → 创建
-        os.remove(ok.hunter_config)
+        os.remove(_contained(ok.hunter_config, ok.root))
         ok.write_hunter_config("音霸魔王", 1)
         with open(ok.hunter_config, encoding="utf-8") as f:
             assert json.load(f) == {"追猎目标": "音霸魔王", "领取奖励次数": 1}
@@ -1786,12 +1804,12 @@ def test_hunter_config_and_routine_patch():
             pass
         ok.is_running = lambda: False
         # 日常开关最小补丁：真实结构
-        with open(ok.routine_items, "w", encoding="utf-8") as f:
-            json.dump({"Routine Items": [
+        Path(_contained(ok.routine_items, ok.root)).write_text(
+            json.dumps({"Routine Items": [
                 {"id": "daily_anomaly", "enabled": False},
                 {"id": "daily_anomaly_hunter", "enabled": False},
                 {"id": "coffee", "enabled": True}],
-                "Exit After Task": False}, f, ensure_ascii=False)
+                "Exit After Task": False}, ensure_ascii=False), encoding="utf-8")
         okk, msg = ok.ensure_routine_item("daily_anomaly", True)
         assert okk, msg
         with open(ok.routine_items, encoding="utf-8") as f:
@@ -2050,7 +2068,7 @@ def test_icon_generation():
     from app.icon_gen import generate_icon
     tmp = tempfile.mkdtemp(prefix="oknte_icon_")
     try:
-        ico = os.path.join(tmp, "app.ico")
+        ico = _safe_path(tmp, "app.ico")
         generate_icon(ico)
         blob = open(ico, "rb").read()
         assert blob[:4] == b"\x00\x00\x01\x00", f"ICO 魔数错误: {blob[:4]!r}"
@@ -2080,7 +2098,7 @@ def test_compat_report_content():
     from app.oknte_adapter import OkNte
     tmp = tempfile.mkdtemp(prefix="oknte_report_")
     orig_datadir = main_mod.DATA_DIR
-    main_mod.DATA_DIR = os.path.join(tmp, "planner_data")
+    main_mod.DATA_DIR = _safe_path(tmp, "planner_data")
     os.makedirs(main_mod.DATA_DIR, exist_ok=True)
     try:
         with _StateGuard():
