@@ -1465,11 +1465,12 @@ def test_stamina_projection_and_preview():
         assert planner.preview_days(3, now=now) == r1
         assert copy.deepcopy(STATE.data) == before
 
-        # 4) 追猎预留扣减 + 恢复不足警告（2/小时×24=48 < 限额80）
+        # 4) 追猎预留不再扣减日常预演额度（阶段13 独立记账，与 make_plan 同口径）；
+        #    恢复不足警告仍按限额评估（2/小时×24=48 < 限额80）
         S.update(reserve_anomaly_hunter=True, anomaly_hunter_stamina=40,
                  stamina_regen_per_hour=2)
         r2 = planner.preview_days(2, now=now)
-        assert r2["days"][0]["budget"] == 40, r2["days"][0]
+        assert r2["days"][0]["budget"] == 80, r2["days"][0]
         assert any("恢复速率" in w for w in r2["warnings"])
 
         # 5) 设置消毒：stamina_now 服务端盖章；空值清除；非法忽略；cap 钳位
@@ -1993,12 +1994,18 @@ def test_common_costs_flow():
         prefill2, _ = game_data_mod.character_material_mapping(
             data, entry2, dict(game_data_mod.COMMON_COST_DEFAULTS))
         assert prefill2["boss_flower_seed"] == 86, prefill2
-        # 2) 未查到映射的角色：live 角色给出跳过说明，不入映射结果
+        # 2) mysqil 已覆盖的角色：族群白当量合计 390 一并预填（mob_base_total 证据）
         entry3 = game_data_mod.find_character(data, "娜娜莉")
         prefill3, skipped3 = game_data_mod.character_material_mapping(
             data, entry3, dict(game_data_mod.COMMON_COST_DEFAULTS))
-        assert prefill3 == {"boss_page_delusion": 86, "wk_stamp": 11}, prefill3
-        assert any("小怪" in s for s in skipped3), skipped3
+        assert prefill3 == {"boss_page_delusion": 86, "wk_stamp": 11,
+                            "mob_whisper_c": 390}, prefill3
+        assert skipped3 == [], skipped3
+        # 2b) 族群/数量均未查到的角色（明音凛）：小怪给出跳过说明，不入映射结果
+        _pf_nb, skipped_nb = game_data_mod.character_material_mapping(
+            data, game_data_mod.find_character(data, "明音凛"),
+            dict(game_data_mod.COMMON_COST_DEFAULTS))
+        assert any("小怪" in s for s in skipped_nb), skipped_nb
         # 3) 保存钳位：越界压回、未知键丢弃
         clean = main_mod._sanitize_common_costs(
             {"ascension_boss": 10**9, "skill_weekly": -5, "bogus": 1,

@@ -63,11 +63,14 @@ def character_material_mapping(data, entry, costs):
         skipped.append("BOSS 材料（归属未查到）")
     weekly = entry.get("weekly_material")
     if weekly and weekly.get("mat_id") and weekly.get("total"):
-        extra[weekly["mat_id"]] = int(costs.get("skill_weekly", 32))
+        extra[weekly["mat_id"]] = int(costs.get("skill_weekly", 11))
     base_id = _MOB_FAMILY_TO_IDS.get(entry.get("mob_family") or "", ("",))[0]
-    has_mob = bool(entry.get("mob_family")) and any(
-        int((entry.get(s) or {}).get(k) or 0) > 0
-        for s in ("mob_breakthrough", "mob_skill") for k in ("c", "b", "a"))
+    # 小怪素材需求成立的证据：族群已知，且有阶段14 逐档计数或阶段17 mysqil 白当量合计
+    # （ingest 只写 mob_base_total 标量、无逐档键——只查逐档键会让 20/25 名角色被整类跳过）
+    has_mob = bool(entry.get("mob_family")) and (
+        any(int((entry.get(s) or {}).get(k) or 0) > 0
+            for s in ("mob_breakthrough", "mob_skill") for k in ("c", "b", "a"))
+        or entry.get("mob_base_total") is not None)
     if has_mob and base_id:
         # mysqil 白当量合计写入族群基础档（白书/白怪为折算基准单位，紫:蓝:白=9:3:1）
         total = int(costs.get("ascension_mob", 206) or 0) + int(costs.get("skill_mob", 184) or 0)

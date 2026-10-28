@@ -411,9 +411,10 @@ def projected_stamina(now=None):
 def preview_days(days=3, now=None):
     """未来 N 天计划推演（纯读、确定性、注入时钟；不改 STATE）。
 
-    模型（诚实边界）：第 0 天额度 = 限额 − 今日已耗（与 make_plan 同口径，含追猎预留）；
-    第 1..N-1 天额度 = 限额（假设体力自然恢复足以支撑每日限额；若 恢复速率×24 < 限额
-    会给出警告）。库存按预计产出虚拟累加，逐日按优先级顺序补齐，与 make_plan 同一贪心。
+    模型（诚实边界）：第 0 天额度 = 限额 − 今日已耗（与 make_plan 同口径；
+    追猎自阶段13 起独立记账独立额度，日常预演不再扣减预留）；第 1..N-1 天额度 = 限额
+    （假设体力自然恢复足以支撑每日限额；若 恢复速率×24 < 限额会给出警告）。
+    库存按预计产出虚拟累加，逐日按优先级顺序补齐，与 make_plan 同一贪心。
     返回 {days:[{date,budget,steps,remaining}], projected_stamina_now,
           complete_on(首个全部达标日或 None), warnings}。
     """
@@ -422,9 +423,6 @@ def preview_days(days=3, now=None):
     warnings = []
     settings = STATE.settings
     limit = max(0, int(settings.get("daily_stamina_limit", 180) or 0))
-    hunter = 0
-    if settings.get("reserve_anomaly_hunter"):
-        hunter = max(0, int(settings.get("anomaly_hunter_stamina", 180) or 0))
     rate = max(0.0, float(settings.get("stamina_regen_per_hour") or 0))
     cap = max(1.0, float(settings.get("stamina_cap") or 240))
     if rate > 0 and rate * 24 < limit:
@@ -444,7 +442,7 @@ def preview_days(days=3, now=None):
     complete_on = None
     for offset in range(days):
         date = (datetime.strptime(day0, "%Y-%m-%d") + timedelta(days=offset)).strftime("%Y-%m-%d")
-        budget = max(0, (limit - used if offset == 0 else limit) - hunter)
+        budget = max(0, limit - used if offset == 0 else limit)
         steps = []
         for item in _ordered_gaps(snapshot_from_inventory(virtual, snap)):
             mat_id = item["mat_id"]
@@ -471,7 +469,7 @@ def preview_days(days=3, now=None):
         if remaining_gaps == [] and complete_on is None:
             complete_on = date
         per_day.append({"date": date,
-                        "budget": max(0, (limit - used if offset == 0 else limit) - hunter),
+                        "budget": max(0, limit - used if offset == 0 else limit),
                         "steps": steps, "remaining": budget,
                         "open_gaps": len(remaining_gaps)})
     return {"days": per_day,

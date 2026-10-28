@@ -126,15 +126,32 @@ class State:
         data = load_json(STATE_FILE)
         if not isinstance(data, dict):
             data = {}
-        data.setdefault("settings", {})
+        # 类型防线：JSON 合法但字段类型被改坏（手改 state.json 的高发形态）时
+        # 重置对应段回默认，而不是在 _deep_merge/属性访问处抛异常让面板无法启动。
+        if not isinstance(data.get("settings"), dict):
+            data["settings"] = {}
         _deep_merge(data["settings"], DEFAULT_SETTINGS)
         data["settings"] = {k: data["settings"][k] for k in DEFAULT_SETTINGS}
-        data.setdefault("characters", [])
-        data.setdefault("inventory", {})
-        data.setdefault("history", [])
+        if not isinstance(data.get("characters"), list):
+            data["characters"] = []
+        if not isinstance(data.get("inventory"), dict):
+            data["inventory"] = {}
+        if not isinstance(data.get("history"), list):
+            data["history"] = []
         data = _migrate(data)
         self.data = data  # 先就位，day_key() 要读 settings
-        data.setdefault("today", _empty_today(self.day_key()))
+        today = data.get("today")
+        if isinstance(today, dict) and today.get("date") == self.day_key():
+            for key in ("used_stamina", "planner_spent", "hunter_spent"):
+                value = today.get(key)
+                if not isinstance(value, int) or isinstance(value, bool):
+                    today[key] = 0
+            if not isinstance(today.get("blacklist"), list):
+                today["blacklist"] = []
+            if not isinstance(today.get("entries"), list):
+                today["entries"] = []
+        else:
+            data["today"] = _empty_today(self.day_key())
         return data
 
     def save(self):
