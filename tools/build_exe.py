@@ -219,6 +219,15 @@ def copy_tree_clean(src, dst):
     shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
 
 
+def copy_data_tables(dest_data):
+    """数据表 + mysqil 权威分组快照随包分发（图鉴页/离线解析器自测依赖 data/mysqil/）。"""
+    for name in TABLE_FILES:
+        shutil.copy2(os.path.join(ROOT, "data", name), os.path.join(dest_data, name))
+    mysqil_src = os.path.join(ROOT, "data", "mysqil")
+    if os.path.isdir(mysqil_src):
+        copy_tree_clean(mysqil_src, os.path.join(dest_data, "mysqil"))
+
+
 def _generate_icon(path):
     import sys
     if ROOT not in sys.path:  # 直接运行 tools/build_exe.py 时 sys.path 不含项目根
@@ -234,9 +243,7 @@ def build_dist():
     os.makedirs(os.path.join(DIST, "data"))
     copy_tree_clean(os.path.join(ROOT, "app"), os.path.join(DIST, "app"))
     copy_tree_clean(os.path.join(ROOT, "tests"), os.path.join(DIST, "tests"))
-    for name in TABLE_FILES:
-        shutil.copy2(os.path.join(ROOT, "data", name),
-                     os.path.join(DIST, "data", name))
+    copy_data_tables(os.path.join(DIST, "data"))
     Path(DIST, "使用说明.txt").write_text(USAGE_TXT, encoding="utf-8")
     if os.path.isfile(os.path.join(ROOT, "README.md")):
         shutil.copy2(os.path.join(ROOT, "README.md"), DIST)
@@ -366,9 +373,7 @@ def try_pyinstaller_single(py):
         print(f"单文件 EXE 构建完成: {exe} ({size_mb:.1f} MB)")
         # 冻结模式数据目录在 EXE 旁：数据表模板必须随行（否则首启 import planner 失败）
         os.makedirs(os.path.join(DIST_SINGLE, "data"), exist_ok=True)
-        for name in TABLE_FILES:
-            shutil.copy2(os.path.join(ROOT, "data", name),
-                         os.path.join(DIST_SINGLE, "data", name))
+        copy_data_tables(os.path.join(DIST_SINGLE, "data"))
         Path(DIST_SINGLE, "使用说明.txt").write_text(USAGE_TXT, encoding="utf-8")
         # 探针（无 admin 标志）：验证冻结环境下数据目录落在 EXE 旁而非 _MEIPASS 临时目录
         probe_dir = os.path.join(ROOT, "tools", "_build", "probe")
@@ -590,9 +595,7 @@ def verify_exes_live(py):
         single_dir = os.path.join(tmp, "single_variant")
         os.makedirs(single_dir, exist_ok=True)
         os.makedirs(os.path.join(single_dir, "data"), exist_ok=True)
-        for name in TABLE_FILES:
-            shutil.copy2(os.path.join(ROOT, "data", name),
-                         os.path.join(single_dir, "data", name))
+        copy_data_tables(os.path.join(single_dir, "data"))
         single = _build_test_single(py, single_dir, HAS_PYWEBVIEW)
         if single:
             probe("单文件(asInvoker 测试变体·原生窗口)", single, 18772, {})
