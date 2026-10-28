@@ -484,6 +484,12 @@ class Handler(BaseHTTPRequestHandler):
                     pass
             self._send(200, planner.make_hunter_plan(oknte=None, boss=boss,
                                                      fixed_runs=fixed))
+        elif path == "/api/plan":
+            oknte = self._oknte()
+            self._send(200, {
+                "plan": planner.make_plan(oknte),
+                "oknte_running": oknte.is_running(),
+            })
         elif path == "/api/export":
             self._send(200, build_export())
         elif path == "/api/backups":
