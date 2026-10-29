@@ -13,7 +13,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from .state import DATA_DIR
+from .state import DATA_DIR, save_json_atomic
 
 CREATE_NO_WINDOW = 0x08000000  # 无控制台父进程（打包 EXE）下，缺它每次检测都弹可见黑窗
 
@@ -63,7 +63,9 @@ def _detection_patterns(working, apps_dir):
         f"$_.ExecutablePath -like '*{exe_suffix}' "
         f"-or $_.CommandLine -like '*{work}\\main.py*' "
         f"-or $_.CommandLine -like '*{shortcut}' "
-        "-or $_.CommandLine -like '*-m ok run_task*' });"
+        "-or $_.CommandLine -like '*-m ok run_task*' "
+        "-or $_.CommandLine -like '*run_planner_task.py*' "
+        "-or $_.CommandLine -like '*OKNTE_PLANNER_HEADLESS*' });"
         "if ($hit.Count -gt 0) { $hit[0].ProcessId }"
     )
 
@@ -78,6 +80,20 @@ class OkNte:
         self.routine_items = os.path.join(self.working, "configs", ROUTINE_ITEMS_NAME)
         self.hunter_config = os.path.join(self.working, "configs", HUNTER_CONFIG_NAME)
         self.log_dir = os.path.join(self.working, "logs")
+        # 无界面运行的独立配置副本（脚本用自己的一份配置，用户原 configs\ 零写入）
+        self.profile_dir = os.path.join(self.working, "configs_planner")
+        self.profile_items = os.path.join(self.profile_dir, ROUTINE_ITEMS_NAME)
+        self.profile_daily = os.path.join(self.profile_dir, ROUTINE_CONFIG_NAME)
+        self.profile_hunter = os.path.join(self.profile_dir, HUNTER_CONFIG_NAME)
+        self.profile_launcher = os.path.join(self.profile_dir, LAUNCHER_NAME)
+
+    @staticmethod
+    def _contained(path, base):
+        """写路径归属校验：目标 realpath 必须落在 base 目录内。"""
+        base_real = os.path.realpath(base)
+        path_real = os.path.realpath(path)
+        if os.path.commonpath([path_real, base_real]) != base_real:
+            raise OkNteError(f"拒绝写入允许目录之外的路径：{path}")
 
     # ---- 环境检查 ----
     def exists(self):
@@ -354,19 +370,92 @@ class OkNte:
         os.replace(tmp, self.routine_config)
         return safe
 
-    # ---- 无界面执行 ----
-    def run_command(self):
-        env = dict(os.environ)
-        env["PYTHONIOENCODING"] = "utf-8"
-        env["PYTHONUNBUFFERED"] = "1"
-        return [self.python_exe, "-u"] + TASK_CLI_ARGS, self.working, env
+    # ---- 无界面执行（独立配置副本：脚本用自己的一份配置副本，用户原配置零写入） ----
+    LAUNCHER_NAME = "run_planner_task.py"
+    LAUNCHER_SRC = (
+        "# OKNTE_PLANNER_HEADLESS 规划器无界面启动器\n"
+        "import os, sys\n"
+        "sys.path.insert(0, os.getcwd())\n"
+        "from ok import run_task\n"
+        "import src.config as src_config\n"
+        "cfg = dict(src_config.config)\n"
+        "cfg['config_folder'] = os.environ['OKNTE_PLANNER_PROFILE']\n"
+        "run_task(cfg, task=os.environ['OKNTE_PLANNER_TASK'])\n"
+    )
 
-    def run_command_hunter(self):
-        """独立追猎：`python -m ok run_task AnomalyHunter -e`（与日常任务完全独立的入口）。"""
+    def prepare_daily_profile(self, target_config, stamina_target):
+        """构建日常无界面运行的独立配置副本 working\\configs_planner\\：
+        - configs 全量拷贝（框架配置 _ok.json/devices 等随行，窗口绑定不丢失）；
+        - DailyRoutineTask.json 只启用 daily_anomaly（咖啡/领奖/影院/喷泉/家具/礼物
+          等与体力计划无关的子任务不再执行）；
+        - DailyRoutineTaskConfigs.json 的 daily_anomaly 段写入本步目标体力。
+        用户原 configs\\ 全程零写入；返回启动器脚本路径。"""
+        src_cfg = os.path.join(self.working, "configs")
+        profile = os.path.join(self.working, "configs_planner")
+        if not os.path.isdir(src_cfg):
+            raise OkNteError(f"未找到配置目录: {src_cfg}")
+        if os.path.isdir(profile):
+            shutil.rmtree(profile)
+        shutil.copytree(src_cfg, profile, ignore=shutil.ignore_patterns("*.tmp"))
+        items_path = os.path.join(profile, ROUTINE_ITEMS_NAME)
+        original = self._load_json_or(items_path, None)
+        if not isinstance(original, dict) or not isinstance(original.get("Routine Items"), list):
+            raise OkNteError("配置副本缺少 Routine Items（ok-nte 结构可能已变更）")
+        patched = copy.deepcopy(original)
+        for entry in patched["Routine Items"]:
+            if isinstance(entry, dict) and entry.get("id"):
+                entry["enabled"] = entry["id"] == "daily_anomaly"
+        save_json_atomic(items_path, patched)
+        daily_path = os.path.join(profile, ROUTINE_CONFIG_NAME)
+        daily = self._load_json_or(daily_path, {})
+        if not isinstance(daily, dict) or not isinstance(daily.get("daily_anomaly"), dict):
+            raise OkNteError("配置副本缺少 daily_anomaly 段")
+        intended = dict(target_config)
+        intended["目标消耗体力"] = int(stamina_target)
+        intended["循环模式"] = "停用"  # 切换由规划器接管
+        daily["daily_anomaly"].update(intended)
+        save_json_atomic(daily_path, daily)
+        launcher_path = os.path.join(profile, self.LAUNCHER_NAME)
+        Path(launcher_path).write_text(self.LAUNCHER_SRC, encoding="utf-8")
+        return launcher_path
+
+    def prepare_hunter_profile(self, target, reward_count):
+        """构建追猎无界面运行的独立配置副本：AnomalyHunter.json 写入目标与次数。
+        用户原 configs\\ 与 AnomalyHunter.json 零写入；返回启动器脚本路径。"""
+        src_cfg = os.path.join(self.working, "configs")
+        profile = os.path.join(self.working, "configs_planner")
+        if not os.path.isdir(src_cfg):
+            raise OkNteError(f"未找到配置目录: {src_cfg}")
+        if os.path.isdir(profile):
+            shutil.rmtree(profile)
+        shutil.copytree(src_cfg, profile, ignore=shutil.ignore_patterns("*.tmp"))
+        hunter_path = os.path.join(profile, HUNTER_CONFIG_NAME)
+        hcfg = self._load_json_or(hunter_path, {})
+        if not isinstance(hcfg, dict):
+            hcfg = {}
+        hcfg["追猎目标"] = str(target)
+        hcfg["领取奖励次数"] = max(0, int(reward_count))
+        save_json_atomic(hunter_path, hcfg)
+        launcher_path = os.path.join(profile, self.LAUNCHER_NAME)
+        Path(launcher_path).write_text(self.LAUNCHER_SRC, encoding="utf-8")
+        return launcher_path
+
+    def run_command(self, launcher_path, task="日常任务"):
+        """编程式无界面启动：独立配置副本 + 指定任务。
+
+        不带 -e（其语义是"任务完成后退出游戏和应用"——用户要求任务完成后游戏留存）：
+        任务结束 run_task 自然返回、脚本进程自行退出，游戏进程不被动；中断/超时由
+        执行器只杀脚本进程（taskkill 无 /T）。环境变量携带 profile 与任务名。"""
         env = dict(os.environ)
         env["PYTHONIOENCODING"] = "utf-8"
         env["PYTHONUNBUFFERED"] = "1"
-        return [self.python_exe, "-u"] + HUNTER_CLI_ARGS, self.working, env
+        env["OKNTE_PLANNER_PROFILE"] = os.path.dirname(launcher_path)
+        env["OKNTE_PLANNER_TASK"] = task
+        return [self.python_exe, "-u", launcher_path], self.working, env
+
+    def run_command_hunter(self, launcher_path):
+        """追猎无界面启动（独立配置副本 + AnomalyHunter 任务）。"""
+        return self.run_command(launcher_path, task="AnomalyHunter")
 
     # ---- 追猎独立配置与日常开关（阶段13） ----
     def _backup_json(self, path, prefix):
