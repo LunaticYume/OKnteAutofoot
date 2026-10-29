@@ -233,6 +233,7 @@
     <nav id="nav">
       <button data-t="overview" class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></svg><span>总览</span></button>
       <button data-t="chars"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>角色</span></button>
+      <button data-t="arc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg><span>弧盘/空幕</span></button>
       <button data-t="codex"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg><span>图鉴数据</span></button>
       <button data-t="common"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 3h15"/><path d="M6 3v16a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V3"/><path d="M6 14h12"/></svg><span>通用材料</span></button>
       <button data-t="inv"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg><span>库存</span></button>
@@ -606,31 +607,36 @@ function bindLibraryHandlers(){
 function renderChars(){
   const st = BOOT.state;
   const tracks = BOOT.tables.requirements.tracks||{};
+  const added = new Set(st.characters.map(c=>c.name));  // 互斥录入：已添加的名字从目录下拉消失
+  const gdNames = (BOOT.game_characters||[]).filter(n=>!added.has(n.replace(/（未上线）$/,"")));
+  const usedNamesOf = i => st.characters.filter((x,xi)=>xi!==i).map(x=>x.name);
   $("#main").innerHTML = `
-    <div class="card"><h3>游戏目录导入<span class="h-sub">调研预填：属性·物态·材料归属与置信度，低置信字段导入后标黄或留空</span></h3>
+    <div class="card"><h3>游戏目录导入<span class="h-sub">调研预填：属性·物态·材料归属与置信度，低置信字段导入后标黄或留空；已添加的角色不再出现在下拉里</span></h3>
       <div class="row" style="gap:8px">
-        <select id="gdChar">${(BOOT.game_characters||[]).map(n=>`<option>${esc(n)}</option>`).join("")}</select>
-        <button class="btn" id="btnImportChar">⬇ 按目录导入角色（自动预填材料需求）</button>
+        <select id="gdChar">${(gdNames.length?gdNames:["（目录角色均已添加）"]).map(n=>`<option>${esc(n)}</option>`).join("")}</select>
+        <button class="btn" id="btnImportChar" ${gdNames.length?"":"disabled"}>⬇ 按目录导入角色（自动预填材料需求）</button>
         <button class="btn sec" id="btnImportLibs">⬇ 导入全角色/全武器到库</button>
       </div></div>
     <div class="grid" style="grid-template-columns:1fr 1fr;gap:14px">
       <div>${libraryCard("角色库","char_library","手动添加，供角色行下拉选择")}</div>
-      <div>${libraryCard("武器库","weapon_library","弧盘/武器名，供角色行下拉选择")}</div>
+      <div>${libraryCard("武器库","weapon_library","弧盘/武器名，允许同名多把（第 2 把起带 #序号）")}</div>
     </div>
     <div class="card"><div class="row" style="justify-content:space-between">
-      <h3 style="margin:0">角色列表<span class="h-sub">列表顺序 = 补齐优先级，从上到下；每个角色选择材料系并填写当前/目标练度</span></h3>
+      <h3 style="margin:0">角色列表<span class="h-sub">列表顺序 = 补齐优先级，从上到下；异能系下拉已用可读名，弧盘/空幕请到专属页按名字选择</span></h3>
       <button class="btn" id="addChar">＋ 新建角色</button>
     </div></div>
     <div id="charList"></div>
-    <div class="row" style="margin-top:12px"><button class="btn big" id="saveChars">保存角色</button></div>`;
+    <div class="row" style="margin-top:12px"><button class="btn big" id="saveChars">保存角色</button>
+      <span class="muted">保存时自动按目录计算 BOSS/周本/小怪材料（自定义材料保留）</span></div>`;
   const list = $("#charList");
   if(!st.characters.length) list.innerHTML = `<div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>还没有角色，点上方「新建角色」或按游戏目录导入</div>`;
-  st.characters.forEach((c,i)=>list.appendChild(charCard(c,i,tracks)));
+  st.characters.forEach((c,i)=>list.appendChild(charCard(c,i,tracks,usedNamesOf(i))));
   $("#addChar").onclick = ()=>{
     st.characters.push({id:Math.random().toString(16).slice(2,10),name:"新角色",enabled:true,
       weapon:"",mats:{ability:1,arc:1,console:1},
       tracks:Object.fromEntries(Object.keys(tracks).map(k=>[k,{cur:1,tgt:1}])),extra_needs:{}});
-    const el=charCard(st.characters[st.characters.length-1], st.characters.length-1, tracks);
+    const el=charCard(st.characters[st.characters.length-1], st.characters.length-1, tracks,
+                      st.characters.slice(0,-1).map(x=>x.name));
     el.classList.add("open");
     list.appendChild(el);
     el.scrollIntoView({behavior:"smooth",block:"center"});
@@ -651,7 +657,9 @@ function renderChars(){
         name:el.querySelector(".c-name").value.trim()||base.name,
         enabled:el.querySelector(".c-enabled").checked,
         weapon:el.querySelector(".c-weapon").value,
-        mats:{ability:+el.querySelector(".c-ability").value,arc:+el.querySelector(".c-arc").value,console:+el.querySelector(".c-console").value},
+        // 弧盘/空幕材料系在「弧盘/空幕」页维护：本页保存保留原值
+        mats:{ability:+el.querySelector(".c-ability").value||base.mats?.ability||1,
+              arc:base.mats?.arc||1, console:base.mats?.console||1},
         tracks, extra_needs:extra});
     });
     try{ const r=await api("/api/characters",{characters:chars});
@@ -686,19 +694,49 @@ function renderChars(){
   };
   bindLibraryHandlers();
 }
-function libOptions(key, current, allowEmpty){
-  const names=BOOT.state[key]||[];
+function charLibOptions(current, excludeUsed){
+  /* 角色名下拉：排除其它行已用名（互斥录入），保留当前行自己的名字 */
+  const names=(BOOT.state.char_library||[]).filter(n=>n===current || !(excludeUsed||[]).includes(n));
+  const opts=names.map(n=>`<option value="${esc(n)}" ${n===current?"selected":""}>${esc(n)}</option>`);
+  if(current && !names.includes(current))
+    opts.push(`<option value="${esc(current)}" selected>${esc(current)}（自定义）</option>`);
+  if(!opts.some(o=>o.includes("selected")))
+    opts.unshift(`<option value="" selected>（未选择）</option>`);
+  return opts.join("");
+}
+function weaponLibOptions(current, allowEmpty){
+  /* 武器（弧盘）下拉：允许同名多把（实例化），第 2 把起显示 #序号；规划只按物态算材料 */
+  const names=BOOT.state.weapon_library||[];
+  const seen={};
   const opts=[];
   if(allowEmpty) opts.push(`<option value="" ${!current?"selected":""}>（未选择）</option>`);
-  names.forEach(n=>opts.push(`<option value="${esc(n)}" ${n===current?"selected":""}>${esc(n)}</option>`));
+  names.forEach(n=>{
+    seen[n]=(seen[n]||0)+1;
+    const label=seen[n]>1?`${n} #${seen[n]}`:n;
+    opts.push(`<option value="${esc(n)}" ${n===current?"selected":""}>${esc(label)}</option>`);
+  });
   if(current && !names.includes(current))
     opts.push(`<option value="${esc(current)}" selected>${esc(current)}（自定义）</option>`);
   return opts.join("");
 }
-function charCard(c,i,tracks){
+function seriesOptions(prefix, count, cur){
+  /* ability_N/arc_N/console_N 的可读名全部来自 materials targets（雏鸟系/戏剧芯/钟表把戏…） */
+  const targets=(BOOT.tables.materials||{}).targets||[];
+  const out=[];
+  for(let n=1;n<=count;n++){
+    const id=`${prefix}_${n}`;
+    const t=targets.find(x=>x.id===id);
+    const label=t?(t.display_name||t.name):id;
+    out.push(`<option value="${n}" ${+cur===n?"selected":""}>${esc(label)}</option>`);
+  }
+  return out.join("");
+}
+function charCard(c,i,tracks,usedNames){
   const div=document.createElement("div");
   div.className="char"; div.dataset.idx=i; div.dataset.cid=c.id;
-  const trackRows = Object.entries(tracks).map(([k,t])=>`
+  const trackRows = Object.entries(tracks)
+    .filter(([k])=>k==="char_level"||k==="ability_level")  // 弧盘/空幕移至专属页
+    .map(([k,t])=>`
     <div class="row" style="gap:6px"><label style="width:92px">${esc(t.name)}</label>
       <input type="number" data-track="${k}" data-tk="cur" value="${c.tracks?.[k]?.cur??1}" min="0"> <span class="muted">→</span>
       <input type="number" data-track="${k}" data-tk="tgt" value="${c.tracks?.[k]?.tgt??1}" min="0" max="${t.max??999}">
@@ -708,15 +746,11 @@ function charCard(c,i,tracks){
   div.innerHTML=`
     <div class="head">
       <label class="switch" title="启用/停用"><input type="checkbox" class="c-enabled" ${c.enabled?"checked":""}><span class="sl"></span></label>
-      <select class="c-name" style="width:150px">${libOptions("char_library",c.name,false)}
-        ${c.name&&!(BOOT.state.char_library||[]).includes(c.name)?`<option value="${esc(c.name)}" selected>${esc(c.name)}（自定义）</option>`:""}
-      </select>
-      <span class="muted">武器</span><select class="c-weapon" style="width:130px">${libOptions("weapon_library",c.weapon||"",true)}</select>
-      <span class="muted">异能系</span><select class="c-ability">${[1,2,3,4,5].map(n=>`<option ${c.mats?.ability===n?"selected":""}>${n}</option>`).join("")}</select>
-      <span class="muted">罐头系</span><select class="c-arc">${[1,2,3,4,5].map(n=>`<option ${c.mats?.arc===n?"selected":""}>${n}</option>`).join("")}</select>
-      <span class="muted">空幕</span><select class="c-console">${[1,2,3,4,5,6].map(n=>`<option ${c.mats?.console===n?"selected":""}>${n}</option>`).join("")}</select>
+      <select class="c-name" style="width:150px">${charLibOptions(c.name, usedNames)}</select>
+      <span class="muted">武器</span><select class="c-weapon" style="width:130px">${weaponLibOptions(c.weapon||"", true)}</select>
+      <span class="muted">异能系</span><select class="c-ability" style="max-width:230px">${seriesOptions("ability",5,c.mats?.ability)}</select>
       <span class="grow"></span>
-      <button class="btn sec mini" data-act="maxAll" title="四条轨道目标全部设为满级">全部满级</button>
+      <button class="btn sec mini" data-act="maxAll" title="角色/异能等级目标全部设为满级">全部满级</button>
       <button class="btn sec mini" data-act="up" title="上移（优先级更高）">↑</button>
       <button class="btn sec mini" data-act="down" title="下移">↓</button>
       <button class="btn sec mini" data-act="del">删除</button>
@@ -724,7 +758,11 @@ function charCard(c,i,tracks){
     </div>
     <div class="body">
       <div class="grid" style="margin-bottom:10px">${trackRows}</div>
-      <div style="font-size:13px;color:var(--acc);margin:6px 0">直接材料需求 <span class="muted">（全量材料含 BOSS 掉落/周本/小怪素材；与练度换算叠加）</span></div>
+      <div class="row" style="margin:6px 0">
+        <span class="chip acc">弧盘 → 「弧盘/空幕」页</span>
+        <span class="chip acc">空幕 → 「弧盘/空幕」页</span>
+      </div>
+      <div style="font-size:13px;color:var(--acc);margin:6px 0">直接材料需求 <span class="muted">（BOSS/周本/小怪已按目录自动计算；自定义材料可手填叠加）</span></div>
       <div class="grid extra-list">${extraRows}</div>
       <button class="btn sec mini" data-act="addExtra" style="margin-top:8px">＋ 添加材料</button>
     </div>`;
@@ -755,6 +793,106 @@ function extraRow(mat,v){
     <span class="muted">个</span></div>`;
 }
 function reindex(){document.querySelectorAll(".char").forEach((el,i)=>el.dataset.idx=i);}
+
+/* ---------- 弧盘 / 空幕（按名字选择；与角色卡解耦） ---------- */
+async function renderArc(){
+  const tracks = BOOT.tables.requirements.tracks||{};
+  const chars = BOOT.state.characters||[];
+  const gd = await api("/api/game-data").catch(()=>({}));
+  const wmap = {};  // 目录武器名 → 物态（联动物态→罐头系）
+  (gd.weapons||[]).forEach(w=>{ if(w && w.name) wmap[w.name] = w.matter_state || ""; });
+  const state_to_can = gd.matter_state_to_can || {};
+  // 缺口概要：复用执行状态里的全量快照（含各角色的材料需求行）
+  const snap = await api("/api/status").catch(()=>null);
+  const rowsByChar = {};
+  if(snap && snap.snapshot) (snap.snapshot.characters||[]).forEach(c=>{ rowsByChar[c.name] = c.rows||[]; });
+  const gapOf = (name, matId) => {
+    const row = (rowsByChar[name]||[]).find(x=>x.mat_id===matId);
+    return row ? {need:row.need, have:row.have, gap:row.gap} : null;
+  };
+  $("#main").innerHTML=`
+    <div class="banner info">这里集中管理每个角色的<b>弧盘</b>（按名字选择，物态→罐头系自动带出）与<b>空幕</b>（按节点名）；罐头系/空幕节点变更会同步影响计划材料。</div>
+    <div id="arcList"></div>
+    <div class="row" style="margin-top:12px"><button class="btn big" id="saveArc">保存弧盘/空幕</button>
+      <span class="muted">武器下拉 = 武器库实例（同名多把带 #序号）+ 游戏目录全部弧盘；想要的弧盘不在列表？到「图鉴数据」页登记</span></div>`;
+  const host=$("#arcList");
+  if(!chars.length){ host.innerHTML=`<div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>还没有角色，先到「角色」页添加</div>`; return; }
+  chars.forEach(c=>host.appendChild(arcCard(c, tracks, wmap, state_to_can, gapOf)));
+  $("#saveArc").onclick = async ()=>{
+    const charsOut = BOOT.state.characters.map(c=>{
+      const el = document.querySelector(`.char[data-cid="${c.id}"]`);
+      if(!el || !el.querySelector(".a-weapon")) return c;
+      const weapon = el.querySelector(".a-weapon").value||"";
+      const mats = {...(c.mats||{})};
+      const canVal = +el.querySelector(".a-can").value;
+      if(canVal) mats.arc = canVal;
+      const conVal = +el.querySelector(".a-console").value;
+      if(conVal) mats.console = conVal;
+      const tracksOut = {...(c.tracks||{})};
+      el.querySelectorAll("[data-track]").forEach(inp=>{
+        tracksOut[inp.dataset.track]=tracksOut[inp.dataset.track]||{};
+        tracksOut[inp.dataset.track][inp.dataset.tk]=+inp.value||0;});
+      return {...c, weapon, mats, tracks:tracksOut};
+    });
+    try{ const r=await api("/api/characters",{characters:charsOut});
+      BOOT.state.characters=r.characters||charsOut;
+      toast("弧盘/空幕已保存");
+      renderArc();
+    }catch(e){alertErr(e);}
+  };
+}
+function arcCard(c, tracks, wmap, state_to_can, gapOf){
+  const div=document.createElement("div");
+  div.className="char open"; div.dataset.cid=c.id;
+  const can = c.mats?.arc||1;
+  const conN = c.mats?.console||1;
+  const arcT = tracks.arc_level||{max:80};
+  const conT = tracks.console_level||{max:20};
+  const libNames=[...new Set(BOOT.state.weapon_library||[])];
+  const catNames=Object.keys(wmap).filter(n=>!libNames.includes(n));
+  let weaponOpts=`<option value="" ${!c.weapon?"selected":""}>（未选择弧盘）</option>`;
+  libNames.forEach(n=>weaponOpts+=`<option value="${esc(n)}" ${n===c.weapon?"selected":""}>${esc(n)}</option>`);
+  catNames.forEach(n=>weaponOpts+=`<option value="${esc(n)}" ${n===c.weapon?"selected":""}>${esc(n)}（目录）</option>`);
+  if(c.weapon && !libNames.includes(c.weapon) && !wmap[c.weapon])
+    weaponOpts+=`<option value="${esc(c.weapon)}" selected>${esc(c.weapon)}（自定义）</option>`;
+  const arcRow = gapOf(c.name, `arc_${can}`);
+  const conRow = gapOf(c.name, `console_${conN}`);
+  const gapTxt = row => row?`需 ${row.need} / 持 ${row.have} / 差 ${row.gap}`:"无记录";
+  div.innerHTML=`
+    <div class="head" style="flex-wrap:wrap">
+      <b>${esc(c.name||"")}</b>
+      <span class="muted">弧盘</span>
+      <select class="a-weapon" style="width:190px">${weaponOpts}</select>
+      <span class="muted">罐头系</span>
+      <select class="a-can" style="max-width:230px">${seriesOptions("arc",5,can)}</select>
+      <span class="muted">等级</span>
+      <input type="number" data-track="arc_level" data-tk="cur" value="${c.tracks?.arc_level?.cur??1}" min="0" style="width:70px"> <span class="muted">→</span>
+      <input type="number" data-track="arc_level" data-tk="tgt" value="${c.tracks?.arc_level?.tgt??1}" min="0" max="${arcT.max??80}" style="width:70px">
+      <button class="btn sec mini" data-act="maxArc">满级</button>
+      <span class="grow"></span>
+      <span class="muted">空幕节点</span>
+      <select class="a-console" style="max-width:230px">${seriesOptions("console",6,conN)}</select>
+      <span class="muted">等级</span>
+      <input type="number" data-track="console_level" data-tk="cur" value="${c.tracks?.console_level?.cur??1}" min="0" style="width:70px"> <span class="muted">→</span>
+      <input type="number" data-track="console_level" data-tk="tgt" value="${c.tracks?.console_level?.tgt??1}" min="0" max="${conT.max??20}" style="width:70px">
+    </div>
+    <div class="body" style="display:block">
+      <div class="row" style="gap:8px">
+        <span class="chip num">弧盘材料：${gapTxt(arcRow)}</span>
+        <span class="chip num">空幕材料：${gapTxt(conRow)}</span>
+        <span class="muted">换罐头系/节点会同步影响计划材料；井屑（空幕）逐级消耗暂未校准</span>
+      </div>
+    </div>`;
+  div.querySelector(".a-weapon").onchange = e=>{
+    const ms = wmap[e.target.value];
+    const can2 = ms && state_to_can[ms] ? +String(state_to_can[ms]).replace("arc_","") : null;
+    if(can2) div.querySelector(".a-can").value = can2;
+  };
+  div.querySelector('[data-act="maxArc"]').onclick = ()=>{
+    div.querySelector('[data-track="arc_level"][data-tk="tgt"]').value = arcT.max??80;
+  };
+  return div;
+}
 
 /* ---------- 库存 ---------- */
 function renderInv(){
@@ -1223,6 +1361,7 @@ async function renderCodex(){
         <label>物态</label><select id="w_state"><option value="">（未填）</option>${opt(states)}</select>
         <label>适用角色</label><input id="w_owner" placeholder="角色名（可空）" style="width:130px">
         <label>获取途径</label><input id="w_acq" placeholder="如 限定·特别研募" style="width:160px">
+        <label>登记把数</label><input type="number" id="w_copies" value="1" min="1" max="9" style="width:60px" title="同名多把：每把一条实例（第 2 把起带 #序号）">
         <button class="btn" id="btnWeaponSave">保存武器到图鉴</button></div>
     </div>
     <div class="card"><h3>自定义条目清单<span class="h-sub">存于 data/game_data_custom.json，加载时按名字覆盖基础目录；删除不影响基础目录</span></h3>
@@ -1292,11 +1431,16 @@ async function onCodexCharSave(){
 async function onCodexWeaponSave(){
   const name=$("#w_name").value.trim();
   if(!name){toast("武器名必填","err");return;}
+  const copies=Math.max(1,Math.min(9,+$("#w_copies").value||1));
   const entry={name, rarity:$("#w_rarity").value, matter_state:$("#w_state").value||null,
     owner:$("#w_owner").value.trim()||null, acquisition:$("#w_acq").value.trim()||null};
   try{
     await api("/api/game-data/custom",{action:"upsert_weapon",entry});
-    toast(`已保存武器「${name}」到图鉴覆盖层`);
+    // 同名多把：向武器库登记 N 条实例（第 2 把起 UI 显示 #序号；规划按物态算材料，互不影响）
+    const list=[...(BOOT.state.weapon_library||[]), ...Array(copies).fill(name)];
+    await api("/api/libraries",{weapon_library:list});
+    BOOT.state.weapon_library=list;
+    toast(`已保存武器「${name}」×${copies}`);
     renderCodex();
   }catch(e){alertErr(e);}
 }
@@ -1354,6 +1498,7 @@ function renderCodexCustomList(){
 
 /* ---------- 框架 ---------- */
 const PAGE_TITLES={overview:["总览","当日计划 · 执行控制 · 推演"],chars:["角色","养成目标与直接材料需求"],
+  arc:["弧盘 / 空幕","按名字选择 · 等级目标 · 缺口概要"],
   codex:["图鉴数据","手动录入新角色/武器 + wiki 拉取预填"],
   common:["通用材料","每角色通用数量 → 具体材料映射"],inv:["库存","全量材料持有量"],
   tables:["数据表","产量 · 需求表 · 材料名校准"],settings:["设置","执行策略 · 体力模型 · 导入导出"],
@@ -1381,7 +1526,7 @@ function switchPage(t){
   $("#pageSub").textContent=title[1];
   clearInterval(TIMER);
   if(!BOOT) return;  // bootstrap 未完成（兼容检测约需数秒）：先记下目标页，boot 完成后按 CURRENT 渲染
-  ({overview:renderOverview,chars:renderChars,codex:renderCodex,common:renderCommon,inv:renderInv,
+  ({overview:renderOverview,chars:renderChars,arc:renderArc,codex:renderCodex,common:renderCommon,inv:renderInv,
     tables:renderTables,settings:renderSettings,history:renderHistory})[t]();
   if(t==="overview") TIMER=setInterval(refreshStatus,2000);
 }
