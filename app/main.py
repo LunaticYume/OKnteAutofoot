@@ -40,6 +40,19 @@ def is_admin():
         return False
 
 
+def _build_info():
+    """构建标识（build_exe 打包时写入 data/build_info.json）；源码运行为 dev。
+    用户据此一眼区分面板新旧——"什么也没改"类反馈的定位锚点。"""
+    try:
+        with open(os.path.join(DATA_DIR, "build_info.json"), encoding="utf-8") as f:
+            info = json.load(f)
+        if isinstance(info, dict) and info.get("built_at"):
+            return info
+    except (OSError, ValueError):
+        pass
+    return {"built_at": "dev", "git": ""}
+
+
 def _tables():
     return {
         "materials": planner.MATERIALS,
@@ -366,6 +379,17 @@ def apply_import(payload):
             "backup": backup_path}
 
 
+def clear_today_blacklist():
+    """清空今日拉黑（用户自救：历史启动失败残留/想重试被跳过的目标）。
+    运行中调用由 do_POST 的统一拦截放行（清拉黑不影响执行安全）。"""
+    STATE.ensure_today()
+    with STATE.lock:
+        cleared = len(STATE.today.get("blacklist", []))
+        STATE.today["blacklist"] = []
+        STATE.save()
+    return cleared
+
+
 def confirm_history_entry(day, time_str, mat_id, actual_gain):
     """用户确认某条 done 历史的实际获得（bookkeeping 修改：写 STATE 并持久化）。"""
     with STATE.lock:
@@ -633,6 +657,7 @@ class Handler(BaseHTTPRequestHandler):
                 "tables": _tables(),
                 "game_characters": gd_chars,
                 "compat": oknte.compat_check(),
+                "build": _build_info(),
                 "admin": is_admin(),
                 "oknte_running": oknte.is_running_cached(),
             })
@@ -767,7 +792,7 @@ class Handler(BaseHTTPRequestHandler):
         if body is None:
             self._send(400, {"error": "请求体不是合法 JSON"})
             return
-        if path not in ("/api/stop", "/api/dry-run") and \
+        if path not in ("/api/stop", "/api/dry-run", "/api/today/clear-blacklist") and \
                 RUNNER.snapshot()["state"] in ("running", "waiting", "stopping"):
             self._send(409, {"error": "规划器运行中，请先停止再修改数据"})
             return
@@ -1027,6 +1052,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/stop":
             ok, msg = RUNNER.stop()
             self._send(200, {"ok": ok, "message": msg})
+        elif path == "/api/today/clear-blacklist":
+            cleared = clear_today_blacklist()
+            self._send(200, {"ok": True, "cleared": cleared})
         elif path == "/api/history/confirm":
             day = str(body.get("day", ""))[:10]
             time_str = str(body.get("time", ""))[:8]

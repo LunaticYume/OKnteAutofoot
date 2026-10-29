@@ -355,6 +355,9 @@ async function renderOverview(){
     <div class="muted" style="margin-top:8px">请先按 ok-nte 日志/背包实际数量在『库存』页校准，再点“已核对库存”；若确定没刷或无需记账，点“放弃记账”（不修改库存与额度）。规划器绝不把预计产出当作实际产出。</div></div>` : "";
   const hunterPct = (st.settings.anomaly_hunter_stamina||180) > 0
     ? (today.hunter_spent??0)/(st.settings.anomaly_hunter_stamina||180) : 0;
+  const clearBl = (!steps.length && (p.no_op_reason === "waiting_for_reset" || (d?.skipped_blacklisted || []).length))
+    ? `<div class="row" style="margin-top:10px"><button class="btn sec mini" id="btnClearBlacklist">清空今日拉黑（重试被跳过的目标）</button>
+       <span class="muted">昨日启动失败等残留拉黑可用此自救；游戏内真失败的目标拉黑后仍建议等次日</span></div>` : "";
   $("#main").innerHTML = `
     <div class="card hero">
       <div>
@@ -378,7 +381,7 @@ async function renderOverview(){
         <div class="t-main"><b class="num">${today.hunter_spent??0}<span style="font-size:13px;color:var(--faint)">/${st.settings.anomaly_hunter_stamina??180}</span></b><span>追猎已耗 / 额度</span></div></div>
     </div>
     ${pendHtml}
-    <div class="card"><h3>日常体力计划</h3>${planErr}${warns}${stepsHtml}${budgetLine}
+    <div class="card"><h3>日常体力计划</h3>${planErr}${warns}${stepsHtml}${clearBl}${budgetLine}
       <div class="muted" style="margin-top:8px">策略：按角色优先级顺序补齐缺口；每次执行刷一个目标，完成自动切换下一个；ok-nte 的循环模式由本规划器接管（置为停用）。</div>
     </div>
     <div class="card"><h3>追猎计划<span class="h-sub">独立开始 · BOSS 每局 60 体力 · 掉落对应角色突破材料</span></h3>
@@ -428,6 +431,11 @@ async function renderOverview(){
   });
   const sp0=$("#statePill"); sp0.className=statePillClass(run); sp0.textContent=stateShort(run);
   $("#runState").textContent = run.message && run.state!=="waiting" ? run.message : "";
+  const blBtn=$("#btnClearBlacklist");
+  if (blBtn) blBtn.onclick = async ()=>{
+    try{ const r2=await api("/api/today/clear-blacklist"); toast(`已清空 ${r2.cleared} 条拉黑，重新规划中`); renderOverview(); }
+    catch(e){alertErr(e);}
+  };
   drawLog(run.lines||[]);
 }
 async function doHunterPlan(){
@@ -1594,6 +1602,7 @@ async function boot(){
     tags.push(`<span class="tag ok">ok-nte ${esc(c.version||"?")}</span>`);
   tags.push(BOOT.admin?`<span class="tag ok">管理员</span>`:`<span class="tag warn">非管理员</span>`);
   tags.push(BOOT.oknte_running?`<span class="tag warn">ok-nte 运行中</span>`:`<span class="tag ok">ok-nte 已关闭</span>`);
+  tags.push(`<span class="tag" title="构建标识：若与你刚安装的版本不符，说明浏览器开的是旧面板页面（关掉重开即可）">构建 ${esc((BOOT.build||{}).built_at||"dev")}</span>`);
   $("#envTags").innerHTML=tags.join("");
 }
 let CURRENT="overview";
