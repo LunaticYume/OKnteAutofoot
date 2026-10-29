@@ -1,4 +1,5 @@
 """规划器本地 Web 面板（纯标准库）：API + 静态页 + 桌面窗口壳。"""
+import base64
 import copy
 import ctypes
 import json
@@ -458,6 +459,85 @@ def perform_dry_run(oknte):
     return result
 
 
+def _collect_log_sources(oknte_root):
+    """日志页白名单：[(显示名, 绝对路径)]，只收三类目录下按模式命中的 .log。
+    端点以白名单下标定位文件（查询串里不传路径，天然免路径穿越）。"""
+    apps = os.path.join(oknte_root, "data", "apps", "ok-nte")
+    working_logs = os.path.join(apps, "working", "logs")
+    app_logs = os.path.join(oknte_root, "logs")
+    out = []
+
+    def add(directory, pattern, label):
+        if not os.path.isdir(directory):
+            return
+        try:
+            names = sorted(os.listdir(directory), reverse=True)
+        except OSError:
+            return
+        for name in names:
+            if re.fullmatch(pattern, name) and os.path.isfile(os.path.join(directory, name)):
+                out.append((f"{label}/{name}", os.path.join(directory, name)))
+
+    add(working_logs, r"ok-script.*\.log", "任务日志")
+    add(app_logs, r"app\..+\.log", "应用日志")
+    add(DATA_DIR, r"(panel|crash)\.log", "面板")
+    add(ROOT, r"(crash|launcher)\.log", "面板")
+    return out
+
+
+def _run_backpack_ocr():
+    """实验性背包 OCR：PowerShell 截屏 + Windows.Media.Ocr（系统组件，零第三方依赖）。
+
+    返回识别文本或 None（无中文语言包/识别失败）。游戏窗口须保持可见；
+    识别结果只作差异预填参考，由用户核对后保存。
+    """
+    ps = base64.b64encode(_OCR_PS.encode("utf-16-le")).decode("ascii")
+    r = subprocess.run(["powershell", "-NoProfile", "-EncodedCommand", ps],
+                       capture_output=True, timeout=90,
+                       creationflags=0x08000000)
+    text = (r.stdout or b"").decode("utf-8", errors="replace").strip()
+    if not text or "__OCR_NOLANG__" in text:
+        return None
+    return text
+
+
+_OCR_PS = r'''
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+$null = [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType=WindowsRuntime]
+$null = [Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics.Imaging, ContentType=WindowsRuntime]
+$null = [Windows.Storage.Streams.InMemoryRandomAccessStream, Windows.Foundation, ContentType=WindowsRuntime]
+$null = [Windows.Storage.Streams.DataWriterStoreOperation, Windows.Foundation, ContentType=WindowsRuntime]
+$null = [Windows.Graphics.Imaging.SoftwareBitmap, Windows.Foundation, ContentType=WindowsRuntime]
+Function Await($WinRtTask, $ResultType) {
+  $asTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]
+  $netTask = $asTask.MakeGenericMethod($ResultType).Invoke($null, @($WinRtTask))
+  $netTask.Wait(-1) | Out-Null
+  $netTask.Result
+}
+$bmp = New-Object System.Drawing.Bitmap([System.Windows.Forms.SystemInformation]::VirtualScreen.Width, [System.Windows.Forms.SystemInformation]::VirtualScreen.Height)
+$g = [System.Drawing.Graphics]::FromImage($bmp)
+$g.CopyFromScreen(0, 0, 0, 0, $bmp.Size)
+$g.Dispose()
+$ms = New-Object System.IO.MemoryStream
+$bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+$bmp.Dispose()
+$stream = New-Object Windows.Storage.Streams.InMemoryRandomAccessStream
+$writer = New-Object Windows.Storage.Streams.DataWriter($stream.GetOutputStreamAt(0))
+$writer.WriteBytes($ms.ToArray())
+$ms.Dispose()
+Await ($writer.StoreAsync()) ([Windows.Storage.Streams.DataWriterStoreOperation]) | Out-Null
+$writer.Dispose()
+$decoder = Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
+$soft = Await ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
+$engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
+if (-not $engine) { Write-Output "__OCR_NOLANG__"; exit 1 }
+$result = Await ($engine.RecognizeAsync($soft)) ([Windows.Media.Ocr.OcrResult])
+Write-Output $result.Text
+'''
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "OKntePlanner/1.0"
 
@@ -593,6 +673,52 @@ class Handler(BaseHTTPRequestHandler):
                 "plan": planner.make_plan(oknte),
                 "oknte_running": oknte.is_running_cached(),
             })
+        elif path == "/api/logs":
+            sources = _collect_log_sources(STATE.settings["oknte_root"])
+            files = []
+            for name, fpath in sources:
+                try:
+                    files.append({"name": name, "size": os.path.getsize(fpath),
+                                  "mtime": datetime.fromtimestamp(os.path.getmtime(fpath))
+                                           .strftime("%Y-%m-%d %H:%M:%S")})
+                except OSError:
+                    continue
+            self._send(200, {"logs": files})
+        elif path == "/api/logs/tail":
+            sources = _collect_log_sources(STATE.settings["oknte_root"])
+            try:
+                idx = int(self.path.split("i=", 1)[1].split("&")[0]) if "i=" in self.path else -1
+            except ValueError:
+                idx = -1
+            lines_n = _clamp_int(self.path.split("lines=", 1)[1].split("&")[0]
+                                 if "lines=" in self.path else "", 50, 2000, 300)
+            if not (0 <= idx < len(sources)):
+                self._send(404, {"error": "日志不存在或已被清理"})
+                return
+            label, fpath = sources[idx]
+            try:
+                with open(fpath, encoding="utf-8", errors="replace") as f:
+                    all_lines = f.read().splitlines()
+            except OSError as e:
+                self._send(500, {"error": f"日志读取失败：{e}"})
+                return
+            self._send(200, {"name": label, "total": len(all_lines),
+                             "lines": all_lines[-lines_n:]})
+        elif path == "/api/logs/download":
+            sources = _collect_log_sources(STATE.settings["oknte_root"])
+            try:
+                idx = int(self.path.split("i=", 1)[1].split("&")[0]) if "i=" in self.path else -1
+            except ValueError:
+                idx = -1
+            if not (0 <= idx < len(sources)):
+                self._send(404, {"error": "日志不存在或已被清理"})
+                return
+            label, fpath = sources[idx]
+            try:
+                with open(fpath, "rb") as f:
+                    self._send(200, f.read(), "text/plain; charset=utf-8")
+            except OSError as e:
+                self._send(500, {"error": f"日志读取失败：{e}"})
         elif path == "/api/export":
             self._send(200, build_export())
         elif path == "/api/backups":
@@ -726,6 +852,18 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, payload)
             else:
                 self._send(400, {"error": "action 必须是 libraries 或 character"})
+        elif path == "/api/inventory/ocr":
+            # 实验性：截屏 OCR 原文返回，匹配与预填都在前端完成（绝不直接写库存）
+            try:
+                text = _run_backpack_ocr()
+            except (OSError, subprocess.TimeoutExpired) as e:
+                self._send(502, {"ok": False, "error": f"OCR 执行失败：{e}"})
+                return
+            if text is None:
+                self._send(502, {"ok": False,
+                                 "error": "本机没有可用的 Windows OCR 中文语言包，实验功能不可用"})
+                return
+            self._send(200, {"ok": True, "text": text})
         elif path == "/api/game-data/custom":
             action = str(body.get("action", ""))
             try:

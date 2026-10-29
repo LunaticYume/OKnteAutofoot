@@ -2290,6 +2290,34 @@ def test_weapon_library_duplicates():
     assert libs["weapon_library"] == ["弧盘A", "弧盘A", "弧盘B"], libs["weapon_library"]
 
 
+@case
+def test_log_sources_whitelist():
+    """日志页白名单：只收三类目录下按模式命中的 .log；目录外文件（穿越）不出现。"""
+    import app.main as main_mod
+    from app import state as state_mod
+    tmp = tempfile.mkdtemp(prefix="oknte_logs_")
+    for rel in ("data/apps/ok-nte/working/logs/ok-script.log",
+                "data/apps/ok-nte/working/logs/ok-script.2026-10-29.log",
+                "data/apps/ok-nte/working/logs/other.log",      # 模式不匹配
+                "data/apps/ok-nte/working/logs/ok-script.txt",  # 扩展名不符
+                "logs/app.2026-10-29.log"):
+        full = os.path.join(tmp, rel.replace("/", os.sep))
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        state_mod.save_json_atomic(full, "")
+    os.makedirs(os.path.join(tmp, "secret"))  # 模拟穿越：白名单目录外的同名日志
+    state_mod.save_json_atomic(os.path.join(tmp, "secret", "ok-script.log"), "")
+    try:
+        names = [p for _label, p in main_mod._collect_log_sources(tmp)]
+        assert any(p.endswith(os.sep.join(("working", "logs", "ok-script.log"))) for p in names)
+        assert any(p.endswith("ok-script.2026-10-29.log") for p in names)
+        assert any(p.endswith(os.sep.join(("logs", "app.2026-10-29.log"))) for p in names)
+        assert not any("other.log" in p for p in names), "模式不匹配的文件不得入列"
+        assert not any("ok-script.txt" in p for p in names), "扩展名不符不得入列"
+        assert not any("secret" in p for p in names), "白名单目录外的文件不得入列"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 # ---------- 汇总 ----------
 
 def main():
