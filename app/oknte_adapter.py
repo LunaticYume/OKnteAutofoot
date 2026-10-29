@@ -15,6 +15,8 @@ from pathlib import Path
 
 from .state import DATA_DIR
 
+CREATE_NO_WINDOW = 0x08000000  # 无控制台父进程（打包 EXE）下，缺它每次检测都弹可见黑窗
+
 ROUTINE_CONFIG_NAME = "DailyRoutineTaskConfigs.json"
 ROUTINE_ITEMS_NAME = "DailyRoutineTask.json"
 HUNTER_CONFIG_NAME = "AnomalyHunter.json"
@@ -149,25 +151,34 @@ class OkNte:
         return self.is_running()
 
     def _detect_running(self):
+        """两级进程检测。真机实证的失效史（阶段20 修复）：
+        - ok-nte GUI 启动后启动器自杀（Kill Launcher After Start），tasklist 永远
+          查不到 ok-nte.exe；
+        - 旧 PowerShell 模式 `-like '<working>\\*'` 锚定 CommandLine 开头，而
+          CommandLine 以解释器路径开头（pythonw.exe + main.py），永远不命中；
+        - 规划器自己的无头子进程是 `-m ok run_task`（CommandLine 不含 working 路径），
+          同样检不到 → 防双开失效，撞 ok-nte 自身单实例互斥后子进程 exit 1。
+        现按"任意位置包含"匹配 working 路径与 run_task 入口。检测失败保守返回 True。"""
         try:
             out = subprocess.run(
                 ["tasklist", "/FI", "IMAGENAME eq ok-nte.exe", "/NH"],
-                capture_output=True, timeout=10,
+                capture_output=True, timeout=10, creationflags=CREATE_NO_WINDOW,
             ).stdout
             if b"ok-nte.exe" in out:
                 return True
         except (OSError, subprocess.TimeoutExpired):
             return True
-        # PyAppify 用 pythonw 托管 working/main.py
+        work = self.working.replace(chr(39), chr(39) * 2)  # PowerShell 单引号转义
         ps = (
             "$ps = Get-CimInstance Win32_Process -Filter \"Name='python.exe' or Name='pythonw.exe'\";"
-            f"$ps | Where-Object {{$_.CommandLine -like '{self.working.replace(chr(39), chr(39)*2)}*'}}"
-            " | Select-Object -First 1 -ExpandProperty ProcessId"
+            "$hit = @($ps | Where-Object { $_.CommandLine -like "
+            f"'*{work}*' -or $_.CommandLine -like '*-m ok run_task*' }});"
+            "if ($hit.Count -gt 0) { $hit[0].ProcessId }"
         )
         try:
             out = subprocess.run(
                 ["powershell", "-NoProfile", "-Command", ps],
-                capture_output=True, timeout=15,
+                capture_output=True, timeout=15, creationflags=CREATE_NO_WINDOW,
             ).stdout
             return bool(out.strip())
         except (OSError, subprocess.TimeoutExpired):
@@ -374,14 +385,16 @@ class OkNte:
         self._atomic_write_json(self.hunter_config, patched)
         return sorted(changed)
 
-    def ensure_routine_item(self, item_id, enabled=True):
+    def ensure_routine_item(self, item_id, enabled=True, check_running=True):
         """最小补丁 DailyRoutineTask.json 的 Routine Items 开关（如 daily_anomaly）。
 
         无界面跑日常时 ok-nte 只执行 enabled 的子任务，规划器必须保证目标子任务
         已启用；同互斥组的另一项交给 ok-nte 自己的 normalize 处理。条目缺失时
         不创建（结构变更防护），返回 (False, 原因)。
+        check_running=False：调用方刚做过实时检测时跳过（每步 3 次检测收敛为 2 次，
+        每次检测都是 tasklist+PowerShell，最坏 25s 且不可打断）。
         """
-        if self.is_running():
+        if check_running and self.is_running():
             raise OkNteError("ok-nte 正在运行，拒绝写入配置（运行中的程序会把改动覆盖回去）")
         original = self._load_json_or(self.routine_items, None)
         if original is None:

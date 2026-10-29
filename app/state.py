@@ -108,13 +108,15 @@ def _empty_today(day):
     }
 
 
-def _deep_merge(base, override):
-    for key, value in override.items():
-        if isinstance(value, dict) and isinstance(base.get(key), dict):
-            _deep_merge(base[key], value)
-        else:
-            base[key] = value
-    return base
+def _apply_default_settings(settings):
+    """默认值只补缺，绝不覆盖用户已保存的值。
+
+    历史缺陷（真机实证）：此处曾用 _deep_merge(用户设置, DEFAULT_SETTINGS)，实参顺序
+    使默认值获胜——每次启动限额/端口/持续模式等标量设置全部回退（panel.log 里端口
+    反复避让 16 次即此痕迹）。
+    """
+    for key, value in DEFAULT_SETTINGS.items():
+        settings.setdefault(key, value)
 
 
 class State:
@@ -127,10 +129,10 @@ class State:
         if not isinstance(data, dict):
             data = {}
         # 类型防线：JSON 合法但字段类型被改坏（手改 state.json 的高发形态）时
-        # 重置对应段回默认，而不是在 _deep_merge/属性访问处抛异常让面板无法启动。
+        # 重置对应段回默认，而不是在属性访问处抛异常让面板无法启动。
         if not isinstance(data.get("settings"), dict):
             data["settings"] = {}
-        _deep_merge(data["settings"], DEFAULT_SETTINGS)
+        _apply_default_settings(data["settings"])
         data["settings"] = {k: data["settings"][k] for k in DEFAULT_SETTINGS}
         if not isinstance(data.get("characters"), list):
             data["characters"] = []

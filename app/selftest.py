@@ -2226,6 +2226,44 @@ def test_codex_custom_material():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+@case
+def test_state_settings_persist_across_load():
+    """真机缺陷回归（限额 360→180 根因）：加载时默认值只补缺，绝不覆盖用户标量设置。"""
+    from app import state as state_mod
+    tmp = tempfile.mkdtemp(prefix="oknte_state_persist_")
+    orig = state_mod.STATE_FILE
+    try:
+        state_mod.STATE_FILE = os.path.join(tmp, "state.json")
+        state_mod.save_json_atomic(state_mod.STATE_FILE, {
+            "settings": {"daily_stamina_limit": 360, "port": 8766,
+                         "continuous_mode": False, "busy_retry_seconds": 45}})
+        fresh = state_mod.State()
+        s = fresh.data["settings"]
+        assert s["daily_stamina_limit"] == 360, s
+        assert s["port"] == 8766, s
+        assert s["continuous_mode"] is False, s
+        assert s["busy_retry_seconds"] == 45, s
+        assert s["notify_enabled"] is False, "缺失键仍应补默认值"
+    finally:
+        state_mod.STATE_FILE = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_startup_failure_no_blacklist():
+    """启动失败（互斥/环境）不进当日拉黑；游戏内任务失败仍拉黑。"""
+    with _StateGuard():
+        STATE.data["settings"] = dict(DEFAULT_SETTINGS)
+        STATE.data["today"] = _empty_today()
+        step = {"mat_id": "exp_char", "name": "测试目标", "runs": 1, "stamina": 40, "gain": 1}
+        runner_mod.RUNNER._settle(step, "failed", 0,
+                                  "启动失败（exit 1）：Another application instance is still running")
+        assert "exp_char" not in STATE.today.get("blacklist", []), "启动失败不得拉黑"
+        assert STATE.data["history"][-1]["note"].startswith("启动失败")
+        runner_mod.RUNNER._settle(step, "failed", 0, "未找到副本按钮")
+        assert "exp_char" in STATE.today.get("blacklist", []), "游戏内失败仍应拉黑"
+
+
 # ---------- 汇总 ----------
 
 def main():

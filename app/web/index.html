@@ -414,7 +414,11 @@ async function renderOverview(){
   };
   $("#btnPreview").onclick = doPreview;
   $("#btnHunterPlan").onclick = doHunterPlan;
-  $("#btnStop").onclick = ()=>api("/api/stop").then(refreshStatus).catch(alertErr);
+  $("#btnStop").onclick = ()=>api("/api/stop").then(r=>{
+    if(r.ok===false) toast(r.message||"当前没有在运行","err");
+    else toast(r.message||"已请求停止");
+    refreshStatus();
+  }).catch(alertErr);
   document.querySelectorAll("[data-rid]").forEach(btn=>btn.onclick=async()=>{
     try{ const r=await api("/api/reconcile",{execution_id:btn.dataset.rid,resolution:btn.dataset.res});
       toast(r.message||"已处理"); renderOverview();

@@ -295,7 +295,8 @@ class Runner:
             self.status["next_retry_at"] = None
             self._write_runtime(state="stopping")
         self.stop_event.set()
-        self._kill_child()
+        # taskkill /T 最长可阻塞 20s，曾超过前端 15s 超时令"停止"看起来失败：移入后台线程
+        threading.Thread(target=self._kill_child, daemon=True, name="oknte-kill").start()
         return True, "已请求停止"
 
     def snapshot(self):
@@ -405,6 +406,14 @@ class Runner:
                     break
                 continue
             self._settle(step, status, spent, note)
+            if status == "failed" and (note or "").startswith("启动失败"):
+                # 启动失败（互斥/环境）不是游戏内失败：已按"不拉黑"落账，等待后重试
+                if not continuous:
+                    self._finish("done", f"启动失败：{note}")
+                    return
+                if not self._wait(f"启动失败，稍后自动重试（{note}）"):
+                    break
+                continue
             if status == "short":
                 if not continuous:
                     self._finish("done", "游戏内体力不足，今日收工")
@@ -459,7 +468,8 @@ class Runner:
         if oknte.is_running():
             return "busy", 0, "检测到 ok-nte 正在运行"
         # 无界面日常只执行 enabled 的子任务：确保 daily_anomaly 已启用（最小补丁）
-        ok, why = oknte.ensure_routine_item("daily_anomaly", True)
+        # 入口刚做过 is_running 实时检测 → 跳过本函数内部的重复检测（每步 3 次→2 次）
+        ok, why = oknte.ensure_routine_item("daily_anomaly", True, check_running=False)
         if not ok:
             self._log(f"提示：{why}（无界面日常可能不会执行异象界域）")
         mat = planner.TARGETS[step["mat_id"]]
@@ -504,6 +514,11 @@ class Runner:
         self._write_runtime(execution=record)
         self._log(f"启动 ok-nte 无界面任务: {' '.join(cmd[1:])}")
 
+        if self.stop_event.is_set():
+            # 写配置已成功，但用户已点停止：绝不拉起新任务（真机反馈"点停止还在启动"）
+            self._write_runtime(execution=None)
+            return "failed", 0, "手动停止（未拉起任务）"
+
         try:
             self.child = subprocess.Popen(
                 cmd, cwd=cwd, env=env, stdout=subprocess.PIPE,
@@ -515,6 +530,22 @@ class Runner:
         record["phase"] = "launched"
         record["pid"] = self.child.pid
         self._write_runtime(execution=record)
+
+        # 消费子进程 stdout：PIPE 无人读取会在 64KB 缓冲塞满后卡死子进程；
+        # 且互斥冲突等关键诊断（"Another application instance..."）只出现在这里。
+        child_tail = deque(maxlen=5)
+
+        def _pump():
+            try:
+                for raw in self.child.stdout:
+                    line = raw.decode("utf-8", errors="replace").strip()
+                    if line:
+                        child_tail.append(line[:200])
+                        self._log(f"[ok-nte] {line[:200]}")
+            except (OSError, ValueError):
+                pass
+
+        threading.Thread(target=_pump, daemon=True, name="oknte-stdout").start()
 
         deadline = time.time() + int(STATE.settings.get("max_run_minutes", 90)) * 60
         rc = None
@@ -540,6 +571,11 @@ class Runner:
             self.child = None
 
         status, spent, note = monitor.outcome(planned_stamina, planner.COST_PER_RUN)
+        if rc not in (0, None) and status == "failed" and "未捕获" in (note or ""):
+            # 子进程非正常退出且日志零任务标记：这是"启动失败"（互斥/环境问题），
+            # 不是游戏内任务失败——带上真实诊断（此前被 PIPE 丢弃，用户只看到盲目拉黑）
+            tail_text = " | ".join(child_tail).strip()[-180:]
+            note = f"启动失败（exit {rc}）" + (f"：{tail_text}" if tail_text else "：子进程无输出")
         record["phase"] = "exited"
         record["outcome"] = {"status": status, "spent": spent, "note": note,
                              "exit_code": rc}
@@ -596,6 +632,13 @@ class Runner:
                     break
                 continue
             self._settle_hunter(step, status, spent, note)
+            if status == "failed" and (note or "").startswith("启动失败"):
+                if not continuous:
+                    self._finish("done", f"启动失败：{note}")
+                    return
+                if not self._wait(f"启动失败，稍后自动重试（{note}）"):
+                    break
+                continue
             if status == "done" and self.fixed_runs_left > 0:
                 self.fixed_runs_left = max(0, self.fixed_runs_left - step["runs"])
                 if self.fixed_runs_left == 0:
@@ -666,7 +709,7 @@ class Runner:
             if status == "done":
                 inv = STATE.data["inventory"]
                 inv[step["mat_id"]] = int(inv.get(step["mat_id"], 0) or 0) + _actual_gain(step, spent)
-            elif status == "failed":
+            elif status == "failed" and not (note or "").startswith("启动失败"):
                 marker = f"hunt:{step['boss']}"
                 today.setdefault("blacklist", []).append(marker)
                 today["blacklist"] = list(dict.fromkeys(today["blacklist"]))
@@ -702,7 +745,8 @@ class Runner:
             if status == "done":
                 inv = STATE.data["inventory"]
                 inv[step["mat_id"]] = int(inv.get(step["mat_id"], 0) or 0) + _actual_gain(step, spent)
-            elif status == "failed":
+            elif status == "failed" and not (note or "").startswith("启动失败"):
+                # 拉黑只针对游戏内任务失败；启动失败（互斥/环境）进等待重试，见 _daily_loop
                 today.setdefault("blacklist", []).append(step["mat_id"])
                 today["blacklist"] = list(dict.fromkeys(today["blacklist"]))
             STATE.save()
