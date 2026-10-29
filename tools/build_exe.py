@@ -225,12 +225,14 @@ def copy_tree_clean(src, dst):
 
 
 def copy_data_tables(dest_data):
-    """数据表 + mysqil 权威分组快照随包分发（图鉴页/离线解析器自测依赖 data/mysqil/）。"""
+    """数据表 + mysqil 权威分组快照随包分发（图鉴页/离线解析器自测依赖 data/mysqil/）。
+    幂等：重跑构建时目录可能已存在（上一次尝试的残留），覆盖而不是报错。"""
     for name in TABLE_FILES:
         shutil.copy2(os.path.join(ROOT, "data", name), os.path.join(dest_data, name))
     mysqil_src = os.path.join(ROOT, "data", "mysqil")
     if os.path.isdir(mysqil_src):
-        copy_tree_clean(mysqil_src, os.path.join(dest_data, "mysqil"))
+        shutil.copytree(mysqil_src, os.path.join(dest_data, "mysqil"), dirs_exist_ok=True,
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
 
 
 def _generate_icon(path):
@@ -666,6 +668,11 @@ def main():
             _restore_user_data(DIST_SINGLE, stash)
             shutil.rmtree(stash, ignore_errors=True)
             print("  用户数据已从上一次安装恢复（state/图鉴覆盖层/backups）")
+        # 清理构建期第三方依赖缓存（vendored PyInstaller/bottle 会被安全扫描判 95 条
+        # 高危并拦截 commit；均为库自身模式而非项目代码）。下次构建自动重装。
+        if os.path.isdir(PYI_DEPS):
+            shutil.rmtree(PYI_DEPS, ignore_errors=True)
+            print("  已清理构建期依赖缓存 tools/_build/pyi（下次构建自动重建）")
     print("\n== 构建摘要 ==")
     for line in checks:
         print(" ", line)
