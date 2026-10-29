@@ -2264,6 +2264,32 @@ def test_startup_failure_no_blacklist():
         assert "exp_char" in STATE.today.get("blacklist", []), "游戏内失败仍应拉黑"
 
 
+@case
+def test_auto_extra_needs():
+    """保存角色时自动按目录计算 BOSS/周本/小怪材料；用户自定义键保留。"""
+    import app.main as main_mod
+    with _StateGuard():
+        STATE.data["settings"] = dict(DEFAULT_SETTINGS)
+        chars = [{"name": "浔", "extra_needs": {"my_custom": 7}},
+                 {"name": "不存在的角色", "extra_needs": {"coin": 100}}]
+        out = main_mod._auto_fill_extra_needs(chars)
+        xun = out[0]["extra_needs"]
+        assert xun["boss_flower_seed"] == 86 and xun["wk_skirt"] == 11 \
+            and xun["mob_whisper_c"] == 390, xun
+        assert xun["my_custom"] == 7, "用户自定义键保留"
+        assert out[1]["extra_needs"] == {"coin": 100}, "目录未命中的角色不动"
+
+
+@case
+def test_weapon_library_duplicates():
+    """武器库允许同名多把（实例化）；角色库仍去重。"""
+    import app.main as main_mod
+    libs = main_mod._sanitize_libraries(
+        {"char_library": ["甲", "甲", "乙"], "weapon_library": ["弧盘A", "弧盘A", "弧盘B"]})
+    assert libs["char_library"] == ["甲", "乙"], libs["char_library"]
+    assert libs["weapon_library"] == ["弧盘A", "弧盘A", "弧盘B"], libs["weapon_library"]
+
+
 # ---------- 汇总 ----------
 
 def main():

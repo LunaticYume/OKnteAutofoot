@@ -205,20 +205,44 @@ def add_custom_material(body):
     return entry
 
 
+def _auto_fill_extra_needs(chars):
+    """保存角色时自动计算直接材料（用户要算术活儿交给机器）：
+    名字命中目录/图鉴覆盖层的角色，BOSS×86、周本×11、小怪族×390 按目录映射
+    覆盖写入 extra_needs；用户手填的其它键（自定义材料）保留；未命中角色不动。"""
+    try:
+        data = game_data.load()
+    except (OSError, ValueError):
+        return chars
+    costs = _common_costs()
+    by_name = {c.get("name"): c for c in data.get("characters", []) if isinstance(c, dict)}
+    for char in chars:
+        entry = by_name.get(char.get("name"))
+        if not entry:
+            continue
+        prefill, _skipped = game_data.character_material_mapping(data, entry, costs)
+        if not prefill:
+            continue
+        manual = {k: v for k, v in (char.get("extra_needs") or {}).items() if k not in prefill}
+        char["extra_needs"] = {**manual, **prefill}
+    return chars
+
+
 def _sanitize_libraries(raw):
-    """角色库/武器库：非空去重字符串列表（≤32字/项，≤200项）。"""
-    def _clean(value):
+    """角色库：非空去重字符串列表（≤32字/项，≤200项）。
+    武器库允许同名多条（用户语义：同名多把，不同角色各用各的把），不做去重。"""
+    def _clean(value, dedupe=True):
         if not isinstance(value, list):
             return []
         seen, out = set(), []
         for item in value[:400]:
             name = str(item).strip()[:32]
-            if name and name not in seen:
-                seen.add(name)
+            if name and (name not in seen or not dedupe):
+                if dedupe:
+                    seen.add(name)
                 out.append(name)
         return out[:200]
     return {"char_library": _clean(raw.get("char_library")),
-            "weapon_library": _clean(raw.get("weapon_library"))}
+            "weapon_library": _clean(raw.get("weapon_library"), dedupe=False)}
 
 
 def _common_costs():
@@ -633,7 +657,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, {"error": "characters 必须是数组"})
                 return
             with STATE.lock:
-                STATE.data["characters"] = [_sanitize_character(c) for c in body["characters"][:50]]
+                chars = [_sanitize_character(c) for c in body["characters"][:50]]
+                chars = _auto_fill_extra_needs(chars)
+                STATE.data["characters"] = chars
                 STATE.save()
             self._send(200, {"ok": True, "characters": STATE.characters})
         elif path == "/api/inventory":
@@ -681,7 +707,10 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 with STATE.lock:  # 读-改-写：与并发请求互斥，防丢更新
                     STATE.data["characters"] = STATE.data["characters"][:50]
-                    if len(STATE.data["characters"]) < 50:
+                    if any(c.get("name") == raw.get("name")
+                           for c in STATE.data["characters"]):
+                        payload = {"dup": raw.get("name")}
+                    elif len(STATE.data["characters"]) < 50:
                         clean = _sanitize_character(raw)
                         STATE.data["characters"].append(clean)
                         STATE.save()
@@ -690,6 +719,9 @@ class Handler(BaseHTTPRequestHandler):
                         payload = None
                 if payload is None:
                     self._send(409, {"error": "角色数量已达上限（50）"})
+                elif "dup" in payload:
+                    self._send(409, {"error": f"角色「{payload['dup']}」已在列表中（互斥录入）；"
+                                              f"如需调整请在角色列表编辑"})
                 else:
                     self._send(200, payload)
             else:
@@ -768,8 +800,11 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/libraries":
             libs = _sanitize_libraries(body)
             with STATE.lock:
-                STATE.data["char_library"] = libs["char_library"]
-                STATE.data["weapon_library"] = libs["weapon_library"]
+                # 部分更新：body 里没带的库保持原值（图鉴页只推武器库时不清角色库）
+                if "char_library" in body:
+                    STATE.data["char_library"] = libs["char_library"]
+                if "weapon_library" in body:
+                    STATE.data["weapon_library"] = libs["weapon_library"]
                 STATE.save()
             self._send(200, {"ok": True,
                              "char_library": STATE.data["char_library"],
