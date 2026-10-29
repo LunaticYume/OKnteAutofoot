@@ -240,6 +240,7 @@
       <button data-t="tables"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/><path d="M12 3v18"/></svg><span>数据表</span></button>
       <button data-t="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg><span>设置</span></button>
       <button data-t="history"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg><span>历史</span></button>
+      <button data-t="logs"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg><span>日志</span></button>
     </nav>
     <div class="side-foot" id="envTags"></div>
   </aside>
@@ -899,8 +900,12 @@ function renderInv(){
   const inv=BOOT.state.inventory||{};
   const cats={};
   allMaterials().forEach(m=>{(cats[m.category]=cats[m.category]||[]).push(m);});
+  const escRe=s=>s.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
   $("#main").innerHTML=`
     <div class="card"><h3>材料库存<span class="h-sub">全量材料：体力本 + BOSS掉落/周本/小怪等外部来源；先按背包实际填写，之后规划器自动累加</span></h3>
+    <div class="row" style="margin-bottom:10px">
+      <button class="btn sec mini" id="btnOcr">📷 抓取背包（实验）</button>
+      <span class="muted">截屏识别游戏窗口文字 → 命中的材料预填为<b>黄色边框</b> → 请核对后保存；识别不了就手填</span></div>
     ${Object.entries(cats).map(([cat,items])=>`
       <div style="font-size:13px;color:var(--faint);margin:12px 0 8px">${esc(cat)}</div>
       <div class="mat-grid">
@@ -910,6 +915,29 @@ function renderInv(){
       </div>`).join("")}
     </div>
     <div class="row"><button class="btn big" id="saveInv">保存库存</button></div>`;
+  $("#btnOcr").onclick=async()=>{
+    const btn=$("#btnOcr"); btn.disabled=true; const old=btn.textContent;
+    btn.textContent="识别中…（请保持游戏窗口可见）";
+    try{
+      const r=await api("/api/inventory/ocr");
+      const text=r.text||"";
+      let hits=0;
+      document.querySelectorAll("[data-inv]").forEach(inp=>{
+        const label=(inp.closest(".mat-item")?.querySelector("label")?.textContent||"").trim();
+        if(!label) return;
+        const candidates=[label, label.split("（")[0]].filter(c=>c.length>=2);
+        for(const candidate of candidates){
+          const m=new RegExp(escRe(candidate)+"\\D{0,14}(\\d{1,9})").exec(text);
+          if(m){ const v=+m[1];
+            if(v>=0 && String(inp.value)!==String(v)){ inp.value=v; inp.style.borderColor="var(--warn)"; hits++; }
+            break;
+          }
+        }
+      });
+      toast(hits?`OCR 命中 ${hits} 项已预填（黄色边框），请核对后保存`:"OCR 未识别到已知材料名", hits?"ok":"err");
+    }catch(e){alertErr(e);}
+    finally{ btn.disabled=false; btn.textContent=old; }
+  };
   $("#saveInv").onclick=async()=>{
     const inventory={};
     document.querySelectorAll("[data-inv]").forEach(inp=>{const v=+inp.value||0; if(v>0)inventory[inp.dataset.inv]=v;});
@@ -1496,13 +1524,64 @@ function renderCodexCustomList(){
   });
 }
 
+/* ---------- 日志（ok-nte 任务/应用日志 + 面板日志） ---------- */
+let LOGS_CURRENT = {files: [], idx: -1, lines: 300};
+async function renderLogs(){
+  const r = await api("/api/logs").catch(e=>({error:e.message}));
+  if(r.error){ $("#main").innerHTML=`<div class="card"><div class="banner warn">${esc(r.error)}</div></div>`; return; }
+  LOGS_CURRENT.files = r.logs||[];
+  const rows = LOGS_CURRENT.files.map((f,i)=>`
+    <tr><td><b>${esc(f.name)}</b></td><td class="muted num">${esc(f.mtime)}</td><td class="num">${(f.size/1024).toFixed(1)} KB</td>
+    <td><button class="btn sec mini" data-log-view="${i}">查看尾部</button>
+    <button class="btn sec mini" data-log-dl="${i}">⬇ 导出</button></td></tr>`).join("");
+  $("#main").innerHTML=`
+    <div class="card"><h3>日志文件<span class="h-sub">ok-nte 任务日志 / 应用日志 / 面板自身日志；查看末尾 300 行（可加载到 2000），或导出完整文件</span></h3>
+    ${rows?`<table><tr><th>文件</th><th>修改时间</th><th>大小</th><th>操作</th></tr>${rows}</table>`
+      :'<div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>还没有可读的日志文件（首次执行 ok-nte 任务后产生）</div>'}</div>
+    <div class="card" id="logViewCard" style="display:none"><h3 id="logViewName"></h3>
+      <div id="logView" class="term" style="height:440px"></div>
+      <div class="row" style="margin-top:8px"><button class="btn sec mini" id="btnLogMore">加载更多行</button>
+      <button class="btn sec mini" id="btnLogDl">⬇ 导出完整文件</button>
+      <span class="muted" id="logViewMeta"></span></div></div>`;
+  document.querySelectorAll("[data-log-view]").forEach(b=>b.onclick=()=>viewLog(+b.dataset.logView, LOGS_CURRENT.lines));
+  document.querySelectorAll("[data-log-dl]").forEach(b=>b.onclick=()=>downloadLog(+b.dataset.logDl));
+  $("#btnLogMore").onclick=()=>viewLog(LOGS_CURRENT.idx, Math.min(2000, LOGS_CURRENT.lines+300));
+  $("#btnLogDl").onclick=()=>downloadLog(LOGS_CURRENT.idx);
+}
+async function viewLog(idx, lines){
+  try{
+    const r=await api(`/api/logs/tail?i=${idx}&lines=${lines}`);
+    LOGS_CURRENT.idx=idx; LOGS_CURRENT.lines=lines;
+    $("#logViewCard").style.display="block";
+    $("#logViewName").textContent=r.name;
+    $("#logViewMeta").textContent=`显示末尾 ${r.lines.length} 行 / 共 ${r.total} 行`;
+    const el=$("#logView");
+    el.textContent=r.lines.join("\n")||"（空文件）";
+    el.scrollTop=el.scrollHeight;
+    $("#logViewCard").scrollIntoView({behavior:"smooth",block:"nearest"});
+  }catch(e){alertErr(e);}
+}
+async function downloadLog(idx){
+  const f=LOGS_CURRENT.files[idx]; if(!f)return;
+  try{
+    const res=await fetch(`/api/logs/download?i=${idx}`);
+    const text=await res.text();
+    const blob=new Blob([text],{type:"text/plain;charset=utf-8"});
+    const a=document.createElement("a");
+    a.href=URL.createObjectURL(blob);
+    a.download=f.name.replace("/","_")+".log";
+    a.click(); URL.revokeObjectURL(a.href);
+    toast("日志已导出");
+  }catch(e){alertErr(e);}
+}
+
 /* ---------- 框架 ---------- */
 const PAGE_TITLES={overview:["总览","当日计划 · 执行控制 · 推演"],chars:["角色","养成目标与直接材料需求"],
   arc:["弧盘 / 空幕","按名字选择 · 等级目标 · 缺口概要"],
   codex:["图鉴数据","手动录入新角色/武器 + wiki 拉取预填"],
   common:["通用材料","每角色通用数量 → 具体材料映射"],inv:["库存","全量材料持有量"],
   tables:["数据表","产量 · 需求表 · 材料名校准"],settings:["设置","执行策略 · 体力模型 · 导入导出"],
-  history:["历史","执行记录与产量校准闭环"]};
+  history:["历史","执行记录与产量校准闭环"],logs:["日志","ok-nte 任务/应用日志 · 面板日志"]};
 async function boot(){
   BOOT=await api("/api/bootstrap");
   const tags=[];
@@ -1527,7 +1606,7 @@ function switchPage(t){
   clearInterval(TIMER);
   if(!BOOT) return;  // bootstrap 未完成（兼容检测约需数秒）：先记下目标页，boot 完成后按 CURRENT 渲染
   ({overview:renderOverview,chars:renderChars,arc:renderArc,codex:renderCodex,common:renderCommon,inv:renderInv,
-    tables:renderTables,settings:renderSettings,history:renderHistory})[t]();
+    tables:renderTables,settings:renderSettings,history:renderHistory,logs:renderLogs})[t]();
   if(t==="overview") TIMER=setInterval(refreshStatus,2000);
 }
 document.querySelectorAll("#nav button").forEach(b=>b.onclick=()=>switchPage(b.dataset.t));
