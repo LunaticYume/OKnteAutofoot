@@ -36,6 +36,38 @@ class OkNteError(Exception):
     pass
 
 
+def _detection_patterns(working, apps_dir):
+    """进程检测的 PowerShell 片段（纯函数，selftest 可离线断言）。
+
+    真机取证（2026-10-30）：ok-nte GUI 必然提权运行（profile admin:true），面板
+    非提权时 WMI 读提权进程的 CommandLine/ExecutablePath 全为 NULL——任何命令行
+    匹配都会漏（这正是首版修复后仍漏报的原因）；GUI 主窗口标题含 ok-nte，跨完整性
+    级别可读，tasklist /V 是非提权场景的唯一兜底。
+
+    匹配面（面板提权可读时；路径全部由参数推导，不硬编码盘符）：
+    - ExecutablePath 以 ok-nte\\python\\pythonw.exe 结尾（GUI 独占 pythonw；
+      无头子进程用 python.exe，不冲突）
+    - CommandLine 含 working\\main.py（启动器拉起形态）
+    - CommandLine 含 .pyappify-shortcut.py（快捷方式监督进程形态）
+    - CommandLine 含 -m ok run_task（规划器自己的无头子进程，防双开）
+    防误伤：不用宽泛 '*ok-nte*'（本仓库路径含 OKnte 字样）。"""
+    def ps_quote(text):
+        return text.replace(chr(39), chr(39) * 2)
+
+    work = ps_quote(working)
+    shortcut = ps_quote(os.path.join(apps_dir, ".pyappify-shortcut.py"))
+    exe_suffix = ps_quote(os.path.join("ok-nte", "python", "pythonw.exe"))
+    return (
+        "$ps = Get-CimInstance Win32_Process -Filter \"Name='python.exe' or Name='pythonw.exe'\";"
+        "$hit = @($ps | Where-Object { "
+        f"$_.ExecutablePath -like '*{exe_suffix}' "
+        f"-or $_.CommandLine -like '*{work}\\main.py*' "
+        f"-or $_.CommandLine -like '*{shortcut}' "
+        "-or $_.CommandLine -like '*-m ok run_task*' });"
+        "if ($hit.Count -gt 0) { $hit[0].ProcessId }"
+    )
+
+
 class OkNte:
     def __init__(self, root):
         self.root = root
@@ -151,14 +183,13 @@ class OkNte:
         return self.is_running()
 
     def _detect_running(self):
-        """两级进程检测。真机实证的失效史（阶段20 修复）：
-        - ok-nte GUI 启动后启动器自杀（Kill Launcher After Start），tasklist 永远
-          查不到 ok-nte.exe；
-        - 旧 PowerShell 模式 `-like '<working>\\*'` 锚定 CommandLine 开头，而
-          CommandLine 以解释器路径开头（pythonw.exe + main.py），永远不命中；
-        - 规划器自己的无头子进程是 `-m ok run_task`（CommandLine 不含 working 路径），
-          同样检不到 → 防双开失效，撞 ok-nte 自身单实例互斥后子进程 exit 1。
-        现按"任意位置包含"匹配 working 路径与 run_task 入口。检测失败保守返回 True。"""
+        """三级进程检测（按取证报告 2026-10-30 落地）：
+        1. tasklist 过滤 ok-nte.exe——只覆盖启动器存活的十几秒窗口期（GUI 显示后自杀）；
+        2. CIM 主模式——面板提权时可读 GUI 的 ExecutablePath/CommandLine（失效史与
+           匹配面详见 _detection_patterns 的取证注释）；
+        3. tasklist /V 兜底——面板非提权时 WMI 字符串属性对提权 GUI 全为 NULL，
+           但 GUI 主窗口标题（ok-nte v1.4.21 ...）跨完整性级别可读。
+        检测失败保守返回 True。"""
         try:
             out = subprocess.run(
                 ["tasklist", "/FI", "IMAGENAME eq ok-nte.exe", "/NH"],
@@ -168,21 +199,26 @@ class OkNte:
                 return True
         except (OSError, subprocess.TimeoutExpired):
             return True
-        work = self.working.replace(chr(39), chr(39) * 2)  # PowerShell 单引号转义
-        ps = (
-            "$ps = Get-CimInstance Win32_Process -Filter \"Name='python.exe' or Name='pythonw.exe'\";"
-            "$hit = @($ps | Where-Object { $_.CommandLine -like "
-            f"'*{work}*' -or $_.CommandLine -like '*-m ok run_task*' }});"
-            "if ($hit.Count -gt 0) { $hit[0].ProcessId }"
-        )
         try:
             out = subprocess.run(
-                ["powershell", "-NoProfile", "-Command", ps],
+                ["powershell", "-NoProfile", "-Command",
+                 _detection_patterns(self.working, self.apps_dir)],
                 capture_output=True, timeout=15, creationflags=CREATE_NO_WINDOW,
             ).stdout
-            return bool(out.strip())
+            if out.strip():
+                return True
         except (OSError, subprocess.TimeoutExpired):
             return True
+        try:
+            out = subprocess.run(
+                ["tasklist", "/V", "/FI", "IMAGENAME eq pythonw.exe", "/NH"],
+                capture_output=True, timeout=10, creationflags=CREATE_NO_WINDOW,
+            ).stdout
+            if "ok-nte" in out.decode("utf-8", errors="replace").lower():
+                return True
+        except (OSError, subprocess.TimeoutExpired):
+            return True
+        return False
 
     # ---- 配置写入 ----
     def backup_routine_config(self):

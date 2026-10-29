@@ -2318,6 +2318,34 @@ def test_log_sources_whitelist():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+@case
+def test_detection_pattern():
+    """进程检测模式：真机取证的四类匹配面齐全，且不含宽泛误伤项。"""
+    from app import oknte_adapter as ad
+    ps = ad._detection_patterns(
+        r"D:\GamingAssistant\ok-nte\data\apps\ok-nte\working",
+        r"D:\GamingAssistant\ok-nte\data\apps\ok-nte")
+    assert "pythonw.exe'" in ps, "GUI 独占 pythonw 的 ExecutablePath 后缀匹配"
+    assert "main.py*" in ps, "启动器拉起形态"
+    assert ".pyappify-shortcut.py'" in ps, "快捷方式监督进程形态"
+    assert "*-m ok run_task*'" in ps, "规划器无头子进程（防双开）"
+    assert "'*ok-nte*'" not in ps, "不得使用宽泛误伤模式"
+
+
+@case
+def test_clear_blacklist():
+    """拉黑自救：清空 today.blacklist 并持久化。"""
+    import app.main as main_mod
+    with _StateGuard():
+        STATE.data["settings"] = dict(DEFAULT_SETTINGS)
+        STATE.data["today"] = _empty_today()
+        STATE.today["blacklist"] = ["exp_char", "coin"]
+        cleared = main_mod.clear_today_blacklist()
+        assert cleared == 2 and STATE.today["blacklist"] == []
+        saved = json.load(open(STATE_FILE, encoding="utf-8"))
+        assert saved["today"]["blacklist"] == [], "清空应落盘"
+
+
 # ---------- 汇总 ----------
 
 def main():

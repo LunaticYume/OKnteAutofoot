@@ -23,6 +23,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from datetime import datetime
 from io import FileIO
 from pathlib import Path
 
@@ -224,11 +225,25 @@ def copy_tree_clean(src, dst):
     shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
 
 
+def _git_short():
+    try:
+        r = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                           capture_output=True, text=True, timeout=10, cwd=ROOT)
+        return (r.stdout or "").strip() or "unknown"
+    except (OSError, subprocess.TimeoutExpired):
+        return "unknown"
+
+
 def copy_data_tables(dest_data):
-    """数据表 + mysqil 权威分组快照随包分发（图鉴页/离线解析器自测依赖 data/mysqil/）。
-    幂等：重跑构建时目录可能已存在（上一次尝试的残留），覆盖而不是报错。"""
+    """数据表 + mysqil 权威分组快照 + 构建标识随包分发（图鉴页/离线解析器自测依赖
+    data/mysqil/；build_info.json 让用户一眼区分面板新旧）。幂等：重跑构建时目录
+    可能已存在（上一次尝试的残留），覆盖而不是报错。"""
     for name in TABLE_FILES:
         shutil.copy2(os.path.join(ROOT, "data", name), os.path.join(dest_data, name))
+    Path(dest_data, "build_info.json").write_text(
+        json.dumps({"built_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "git": _git_short()}, ensure_ascii=False),
+        encoding="utf-8")
     mysqil_src = os.path.join(ROOT, "data", "mysqil")
     if os.path.isdir(mysqil_src):
         shutil.copytree(mysqil_src, os.path.join(dest_data, "mysqil"), dirs_exist_ok=True,
