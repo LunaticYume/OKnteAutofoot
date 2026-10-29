@@ -181,7 +181,12 @@ USAGE_TXT = """异环养成规划器（OKnteAutofoot）使用说明
   - 面板里先点「预演（不落盘）」确认无误，再「开始执行」。
 
 数据与日志：
-  - 用户数据都在 data\\state.json（可随时备份/迁移）；dist 不含任何历史数据。
+  - 用户数据在各自 EXE 旁的 data\\state.json（可随时备份/迁移）；
+    dist 分发时不携带任何历史数据。
+  - 【重要】两个 EXE 的数据目录相互独立：在 OKntePlanner_single 里填的角色/库存/
+    设置，OKntePlanner（启动器档）里看不到，反之亦然——请固定使用一个。
+  - 【放心】重新打包/更新版本会自动保留两个 EXE 旁的用户数据
+    （state.json、图鉴覆盖层、backups/）。
   - 排查日志：launcher.log（启动器）、data\\panel.log（面板）、crash.log（异常）。
   - 端口被占会自动避让并在 panel.log 提示新端口；双击无反应先看上述日志。
 
@@ -606,13 +611,61 @@ def verify_exes_live(py):
     return results
 
 
+USER_KEEP_PREFIXES = ("state.json", "game_data_custom.json", "panel.log")
+
+
+def _stash_user_data(dist_root, stash):
+    """重建前把 dist 用户数据（state.json*/图鉴覆盖层/backups/panel.log）暂存出去。
+    此前 build_dist 开头 rmtree(DIST) 会连用户在面板里产生的数据一起清空。"""
+    data = os.path.join(dist_root, "data")
+    if not os.path.isdir(data):
+        return False
+    marker = os.path.join(stash, os.path.basename(dist_root), "data")
+    moved = False
+    for name in os.listdir(data):
+        src = os.path.join(data, name)
+        if name.startswith(USER_KEEP_PREFIXES) or name == "backups":
+            dst = os.path.join(marker, name)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            if os.path.isdir(src):
+                shutil.copytree(src, dst)
+            else:
+                shutil.copy2(src, dst)
+            moved = True
+    return moved
+
+
+def _restore_user_data(dist_root, stash):
+    src = os.path.join(stash, os.path.basename(dist_root), "data")
+    if not os.path.isdir(src):
+        return
+    data = os.path.join(dist_root, "data")
+    os.makedirs(data, exist_ok=True)
+    for name in os.listdir(src):
+        s = os.path.join(src, name)
+        d = os.path.join(data, name)
+        if os.path.isdir(s):
+            shutil.copytree(s, d, dirs_exist_ok=True)
+        else:
+            shutil.copy2(s, d)
+
+
 def main():
     py = embedded_python()
     print(f"验证用 Python: {py}")
-    build_dist()
-    checks = verify_dist(py)
-    single = try_pyinstaller_single(py)
-    checks += verify_exes_live(py)
+    stash = tempfile.mkdtemp(prefix="oknte_userdata_")
+    had_user_data = _stash_user_data(DIST, stash) | _stash_user_data(DIST_SINGLE, stash)
+    try:
+        build_dist()
+        checks = verify_dist(py)
+        single = try_pyinstaller_single(py)
+        checks += verify_exes_live(py)
+    finally:
+        if had_user_data:
+            _restore_user_data(DIST, stash)
+            _restore_user_data(DIST_SINGLE, stash)
+            shutil.rmtree(stash, ignore_errors=True)
+            print("  用户数据已从上一次安装恢复（state/图鉴覆盖层/backups）")
     print("\n== 构建摘要 ==")
     for line in checks:
         print(" ", line)
