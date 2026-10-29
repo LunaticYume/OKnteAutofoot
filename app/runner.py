@@ -314,10 +314,12 @@ class Runner:
             self.status["message"] = line
 
     def _kill_child(self):
+        """只终止 ok-nte 无界面脚本进程本身（用户要求：由它带起的游戏进程保留在游戏里）。
+        不加 /T——/T 会连游戏一起杀。若脚本已退出则无操作。"""
         child = self.child
         if child and child.poll() is None:
             subprocess.run(
-                ["taskkill", "/T", "/F", "/PID", str(child.pid)],
+                ["taskkill", "/F", "/PID", str(child.pid)],
                 capture_output=True, timeout=20, creationflags=CREATE_NO_WINDOW,
             )
 
@@ -354,16 +356,11 @@ class Runner:
     def _daily_loop(self, oknte):
         settings = STATE.settings
         continuous = bool(settings.get("continuous_mode", True))
-        hunter_day = None  # 追猎配置已随写配置带上的日期（跨天后当天首写需重新带上）
+        # 追猎已独立计划（阶段13）：日常运行不再携带追猎配置，追猎由专属循环
+        # 以独立配置副本执行（reserve_anomaly_hunter 仅保留设置兼容）
 
         while not self.stop_event.is_set():
             day = STATE.ensure_today()
-            hunter = None
-            if settings.get("reserve_anomaly_hunter") and hunter_day != day:
-                hunter = {
-                    "stamina": int(settings.get("anomaly_hunter_stamina", 180)),
-                    "target": settings.get("anomaly_hunter_target", ""),
-                }
             # 扫描落账归执行器：规划器纯读，日志扫描出的已耗体力先显式写回 STATE
             changed, scanned = _reconcile_used_stamina(oknte)
             if changed:
@@ -387,11 +384,7 @@ class Runner:
                 if self.stop_event.is_set():
                     self._finish("done", "已手动停止")
                     return
-                outcome = self._execute_step(oknte, step, hunter, attempt)
-                if hunter is not None and outcome[0] != "busy" \
-                        and not outcome[2].startswith("写配置失败"):
-                    hunter_day = day  # 已随本次写配置带上，当天不再带；busy/写失败未写成则保留
-                    hunter = None
+                outcome = self._execute_step(oknte, step, attempt)
                 if outcome[0] in ("done", "short", "skipped", "busy"):
                     break
                 if attempt == 1:
@@ -462,34 +455,29 @@ class Runner:
             return "当日失败目标已拉黑（" + "、".join(blocked) + "）且无其他可执行目标"
         return (plan.get("reason") or "今日无可执行步骤") + "，等待次日额度重置"
 
-    def _execute_step(self, oknte, step, hunter, attempt):
+    def _execute_step(self, oknte, step, attempt):
         with self.lock:
             self.status["current"] = step
         if oknte.is_running():
             return "busy", 0, "检测到 ok-nte 正在运行"
-        # 无界面日常只执行 enabled 的子任务：确保 daily_anomaly 已启用（最小补丁）
-        # 入口刚做过 is_running 实时检测 → 跳过本函数内部的重复检测（每步 3 次→2 次）
-        ok, why = oknte.ensure_routine_item("daily_anomaly", True, check_running=False)
-        if not ok:
-            self._log(f"提示：{why}（无界面日常可能不会执行异象界域）")
         mat = planner.TARGETS[step["mat_id"]]
         label = f"{step['name']}×{step['runs']}轮（{step['stamina']}体力）"
-        self._log(f"第 {attempt} 次尝试：写入配置 → {label}")
+        self._log(f"第 {attempt} 次尝试：准备独立配置 → {label}")
 
+        # 无界面运行使用独立配置副本：Routine Items 只启用 daily_anomaly（不再执行
+        # 咖啡/领奖等无关子任务），用户原配置零写入。隔离失败按启动失败处理
+        # （不拉黑、等待重试），诊断进面板日志。
         try:
-            if attempt == 1:
-                backup = oknte.backup_routine_config()
-                if backup:
-                    self._log(f"已备份原配置: {backup}")
-            oknte.write_anomaly_config(
-                mat["config"], step["stamina"], hunter=hunter,
-            )
+            launcher = oknte.prepare_daily_profile(mat["config"], step["stamina"])
         except (OkNteError, OSError, ValueError) as e:
             if isinstance(e, OkNteError) and "正在运行" in str(e):
                 return "busy", 0, "检测到 ok-nte 正在运行"
-            return "failed", 0, f"写配置失败：{e}"
+            return "failed", 0, f"启动失败：配置隔离失败：{e}"
 
-        cmd, cwd, env = oknte.run_command()
+        if self.stop_event.is_set():
+            return "failed", 0, "手动停止（未拉起任务）"
+
+        cmd, cwd, env = oknte.run_command(launcher)
         day = STATE.ensure_today()
         return self._launch_and_monitor(oknte, cmd, cwd, env, day, step,
                                         step["stamina"])
@@ -678,16 +666,19 @@ class Runner:
         if oknte.is_running():
             return "busy", 0, "检测到 ok-nte 正在运行"
         boss = step["boss"]
-        self._log(f"第 {attempt} 次尝试：写入追猎配置 → {boss}×{step['runs']}局"
+        self._log(f"第 {attempt} 次尝试：准备独立配置 → {boss}×{step['runs']}局"
                   f"（{step['stamina']}体力）")
         try:
-            oknte.write_hunter_config(boss, step["runs"])  # 内含备份/白名单校验/原子写
+            launcher = oknte.prepare_hunter_profile(boss, step["runs"])
         except (OkNteError, OSError, ValueError) as e:
             if isinstance(e, OkNteError) and "正在运行" in str(e):
                 return "busy", 0, "检测到 ok-nte 正在运行"
-            return "failed", 0, f"写配置失败：{e}"
+            return "failed", 0, f"启动失败：配置隔离失败：{e}"
 
-        cmd, cwd, env = oknte.run_command_hunter()
+        if self.stop_event.is_set():
+            return "failed", 0, "手动停止（未拉起任务）"
+
+        cmd, cwd, env = oknte.run_command_hunter(launcher)
         day = STATE.ensure_today()
         return self._launch_and_monitor(oknte, cmd, cwd, env, day, step,
                                         step["stamina"])

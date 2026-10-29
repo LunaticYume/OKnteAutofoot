@@ -12,7 +12,8 @@
 与 ok-nte 真实日志布局一致，无需额外传参）。
 
 日志行格式与 ok-nte 真实格式一致（oknte_adapter.RunMonitor/scan_used_stamina 的解析目标）。
-轮数从 runner 写入的配置（daily_anomaly.目标消耗体力）推导，模拟真实行为闭环。
+轮数从规划器写入的独立配置副本（configs_planner/daily_anomaly.目标消耗体力）推导，
+模拟真实行为闭环；副本不存在时回退 configs（兼容旧用例）。
 """
 import json
 import os
@@ -21,7 +22,21 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-CONFIG_REL = os.path.join("configs", "DailyRoutineTaskConfigs.json")
+CONFIG_REL = os.path.join("configs_planner", "DailyRoutineTaskConfigs.json")
+CONFIG_REL_FALLBACK = os.path.join("configs", "DailyRoutineTaskConfigs.json")
+HUNTER_REL = os.path.join("configs_planner", "AnomalyHunter.json")
+HUNTER_REL_FALLBACK = os.path.join("configs", "AnomalyHunter.json")
+
+
+def _load_target_config():
+    """规划器独立配置副本优先（新执行语义），不存在时回退用户原配置目录。"""
+    for rel in (CONFIG_REL, CONFIG_REL_FALLBACK):
+        try:
+            with open(os.path.join(os.getcwd(), rel), encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, ValueError, TypeError):
+            continue
+    return {}
 
 
 def _emit(log, text):
@@ -35,8 +50,7 @@ def main():
     log = os.path.join(os.getcwd(), "logs", "ok-script.log")
     stamina = 0
     try:
-        with open(os.path.join(os.getcwd(), CONFIG_REL), encoding="utf-8") as f:
-            stamina = int(json.load(f)["daily_anomaly"]["目标消耗体力"])
+        stamina = int(_load_target_config()["daily_anomaly"]["目标消耗体力"])
     except (OSError, ValueError, KeyError, TypeError):
         stamina = 0
     units = stamina // 40 if stamina > 0 else 0
@@ -46,11 +60,15 @@ def main():
         # 60 体力/局，结束输出"共计消耗体力: N"汇总（RunMonitor 的解析目标）。
         reward = 0
         try:
-            with open(os.path.join(os.getcwd(), "configs", "AnomalyHunter.json"),
-                      encoding="utf-8") as f:
+            with open(os.path.join(os.getcwd(), HUNTER_REL), encoding="utf-8") as f:
                 reward = int(json.load(f).get("领取奖励次数", 0))
         except (OSError, ValueError, TypeError):
-            reward = 0
+            try:
+                with open(os.path.join(os.getcwd(), HUNTER_REL_FALLBACK),
+                          encoding="utf-8") as f:
+                    reward = int(json.load(f).get("领取奖励次数", 0))
+            except (OSError, ValueError, TypeError):
+                reward = 0
         try:
             with open(os.path.join(os.getcwd(), CONFIG_REL), encoding="utf-8") as f:
                 hud = int(json.load(f)["daily_anomaly"]["目标消耗体力"]) // 40

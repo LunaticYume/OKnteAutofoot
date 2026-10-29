@@ -168,6 +168,12 @@ def _build_fake_oknte(tmp, logs=None, cfg=None):
     Path(_safe_path(apps, "working", "configs", "AnomalyHunter.json")).write_text(
         json.dumps({"追猎目标": "海囚", "领取奖励次数": 0}, ensure_ascii=False, indent=4),
         encoding="utf-8")
+    Path(_safe_path(apps, "working", "configs", "DailyRoutineTask.json")).write_text(
+        json.dumps({"Routine Items": [
+            {"id": "daily_anomaly", "enabled": True},
+            {"id": "coffee", "enabled": True},
+            {"id": "daily_claim", "enabled": True},
+        ]}, ensure_ascii=False, indent=4), encoding="utf-8")
     for name, lines in (logs or {}).items():
         # newline="\n" 保证字节数与字符数一致（LogTail 按字节偏移读取）
         Path(_safe_path(apps, "working", "logs", name)).write_text(
@@ -1081,13 +1087,13 @@ class _E2EOkNte(OkNte):
     launches = []  # [(时间戳, 模式快照)]
     hunter_launches = []
 
-    def run_command(self):
+    def run_command(self, launcher_path=None, task="日常任务"):
         type(self).launches.append((time.time(), dict(self.mode_env)))
         env = dict(os.environ)
         env.update(self.mode_env)
         return [sys.executable, FAKE_OKNTE], self.working, env
 
-    def run_command_hunter(self):
+    def run_command_hunter(self, launcher_path=None):
         type(self).hunter_launches.append((time.time(), dict(self.mode_env)))
         env = dict(os.environ)
         env.update({**self.mode_env, "FAKE_MODE": "hunter"})
@@ -1163,10 +1169,22 @@ def test_e2e_normal_run_and_settle():  # 场景A：正常执行 + 单实例 + �
         assert STATE.data["inventory"]["coin"] == 14, "库存应 +14"
         assert STATE.data["history"][-1]["status"] == "done" \
             and STATE.data["history"][-1]["runs"] == 2
+        # 独立配置副本被正确写入；用户原配置一字节未动
         with open(ok.routine_config, encoding="utf-8") as f:
+            user_daily = json.load(f)["daily_anomaly"]
+        assert user_daily["具体奖励目标"] == "弧盘经验", "用户原配置不得被写入"
+        profile_daily_path = os.path.join(ok.working, "configs_planner",
+                                          adapter_mod.ROUTINE_CONFIG_NAME)
+        with open(profile_daily_path, encoding="utf-8") as f:
             daily = json.load(f)["daily_anomaly"]
         assert daily["具体奖励目标"] == "甲硬币" and daily["目标消耗体力"] == 80 \
             and daily["循环模式"] == "停用", f"写入的配置不符: {daily}"
+        profile_items_path = os.path.join(ok.working, "configs_planner",
+                                          adapter_mod.ROUTINE_ITEMS_NAME)
+        with open(profile_items_path, encoding="utf-8") as f:
+            items = json.load(f)["Routine Items"]
+        enabled = [e["id"] for e in items if e.get("enabled")]
+        assert enabled == ["daily_anomaly"], f"副本应只启用体力计划子任务: {enabled}"
         rt = load_json(runner_mod.RUNTIME_FILE)
         assert rt["execution"] is None and rt["last_execution"]["phase"] == "accounted", \
             "执行生命周期应收口为 accounted"
@@ -1228,10 +1246,13 @@ def test_e2e_short_wait_and_config_stable():  # 场景D：体力不足→等待�
             assert _wait_until(lambda: r.snapshot()["state"] == "waiting"
                                and "体力不足" in r.snapshot()["waiting_reason"]), \
                 "应因体力不足等待"
-            with open(ok.routine_config, "rb") as f:
+            profile_daily = os.path.join(ok.working, "configs_planner",
+                                         adapter_mod.ROUTINE_CONFIG_NAME)
+            assert os.path.isfile(profile_daily), "重试前应已写配置副本"
+            with open(profile_daily, "rb") as f:
                 first_bytes = f.read()
             assert _wait_until(lambda: len(_E2EOkNte.launches) >= 2), "应自动重试"
-            with open(ok.routine_config, "rb") as f:
+            with open(profile_daily, "rb") as f:
                 assert f.read() == first_bytes, "重试重写同一目标应字节级幂等"
             assert STATE.data["today"]["used_stamina"] == 0, "体力不足不得记账"
             assert STATE.data["inventory"].get("coin", 0) == 0, "不得加库存"
@@ -1849,10 +1870,16 @@ def test_runner_hunter_mode_e2e():
         assert STATE.data["today"]["used_stamina"] == 0, "追猎记账不得混入日常口径"
         assert STATE.data["inventory"].get("boss_sea_tear") == 16, STATE.data["inventory"]
         assert STATE.data["history"][-1]["mode"] == "hunter"
-        # ok-nte 侧独立配置被正确写入
+        # ok-nte 侧独立配置副本被正确写入；用户原 AnomalyHunter.json 不动
         with open(runner_mod.OkNte(e2e.root).hunter_config, encoding="utf-8") as f:
+            user_cfg = json.load(f)
+        profile_hunter = os.path.join(runner_mod.OkNte(e2e.root).working,
+                                      "configs_planner",
+                                      adapter_mod.HUNTER_CONFIG_NAME)
+        with open(profile_hunter, encoding="utf-8") as f:
             cfg = json.load(f)
         assert cfg["追猎目标"] == "海囚" and cfg["领取奖励次数"] == 2, cfg
+        assert user_cfg.get("领取奖励次数") == 0, "用户原 AnomalyHunter.json 不得被写入"
         # 同一执行器互斥：运行中再 start 另一模式应拒绝
         r2 = runner_mod.Runner()
         ok, _ = r2.start("daily")
