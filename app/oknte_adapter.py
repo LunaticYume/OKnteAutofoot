@@ -17,6 +17,18 @@ from .state import DATA_DIR, save_json_atomic
 
 CREATE_NO_WINDOW = 0x08000000  # 无控制台父进程（打包 EXE）下，缺它每次检测都弹可见黑窗
 
+LAUNCHER_NAME = "run_planner_task.py"
+LAUNCHER_SRC = (
+    "# OKNTE_PLANNER_HEADLESS 规划器无界面启动器\n"
+    "import os, sys\n"
+    "sys.path.insert(0, os.getcwd())\n"
+    "from ok import run_task\n"
+    "import src.config as src_config\n"
+    "cfg = dict(src_config.config)\n"
+    "cfg['config_folder'] = os.environ['OKNTE_PLANNER_PROFILE']\n"
+    "run_task(cfg, task=os.environ['OKNTE_PLANNER_TASK'])\n"
+)
+
 ROUTINE_CONFIG_NAME = "DailyRoutineTaskConfigs.json"
 ROUTINE_ITEMS_NAME = "DailyRoutineTask.json"
 HUNTER_CONFIG_NAME = "AnomalyHunter.json"
@@ -371,17 +383,7 @@ class OkNte:
         return safe
 
     # ---- 无界面执行（独立配置副本：脚本用自己的一份配置副本，用户原配置零写入） ----
-    LAUNCHER_NAME = "run_planner_task.py"
-    LAUNCHER_SRC = (
-        "# OKNTE_PLANNER_HEADLESS 规划器无界面启动器\n"
-        "import os, sys\n"
-        "sys.path.insert(0, os.getcwd())\n"
-        "from ok import run_task\n"
-        "import src.config as src_config\n"
-        "cfg = dict(src_config.config)\n"
-        "cfg['config_folder'] = os.environ['OKNTE_PLANNER_PROFILE']\n"
-        "run_task(cfg, task=os.environ['OKNTE_PLANNER_TASK'])\n"
-    )
+    # 启动器常量在模块级（LAUNCHER_NAME/LAUNCHER_SRC）。
 
     def prepare_daily_profile(self, target_config, stamina_target):
         """构建日常无界面运行的独立配置副本 working\\configs_planner\\：
@@ -415,8 +417,8 @@ class OkNte:
         intended["循环模式"] = "停用"  # 切换由规划器接管
         daily["daily_anomaly"].update(intended)
         save_json_atomic(daily_path, daily)
-        launcher_path = os.path.join(profile, self.LAUNCHER_NAME)
-        Path(launcher_path).write_text(self.LAUNCHER_SRC, encoding="utf-8")
+        launcher_path = os.path.join(profile, LAUNCHER_NAME)
+        Path(launcher_path).write_text(LAUNCHER_SRC, encoding="utf-8")
         return launcher_path
 
     def prepare_hunter_profile(self, target, reward_count):
@@ -436,8 +438,8 @@ class OkNte:
         hcfg["追猎目标"] = str(target)
         hcfg["领取奖励次数"] = max(0, int(reward_count))
         save_json_atomic(hunter_path, hcfg)
-        launcher_path = os.path.join(profile, self.LAUNCHER_NAME)
-        Path(launcher_path).write_text(self.LAUNCHER_SRC, encoding="utf-8")
+        launcher_path = os.path.join(profile, LAUNCHER_NAME)
+        Path(launcher_path).write_text(LAUNCHER_SRC, encoding="utf-8")
         return launcher_path
 
     def run_command(self, launcher_path, task="日常任务"):
