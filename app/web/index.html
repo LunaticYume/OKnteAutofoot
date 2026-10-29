@@ -654,7 +654,9 @@ function renderChars(){
         mats:{ability:+el.querySelector(".c-ability").value,arc:+el.querySelector(".c-arc").value,console:+el.querySelector(".c-console").value},
         tracks, extra_needs:extra});
     });
-    try{ await api("/api/characters",{characters:chars}); BOOT.state.characters=chars; toast(`已保存 ${chars.length} 个角色`); renderChars(); }catch(e){alertErr(e);}
+    try{ const r=await api("/api/characters",{characters:chars});
+      BOOT.state.characters=r.characters||chars;  // 用服务器消毒后的数据回填，避免与重启后不一致
+      toast(`已保存 ${chars.length} 个角色`); renderChars(); }catch(e){alertErr(e);}
   };
   $("#btnImportLibs").onclick = async ()=>{
     if(!(await qConfirm("把游戏目录中的全部角色与弧盘合并进角色库/武器库？（自定义名字保留，不覆盖）")))return;
@@ -773,7 +775,7 @@ function renderInv(){
   $("#saveInv").onclick=async()=>{
     const inventory={};
     document.querySelectorAll("[data-inv]").forEach(inp=>{const v=+inp.value||0; if(v>0)inventory[inp.dataset.inv]=v;});
-    try{await api("/api/inventory",{inventory});BOOT.state.inventory=inventory;toast("库存已保存");}catch(e){alertErr(e);}
+    try{const r=await api("/api/inventory",{inventory});BOOT.state.inventory=r.inventory||inventory;toast("库存已保存");}catch(e){alertErr(e);}
   };
 }
 
@@ -1038,13 +1040,15 @@ function renderSettings(){
     <div class="row"><button class="btn big" id="saveSettings">保存设置</button></div>`;
   $("#saveSettings").onclick=async()=>{
     const snowRaw=$("#s_snow").value.trim();
+    // 空值不提交（undefined 会被 JSON 丢弃→后端保留当前值），杜绝 ||默认值 把 0/空误回退
+    const numVal=id=>{const v=document.getElementById(id).value.trim(); return v===""?undefined:+v;};
     try{await api("/api/settings",{
-      oknte_root:$("#s_root").value, daily_stamina_limit:+$("#s_limit").value||180,
-      daily_reset_hour:+$("#s_reset").value||4, max_run_minutes:+$("#s_maxmin").value||90,
+      oknte_root:$("#s_root").value, daily_stamina_limit:numVal("s_limit"),
+      daily_reset_hour:numVal("s_reset"), max_run_minutes:numVal("s_maxmin"),
       notify_enabled:$("#s_notify").checked,
-      continuous_mode:$("#s_cont").checked, busy_retry_seconds:+$("#s_retry").value||0,
-      anomaly_hunter_stamina:+$("#s_hsta").value||180, anomaly_hunter_target:$("#s_htgt").value,
-      stamina_cap:+$("#s_cap").value||320, stamina_regen_per_hour:+$("#s_regen").value||0,
+      continuous_mode:$("#s_cont").checked, busy_retry_seconds:numVal("s_retry"),
+      anomaly_hunter_stamina:numVal("s_hsta"), anomaly_hunter_target:$("#s_htgt").value,
+      stamina_cap:numVal("s_cap"), stamina_regen_per_hour:numVal("s_regen"),
       stamina_now:snowRaw===""?null:+snowRaw});
       toast("设置已保存"); await boot(); renderSettings();}catch(e){alertErr(e);}
   };
