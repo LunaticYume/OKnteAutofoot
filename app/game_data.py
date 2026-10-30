@@ -123,6 +123,13 @@ def find_character(data, name):
     raise ValueError(f"游戏目录中没有角色『{name}』")
 
 
+def mob_base_id(entry):
+    """角色族群 → 小怪素材基础档 id（突破/技能升级共用）；族群未知返回 None。"""
+    if not isinstance(entry, dict):
+        return None
+    return _MOB_FAMILY_TO_IDS.get(entry.get("mob_family") or "", ("",))[0] or None
+
+
 def character_material_mapping(data, entry, costs):
     """单个角色条目 → 具体实名材料的通用数量映射（boss/weekly/mobs 三类；同一处真相，
     供『按目录导入角色』与『通用材料表一键应用』共用）。costs 为（可校准的）通用数量。

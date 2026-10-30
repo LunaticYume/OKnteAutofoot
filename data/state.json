@@ -1,0 +1,835 @@
+{
+  "settings": {
+    "oknte_root": "D:\\GamingAssistant\\ok-nte",
+    "daily_stamina_limit": 180,
+    "daily_reset_hour": 4,
+    "reserve_anomaly_hunter": false,
+    "anomaly_hunter_stamina": 180,
+    "anomaly_hunter_target": "海囚",
+    "notify_enabled": false,
+    "max_run_minutes": 90,
+    "continuous_mode": true,
+    "busy_retry_seconds": 300,
+    "port": 8765,
+    "known_oknte_version": "",
+    "stamina_cap": 320,
+    "stamina_regen_per_hour": 10,
+    "stamina_now": null,
+    "stamina_now_at": ""
+  },
+  "characters": [
+    {
+      "id": "f2ec8128",
+      "name": "冒烟测试角色",
+      "enabled": true,
+      "mats": {
+        "ability": 3,
+        "arc": 2,
+        "console": 1
+      },
+      "tracks": {
+        "char_level": {
+          "cur": 1,
+          "tgt": 1
+        },
+        "ability_level": {
+          "cur": 1,
+          "tgt": 1
+        },
+        "arc_level": {
+          "cur": 1,
+          "tgt": 1
+        },
+        "console_level": {
+          "cur": 1,
+          "tgt": 1
+        }
+      },
+      "extra_needs": {
+        "exp_char": 30
+      },
+      "weapon": "",
+      "attribute": null,
+      "matter_state": null,
+      "awakening": 0,
+      "awakening_tgt": 0,
+      "skills": {
+        "normal": {
+          "cur": 0,
+          "tgt": 0
+        },
+        "variable": {
+          "cur": 0,
+          "tgt": 0
+        },
+        "orbit": {
+          "cur": 0,
+          "tgt": 0
+        },
+        "assist": {
+          "cur": 0,
+          "tgt": 0
+        }
+      },
+      "talent_unlocks": [
+        false,
+        false
+      ],
+      "city_talents": [],
+      "cassette": {
+        "set": null,
+        "main": null
+      },
+      "drivers": [],
+      "stigma_groups": [],
+      "game_confidence": null
+    },
+    {
+      "id": "95f49ba6",
+      "name": "卡厄斯",
+      "enabled": true,
+      "mats": {
+        "ability": 4,
+        "arc": 5,
+        "console": 1
+      },
+      "tracks": {
+        "char_level": {
+          "cur": 1,
+          "tgt": 1
+        },
+        "ability_level": {
+          "cur": 1,
+          "tgt": 1
+        },
+        "arc_level": {
+          "cur": 1,
+          "tgt": 1
+        },
+        "console_level": {
+          "cur": 1,
+          "tgt": 1
+        }
+      },
+      "extra_needs": {
+        "boss_sea_tear": 86,
+        "wk_memory": 11,
+        "mob_delusion_c": 390
+      },
+      "weapon": "众人追寻之物",
+      "attribute": "相",
+      "matter_state": "聚合",
+      "awakening": 0,
+      "awakening_tgt": 0,
+      "skills": {
+        "normal": {
+          "cur": 0,
+          "tgt": 0
+        },
+        "variable": {
+          "cur": 0,
+          "tgt": 0
+        },
+        "orbit": {
+          "cur": 0,
+          "tgt": 0
+        },
+        "assist": {
+          "cur": 0,
+          "tgt": 0
+        }
+      },
+      "talent_unlocks": [
+        false,
+        false
+      ],
+      "city_talents": [],
+      "cassette": {
+        "set": null,
+        "main": null
+      },
+      "drivers": [],
+      "stigma_groups": [],
+      "game_confidence": {
+        "skill": "high",
+        "boss": "high"
+      }
+    },
+    {
+      "id": "1b6e266e",
+      "name": "浔",
+      "enabled": true,
+      "mats": {
+        "ability": 2,
+        "arc": 1,
+        "console": 4
+      },
+      "tracks": {
+        "char_level": {
+          "cur": 1,
+          "tgt": 1
+        },
+        "ability_level": {
+          "cur": 1,
+          "tgt": 1
+        },
+        "arc_level": {
+          "cur": 1,
+          "tgt": 1
+        },
+        "console_level": {
+          "cur": 1,
+          "tgt": 10
+        }
+      },
+      "extra_needs": {
+        "boss_flower_seed": 86,
+        "wk_skirt": 11,
+        "mob_whisper_c": 390
+      },
+      "weapon": "海特洛的安宁",
+      "attribute": "光",
+      "matter_state": "固态",
+      "awakening": 0,
+      "awakening_tgt": 3,
+      "skills": {
+        "normal": {
+          "cur": 0,
+          "tgt": 10
+        },
+        "variable": {
+          "cur": 0,
+          "tgt": 7
+        },
+        "orbit": {
+          "cur": 0,
+          "tgt": 0
+        },
+        "assist": {
+          "cur": 0,
+          "tgt": 0
+        }
+      },
+      "talent_unlocks": [
+        true,
+        false
+      ],
+      "city_talents": [
+        {
+          "name": "过载余烬",
+          "lv": 4
+        },
+        {
+          "name": "磁暴回响",
+          "lv": 2
+        }
+      ],
+      "cassette": {
+        "set": "失落光芒",
+        "main": "暴击率"
+      },
+      "drivers": [],
+      "stigma_groups": [],
+      "game_confidence": {
+        "skill": "high",
+        "boss": "high"
+      }
+    },
+    {
+      "id": "12f1d2c0",
+      "name": "真红",
+      "enabled": true,
+      "mats": {
+        "ability": 2,
+        "arc": 5,
+        "console": 1
+      },
+      "tracks": {
+        "char_level": {
+          "cur": 1,
+          "tgt": 1
+        },
+        "ability_level": {
+          "cur": 1,
+          "tgt": 1
+        },
+        "arc_level": {
+          "cur": 1,
+          "tgt": 1
+        },
+        "console_level": {
+          "cur": 1,
+          "tgt": 1
+        }
+      },
+      "extra_needs": {
+        "boss_spark_plug": 86,
+        "wk_skirt": 11,
+        "mob_whisper_c": 390
+      },
+      "weapon": "穿过胭红蜃景",
+      "attribute": "光",
+      "matter_state": "聚合",
+      "awakening": 0,
+      "awakening_tgt": 0,
+      "skills": {
+        "normal": {
+          "cur": 0,
+          "tgt": 0
+        },
+        "variable": {
+          "cur": 0,
+          "tgt": 0
+        },
+        "orbit": {
+          "cur": 0,
+          "tgt": 0
+        },
+        "assist": {
+          "cur": 0,
+          "tgt": 0
+        }
+      },
+      "talent_unlocks": [
+        false,
+        false
+      ],
+      "city_talents": [],
+      "cassette": {
+        "set": null,
+        "main": null
+      },
+      "drivers": [],
+      "stigma_groups": [],
+      "game_confidence": {
+        "skill": "high",
+        "boss": "high"
+      }
+    }
+  ],
+  "inventory": {
+    "exp_char": 5
+  },
+  "history": [
+    {
+      "day": "2026-10-27",
+      "time": "00:32:40",
+      "mat_id": "boss_sea_tear",
+      "name": "海之泪",
+      "runs": 2,
+      "stamina": 120,
+      "gain": 16,
+      "status": "done",
+      "note": "",
+      "mode": "hunter"
+    },
+    {
+      "day": "2026-10-27",
+      "time": "00:46:53",
+      "mat_id": "boss_sea_tear",
+      "name": "海之泪",
+      "runs": 2,
+      "stamina": 120,
+      "gain": 16,
+      "status": "done",
+      "note": "",
+      "mode": "hunter"
+    },
+    {
+      "day": "2026-10-27",
+      "time": "00:56:55",
+      "mat_id": "boss_sea_tear",
+      "name": "海之泪",
+      "runs": 2,
+      "stamina": 120,
+      "gain": 16,
+      "status": "done",
+      "note": "",
+      "mode": "hunter"
+    },
+    {
+      "day": "2026-10-27",
+      "time": "02:04:51",
+      "mat_id": "boss_sea_tear",
+      "name": "海之泪",
+      "runs": 2,
+      "stamina": 120,
+      "gain": 16,
+      "status": "done",
+      "note": "",
+      "mode": "hunter"
+    },
+    {
+      "day": "2026-10-27",
+      "time": "02:14:44",
+      "mat_id": "boss_sea_tear",
+      "name": "海之泪",
+      "runs": 2,
+      "stamina": 120,
+      "gain": 16,
+      "status": "done",
+      "note": "",
+      "mode": "hunter"
+    },
+    {
+      "day": "2026-10-27",
+      "time": "02:22:35",
+      "mat_id": "boss_sea_tear",
+      "name": "海之泪",
+      "runs": 2,
+      "stamina": 120,
+      "gain": 16,
+      "status": "done",
+      "note": "",
+      "mode": "hunter"
+    },
+    {
+      "day": "2026-10-27",
+      "time": "02:30:58",
+      "mat_id": "boss_sea_tear",
+      "name": "海之泪",
+      "runs": 2,
+      "stamina": 120,
+      "gain": 16,
+      "status": "done",
+      "note": "",
+      "mode": "hunter"
+    },
+    {
+      "day": "2026-10-27",
+      "time": "02:31:48",
+      "mat_id": "coin",
+      "name": "甲硬币",
+      "runs": 0,
+      "stamina": 0,
+      "gain": 0,
+      "status": "reconciled",
+      "note": "[2026-10-27 2026-10-24 21:00:00 未决执行 e1] 放弃记账（不修改库存与额度）"
+    },
+    {
+      "day": "2026-10-27",
+      "time": "02:46:54",
+      "mat_id": "boss_sea_tear",
+      "name": "海之泪",
+      "runs": 2,
+      "stamina": 120,
+      "gain": 16,
+      "status": "done",
+      "note": "",
+      "mode": "hunter"
+    },
+    {
+      "day": "2026-10-27",
+      "time": "02:53:38",
+      "mat_id": "boss_sea_tear",
+      "name": "海之泪",
+      "runs": 2,
+      "stamina": 120,
+      "gain": 16,
+      "status": "done",
+      "note": "",
+      "mode": "hunter"
+    },
+    {
+      "day": "2026-10-28",
+      "time": "02:24:41",
+      "mat_id": "boss_sea_tear",
+      "name": "海之泪",
+      "runs": 2,
+      "stamina": 120,
+      "gain": 16,
+      "status": "done",
+      "note": "",
+      "mode": "hunter"
+    },
+    {
+      "day": "2026-10-28",
+      "time": "02:38:25",
+      "mat_id": "boss_sea_tear",
+      "name": "海之泪",
+      "runs": 2,
+      "stamina": 120,
+      "gain": 16,
+      "status": "done",
+      "note": "",
+      "mode": "hunter"
+    },
+    {
+      "day": "2026-10-28",
+      "time": "02:42:16",
+      "mat_id": "boss_sea_tear",
+      "name": "海之泪",
+      "runs": 2,
+      "stamina": 120,
+      "gain": 16,
+      "status": "done",
+      "note": "",
+      "mode": "hunter"
+    },
+    {
+      "day": "2026-10-28",
+      "time": "02:46:00",
+      "mat_id": "boss_sea_tear",
+      "name": "海之泪",
+      "runs": 2,
+      "stamina": 120,
+      "gain": 16,
+      "status": "done",
+      "note": "",
+      "mode": "hunter"
+    },
+    {
+      "day": "2026-10-28",
+      "time": "02:55:24",
+      "mat_id": "boss_sea_tear",
+      "name": "海之泪",
+      "runs": 2,
+      "stamina": 120,
+      "gain": 16,
+      "status": "done",
+      "note": "",
+      "mode": "hunter"
+    },
+    {
+      "day": "2026-10-28",
+      "time": "02:59:44",
+      "mat_id": "boss_sea_tear",
+      "name": "海之泪",
+      "runs": 2,
+      "stamina": 120,
+      "gain": 16,
+      "status": "done",
+      "note": "",
+      "mode": "hunter"
+    },
+    {
+      "day": "2026-10-28",
+      "time": "03:03:41",
+      "mat_id": "boss_sea_tear",
+      "name": "海之泪",
+      "runs": 2,
+      "stamina": 120,
+      "gain": 16,
+      "status": "done",
+      "note": "",
+      "mode": "hunter"
+    },
+    {
+      "day": "2026-10-28",
+      "time": "03:21:26",
+      "mat_id": "boss_sea_tear",
+      "name": "海之泪",
+      "runs": 2,
+      "stamina": 120,
+      "gain": 16,
+      "status": "done",
+      "note": "",
+      "mode": "hunter"
+    },
+    {
+      "day": "2026-10-28",
+      "time": "03:53:33",
+      "mat_id": "boss_sea_tear",
+      "name": "海之泪",
+      "runs": 2,
+      "stamina": 120,
+      "gain": 16,
+      "status": "done",
+      "note": "",
+      "mode": "hunter"
+    },
+    {
+      "day": "2026-10-29",
+      "time": "04:12:55",
+      "mat_id": "boss_sea_tear",
+      "name": "海之泪",
+      "runs": 2,
+      "stamina": 120,
+      "gain": 16,
+      "status": "done",
+      "note": "",
+      "mode": "hunter"
+    },
+    {
+      "day": "2026-10-29",
+      "time": "04:18:23",
+      "mat_id": "boss_sea_tear",
+      "name": "海之泪",
+      "runs": 2,
+      "stamina": 120,
+      "gain": 16,
+      "status": "done",
+      "note": "",
+      "mode": "hunter"
+    },
+    {
+      "day": "2026-10-29",
+      "time": "04:22:36",
+      "mat_id": "boss_sea_tear",
+      "name": "海之泪",
+      "runs": 2,
+      "stamina": 120,
+      "gain": 16,
+      "status": "done",
+      "note": "",
+      "mode": "hunter"
+    },
+    {
+      "day": "2026-10-29",
+      "time": "23:56:51",
+      "mat_id": "exp_char",
+      "name": "测试目标",
+      "runs": 0,
+      "stamina": 0,
+      "gain": 0,
+      "status": "failed",
+      "note": "启动失败（exit 1）：Another application instance is still running",
+      "mode": "daily"
+    },
+    {
+      "day": "2026-10-29",
+      "time": "00:01:11",
+      "mat_id": "exp_char",
+      "name": "测试目标",
+      "runs": 0,
+      "stamina": 0,
+      "gain": 0,
+      "status": "failed",
+      "note": "启动失败（exit 1）：Another application instance is still running",
+      "mode": "daily"
+    },
+    {
+      "day": "2026-10-29",
+      "time": "00:07:13",
+      "mat_id": "exp_char",
+      "name": "测试目标",
+      "runs": 0,
+      "stamina": 0,
+      "gain": 0,
+      "status": "failed",
+      "note": "启动失败（exit 1）：Another application instance is still running",
+      "mode": "daily"
+    },
+    {
+      "day": "2026-10-29",
+      "time": "00:20:45",
+      "mat_id": "exp_char",
+      "name": "测试目标",
+      "runs": 0,
+      "stamina": 0,
+      "gain": 0,
+      "status": "failed",
+      "note": "启动失败（exit 1）：Another application instance is still running",
+      "mode": "daily"
+    },
+    {
+      "day": "2026-10-29",
+      "time": "00:35:17",
+      "mat_id": "exp_char",
+      "name": "测试目标",
+      "runs": 0,
+      "stamina": 0,
+      "gain": 0,
+      "status": "failed",
+      "note": "启动失败（exit 1）：Another application instance is still running",
+      "mode": "daily"
+    },
+    {
+      "day": "2026-10-29",
+      "time": "01:54:06",
+      "mat_id": "exp_char",
+      "name": "测试目标",
+      "runs": 0,
+      "stamina": 0,
+      "gain": 0,
+      "status": "failed",
+      "note": "启动失败（exit 1）：Another application instance is still running",
+      "mode": "daily"
+    },
+    {
+      "day": "2026-10-29",
+      "time": "02:43:28",
+      "mat_id": "exp_char",
+      "name": "测试目标",
+      "runs": 0,
+      "stamina": 0,
+      "gain": 0,
+      "status": "failed",
+      "note": "启动失败（exit 1）：Another application instance is still running",
+      "mode": "daily"
+    },
+    {
+      "day": "2026-10-29",
+      "time": "02:46:11",
+      "mat_id": "exp_char",
+      "name": "测试目标",
+      "runs": 0,
+      "stamina": 0,
+      "gain": 0,
+      "status": "failed",
+      "note": "启动失败（exit 1）：Another application instance is still running",
+      "mode": "daily"
+    },
+    {
+      "day": "2026-10-29",
+      "time": "02:48:50",
+      "mat_id": "exp_char",
+      "name": "测试目标",
+      "runs": 0,
+      "stamina": 0,
+      "gain": 0,
+      "status": "failed",
+      "note": "启动失败（exit 1）：Another application instance is still running",
+      "mode": "daily"
+    },
+    {
+      "day": "2026-10-29",
+      "time": "02:57:08",
+      "mat_id": "exp_char",
+      "name": "测试目标",
+      "runs": 0,
+      "stamina": 0,
+      "gain": 0,
+      "status": "failed",
+      "note": "启动失败（exit 1）：Another application instance is still running",
+      "mode": "daily"
+    },
+    {
+      "day": "2026-10-29",
+      "time": "02:58:54",
+      "mat_id": "exp_char",
+      "name": "测试目标",
+      "runs": 0,
+      "stamina": 0,
+      "gain": 0,
+      "status": "failed",
+      "note": "启动失败（exit 1）：Another application instance is still running",
+      "mode": "daily"
+    },
+    {
+      "day": "2026-10-29",
+      "time": "03:03:30",
+      "mat_id": "exp_char",
+      "name": "测试目标",
+      "runs": 0,
+      "stamina": 0,
+      "gain": 0,
+      "status": "failed",
+      "note": "启动失败（exit 1）：Another application instance is still running",
+      "mode": "daily"
+    },
+    {
+      "day": "2026-10-29",
+      "time": "03:06:32",
+      "mat_id": "exp_char",
+      "name": "测试目标",
+      "runs": 0,
+      "stamina": 0,
+      "gain": 0,
+      "status": "failed",
+      "note": "启动失败（exit 1）：Another application instance is still running",
+      "mode": "daily"
+    },
+    {
+      "day": "2026-10-29",
+      "time": "03:09:14",
+      "mat_id": "exp_char",
+      "name": "测试目标",
+      "runs": 0,
+      "stamina": 0,
+      "gain": 0,
+      "status": "failed",
+      "note": "启动失败（exit 1）：Another application instance is still running",
+      "mode": "daily"
+    },
+    {
+      "day": "2026-10-29",
+      "time": "03:11:00",
+      "mat_id": "exp_char",
+      "name": "测试目标",
+      "runs": 0,
+      "stamina": 0,
+      "gain": 0,
+      "status": "failed",
+      "note": "启动失败（exit 1）：Another application instance is still running",
+      "mode": "daily"
+    },
+    {
+      "day": "2026-10-30",
+      "time": "01:23:12",
+      "mat_id": "exp_char",
+      "name": "测试目标",
+      "runs": 0,
+      "stamina": 0,
+      "gain": 0,
+      "status": "failed",
+      "note": "启动失败（exit 1）：Another application instance is still running",
+      "mode": "daily"
+    },
+    {
+      "day": "2026-10-30",
+      "time": "01:40:15",
+      "mat_id": "exp_char",
+      "name": "测试目标",
+      "runs": 0,
+      "stamina": 0,
+      "gain": 0,
+      "status": "failed",
+      "note": "启动失败（exit 1）：Another application instance is still running",
+      "mode": "daily"
+    },
+    {
+      "day": "2026-10-30",
+      "time": "02:53:19",
+      "mat_id": "exp_char",
+      "name": "测试目标",
+      "runs": 0,
+      "stamina": 0,
+      "gain": 0,
+      "status": "failed",
+      "note": "启动失败（exit 1）：Another application instance is still running",
+      "mode": "daily"
+    },
+    {
+      "day": "2026-10-30",
+      "time": "02:54:33",
+      "mat_id": "exp_char",
+      "name": "测试目标",
+      "runs": 0,
+      "stamina": 0,
+      "gain": 0,
+      "status": "failed",
+      "note": "启动失败（exit 1）：Another application instance is still running",
+      "mode": "daily"
+    }
+  ],
+  "char_library": [
+    "浔",
+    "灵可"
+  ],
+  "weapon_library": [
+    "远行者之声"
+  ],
+  "schema": 3,
+  "today": {
+    "date": "2026-10-31",
+    "used_stamina": 0,
+    "planner_spent": 0,
+    "blacklist": [],
+    "entries": [],
+    "hunter_spent": 0
+  },
+  "common_costs": {
+    "ascension_boss": 86
+  },
+  "teams": [
+    {
+      "name": "开荒一队",
+      "members": [
+        "浔",
+        "卡厄斯",
+        "真红"
+      ]
+    }
+  ]
+}
