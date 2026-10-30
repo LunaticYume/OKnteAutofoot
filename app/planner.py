@@ -6,6 +6,10 @@ from datetime import datetime, timedelta
 
 from .state import DATA_DIR, STATE
 
+# ok-nte 上游硬日上限：BaseStaminaTask.DAILY_STAMINA_REQUIREMENT=180 +
+# 活跃度满即跳过——每日限额超出 180 的部分上游永远不可达（真机实证）。
+UPSTREAM_DAILY_CAP = 180
+
 GENERIC_TO_ID = {
     "exp_char": "exp_char",
     "exp_arc": "exp_arc",
@@ -238,9 +242,15 @@ def make_plan(oknte=None, now=None):
 
     settings = STATE.settings
     limit = max(0, int(settings.get("daily_stamina_limit", 180) or 0))
-    # 追猎已改为独立计划（阶段13）：日常额度不再扣减追猎预留，
-    # 追猎消耗按 today.hunter_spent 独立记账、独立额度
-    budget = max(0, limit - used)
+    # 上游硬上限（BaseStaminaTask.DAILY_STAMINA_REQUIREMENT=180 + 活跃度满即跳过）：
+    # 限额超出 180 的部分上游永远不可达——排程封顶并显式警告，而不是让面板数字与
+    # 真实可刷量对不上（真机反馈：限额 360 只能刷到 180）。
+    upstream_cap = min(limit, UPSTREAM_DAILY_CAP)
+    if limit > 180:
+        warnings.append(
+            f"每日限额 {limit} 超出上游每日上限 180（体力/活跃度达标即跳过），"
+            f"实际最多可刷 180 体力；多出的 {limit - 180} 体力上游不可达")
+    budget = max(0, upstream_cap - used)
     budget_total = budget  # 可规划总额；planned_stamina + 剩余 与其守恒
 
     def _result(code, steps, budget_now, skipped_black, skipped_zero):

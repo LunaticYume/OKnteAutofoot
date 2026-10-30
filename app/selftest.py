@@ -1100,9 +1100,9 @@ class _E2EOkNte(OkNte):
         return [sys.executable, FAKE_OKNTE], self.working, env
 
     def is_running(self):
-        if type(self).force_busy:
-            return True
-        return super().is_running()
+        # 气密：e2e 用例不得依赖宿主机是否真的开着 ok-nte（真机取证检测会命中
+        # 宿主上真实运行的 ok-nte GUI）；busy 场景由 force_busy 显式注入。
+        return bool(type(self).force_busy)
 
 
 class _E2EGuard:
@@ -1991,6 +1991,7 @@ def test_game_data_requirements_linkage():
             planner.YIELDS["per_run"][f"ability_{n}"] = 18
             planner.YIELDS["per_run"][f"arc_{n}"] = 18
         STATE.data["settings"]["daily_stamina_limit"] = 99999  # 大额度：验证多步骤完整规划
+        planner.UPSTREAM_DAILY_CAP = 10 ** 9  # 本用例模拟无上游上限，验证完整贪心
         snap = planner.snapshot()
         # mysqil 逐段合计：技能书白当量 199、罐头白当量 230、角色经验 649.6 万
         by_id = {row["mat_id"]: row for c in snap["characters"] for row in c["rows"]}
@@ -2014,6 +2015,7 @@ def test_game_data_requirements_linkage():
         assert by["coin"]["runs"] == -(-coin_need // 120000) == 35, by["coin"]["runs"]
         assert not any(s["mat_id"].startswith(("boss_", "mob_", "wk_")) for s in plan["steps"]), \
             "外部来源材料绝不能进体力本计划"
+        planner.UPSTREAM_DAILY_CAP = 180  # 恢复上游上限（其他用例依赖默认值）
 
 
 # ---------- 用例 16：通用材料表（阶段15） ----------
@@ -2371,6 +2373,37 @@ def test_clear_blacklist():
         assert cleared == 2 and STATE.today["blacklist"] == []
         saved = json.load(open(STATE_FILE, encoding="utf-8"))
         assert saved["today"]["blacklist"] == [], "清空应落盘"
+
+
+@case
+def test_planner_upstream_cap_and_cumulative_target():
+    """真机反馈回归：①限额 360 排程封顶 180 并警告；②写入副本为当日累计口径。"""
+    import app.main as main_mod
+    with _StateGuard():
+        STATE.data["settings"] = dict(DEFAULT_SETTINGS, daily_stamina_limit=360)
+        STATE.data["today"] = _empty_today()
+        STATE.data["today"]["used_stamina"] = 0
+        STATE.data["inventory"] = {}
+        STATE.data["characters"] = [_char("c1", "封顶角色", {"coin": 7})]
+        plan = planner.make_plan(now=NOW)
+        assert plan["detail"]["budget_total"] == 180, plan["detail"]
+        assert any("180" in w and "不可达" in w for w in plan["warnings"]), plan["warnings"]
+        # 累计口径：used=100 时写入副本的目标 = 100 + step.stamina
+        STATE.data["today"]["used_stamina"] = 100
+        step = {"mat_id": "coin", "name": "甲硬币", "runs": 1, "stamina": 40}
+        with tempfile.TemporaryDirectory(prefix="oknte_cum_") as tmp:
+            ok = adapter_mod.OkNte(tmp)
+            os.makedirs(os.path.join(tmp, "data", "apps", "ok-nte", "working", "configs"))
+            adapter_mod.save_json_atomic(ok.routine_config, FAKE_ROUTINE_CONFIG)
+            adapter_mod.save_json_atomic(ok.routine_items, {"Routine Items": [
+                {"id": "daily_anomaly", "enabled": True},
+                {"id": "coffee", "enabled": True}]})
+            launcher = ok.prepare_daily_profile(
+                planner.TARGETS["coin"]["config"], 100 + step["stamina"])
+            daily = json.load(open(ok.profile_daily, encoding="utf-8"))["daily_anomaly"]
+            assert daily["目标消耗体力"] == 140, daily
+            items = json.load(open(ok.profile_items, encoding="utf-8"))["Routine Items"]
+            assert [e["id"] for e in items if e.get("enabled")] == ["daily_anomaly"], items
 
 
 # ---------- 汇总 ----------

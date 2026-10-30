@@ -419,16 +419,28 @@ class Runner:
                 if not continuous:
                     self._finish("done", "ok-nte 判定当日活跃度已达标，收工")
                     return
-                if not self._wait("ok-nte 判定当日活跃度已达标，等待次日额度重置"):
+                if not self._wait("ok-nte 判定当日活跃度已达标，等待次日额度重置",
+                                  seconds=self._seconds_until_reset()):
                     break
                 continue
 
         self._finish("done", "已手动停止")
         _notify("异环规划器", "已手动停止")
 
-    def _wait(self, reason):
+    def _seconds_until_reset(self):
+        """距下一次每日重置（daily_reset_hour）的秒数，用于上游已达标后的长等。"""
+        now = datetime.now()
+        reset_hour = max(0, min(23, int(STATE.settings.get("daily_reset_hour", 4) or 0)))
+        target = now.replace(hour=reset_hour, minute=0, second=0, microsecond=0)
+        if target <= now:
+            target += timedelta(days=1)
+        return max(60, int((target - now).total_seconds()))
+
+    def _wait(self, reason, seconds=None):
         """持续模式下遇阻等待：到点自动重试；停止按钮立即打断。返回 False 表示已被停止。"""
-        seconds = max(1, int(STATE.settings.get("busy_retry_seconds", 300) or 0))
+        if seconds is None:
+            seconds = max(1, int(STATE.settings.get("busy_retry_seconds", 300) or 0))
+        seconds = max(1, int(seconds))
         with self.lock:
             self.status["state"] = "waiting"
             self.status["waiting_reason"] = reason
@@ -467,8 +479,12 @@ class Runner:
         # 无界面运行使用独立配置副本：Routine Items 只启用 daily_anomaly（不再执行
         # 咖啡/领奖等无关子任务），用户原配置零写入。隔离失败按启动失败处理
         # （不拉黑、等待重试），诊断进面板日志。
+        day = STATE.ensure_today()
+        # 上游语义为"当日累计消耗目标"：写入 used_today + 本步体力，
+        # 使上游 must_use 恒等于本步体力（第二步不再被误跳过）
+        used_now = int(STATE.today.get("used_stamina", 0) or 0)
         try:
-            launcher = oknte.prepare_daily_profile(mat["config"], step["stamina"])
+            launcher = oknte.prepare_daily_profile(mat["config"], used_now + step["stamina"])
         except (OkNteError, OSError, ValueError) as e:
             if isinstance(e, OkNteError) and "正在运行" in str(e):
                 return "busy", 0, "检测到 ok-nte 正在运行"

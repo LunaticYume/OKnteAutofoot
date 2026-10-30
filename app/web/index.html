@@ -419,7 +419,7 @@ async function renderOverview(){
   };
   $("#btnPreview").onclick = doPreview;
   $("#btnHunterPlan").onclick = doHunterPlan;
-  $("#btnStop").onclick = ()=>api("/api/stop").then(r=>{
+  $("#btnStop").onclick = ()=>api("/api/stop", {}).then(r=>{
     if(r.ok===false) toast(r.message||"当前没有在运行","err");
     else toast(r.message||"已请求停止");
     refreshStatus();
@@ -433,7 +433,7 @@ async function renderOverview(){
   $("#runState").textContent = run.message && run.state!=="waiting" ? run.message : "";
   const blBtn=$("#btnClearBlacklist");
   if (blBtn) blBtn.onclick = async ()=>{
-    try{ const r2=await api("/api/today/clear-blacklist"); toast(`已清空 ${r2.cleared} 条拉黑，重新规划中`); renderOverview(); }
+    try{ const r2=await api("/api/today/clear-blacklist", {}); toast(`已清空 ${r2.cleared} 条拉黑，重新规划中`); renderOverview(); }
     catch(e){alertErr(e);}
   };
   drawLog(run.lines||[]);
@@ -486,7 +486,7 @@ async function doDryRun(){
   card.style.display="block";
   body.innerHTML='<div class="muted">预演中…</div>';
   try{
-    const r = await api("/api/dry-run");
+    const r = await api("/api/dry-run", {});
     if(!r.ok){
       body.innerHTML=`<div class="banner warn">${esc(r.error||"预演失败")}</div>` +
         (r.compat?.problems?.length?`<div class="muted" style="margin-top:6px">${r.compat.problems.map(esc).join("；")}</div>`:"");
@@ -881,7 +881,7 @@ function renderInv(){
     const btn=$("#btnOcr"); btn.disabled=true; const old=btn.textContent;
     btn.textContent="识别中…（请保持游戏窗口可见）";
     try{
-      const r=await api("/api/inventory/ocr");
+      const r=await api("/api/inventory/ocr", {});
       const text=r.text||"";
       let hits=0;
       document.querySelectorAll("[data-inv]").forEach(inp=>{
@@ -1527,6 +1527,7 @@ async function downloadLog(idx){
   const f=LOGS_CURRENT.files[idx]; if(!f)return;
   try{
     const res=await fetch(`/api/logs/download?i=${idx}`);
+    if(!res.ok){ toast("日志导出失败","err"); return; }
     const text=await res.text();
     const blob=new Blob([text],{type:"text/plain;charset=utf-8"});
     const a=document.createElement("a");
