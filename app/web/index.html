@@ -325,6 +325,7 @@ function ringSvg(pct){
 
 /* ---------- 总览 ---------- */
 async function renderOverview(){
+  $("#main").innerHTML='<div class="card"><div class="muted">加载中…</div></div>';
   const st = BOOT.state, plan = await api("/api/plan").catch(e=>({error:e.message}));
   const compat = BOOT.compat, run = await api("/api/status");
   const today = run.today||{};
@@ -815,6 +816,7 @@ window.updateParkedCount = ()=>{
 
 /* ---------- 弧盘（武器中心：适配过滤 + 搜索 + S/A 排序 + 材料按目标计算） ---------- */
 async function renderArc(){
+  $("#main").innerHTML='<div class="card"><div class="muted">加载中…</div></div>';
   const tracks = BOOT.tables.requirements.tracks||{};
   const chars = BOOT.state.characters||[];
   const gd = await api("/api/game-data").catch(()=>({}));
@@ -945,7 +947,12 @@ function arcCard(c, tracks, weaponMeta, state_to_can, arcDisplayName, gapOf){
 
 /* ---------- 空幕（卡带 × 驱动块 × 词条记录，与弧盘拆分） ---------- */
 let NULLMUX_CASSETTES = null;
+function statOpts(list, cur){
+  return `<option value="" ${!cur?"selected":""}>（未选择）</option>`
+    + list.map(x=>`<option ${x===cur?"selected":""}>${esc(x)}</option>`).join("");
+}
 async function renderNullmux(){
+  $("#main").innerHTML='<div class="card"><div class="muted">加载中…</div></div>';
   if(!NULLMUX_CASSETTES){
     const r=await api("/api/wiki/cassettes").catch(()=>null);
     if(r && r.sets){ NULLMUX_CASSETTES=r; }
@@ -966,15 +973,22 @@ async function renderNullmux(){
       out+=`<option value="${esc(x.name)}" ${x.name===cur?"selected":""}>${esc(x.name)}${x.element&&x.element!=="泛用"?`（${esc(x.element)}）`:"（泛用）"}</option>`;});
     return out.join("");
   };
-  const statOpts=(list,cur)=>`<option value="" ${!cur?"selected":""}>（未选择）</option>`+list.map(x=>`<option ${x===cur?"selected":""}>${esc(x)}</option>`).join("");
-  $("#main").innerHTML=`
-    <div class="banner info">空幕装备 = <b>1 张卡带</b>（主属性×1 + 副词条×4，按角色属性适配）+ <b>多个驱动块</b>（主属性固定 攻击力+生命值，只记录）。
-      角色旁仅展示最佳 2-3 组词条。${sets.length?`已载入 ${sets.length} 套卡带`:"（卡带数据未抓取：点下方按钮从 wiki 拉取）"}</div>
-    <div class="card"><div class="row">
-      <button class="btn sec mini" id="btnFetchCassette">${sets.length?"🔄 重新拉取卡带数据":"🌐 从 wiki 拉取卡带数据"}</button>
-      <span class="muted" id="cassetteFetchInfo"></span></div></div>
-    <div id="nmList">${chars.length?chars.map(c=>nullmuxCard(c,sets,mainStats,subStats,driverMains,suitOpts,statOpts)).join(""):""}</div>
-    <div class="row" style="margin-top:12px"><button class="btn big" id="saveNm">保存空幕记录</button></div>`;
+  try {
+    $("#main").innerHTML=`
+      <div class="banner info">空幕装备 = <b>1 张卡带</b>（主属性×1 + 副词条×4，按角色属性适配）+ <b>多个驱动块</b>（主属性固定 攻击力+生命值，只记录）。
+        角色旁仅展示最佳 2-3 组词条。${sets.length?`已载入 ${sets.length} 套卡带`:"（卡带数据未抓取：点下方按钮从 wiki 拉取）"}</div>
+      <div class="card"><div class="row">
+        <button class="btn sec mini" id="btnFetchCassette">${sets.length?"🔄 重新拉取卡带数据":"🌐 从 wiki 拉取卡带数据"}</button>
+        <span class="muted" id="cassetteFetchInfo"></span></div></div>
+      <div id="nmList">${chars.length?chars.map(c=>nullmuxCard(c,sets,mainStats,subStats,driverMains,suitOpts,statOpts)).join(""):""}</div>
+      <div class="row" style="margin-top:12px"><button class="btn big" id="saveNm">保存空幕记录</button></div>`;
+  } catch (e) {
+    // 渲染失败也要给出可用出口（拉取按钮 + 错误信息），绝不白屏/残留上一页
+    $("#main").innerHTML=`
+      <div class="banner warn">空幕页渲染失败：${esc(e.message)}</div>
+      <div class="card"><div class="row">
+        <button class="btn sec mini" id="btnFetchCassette">🌐 从 wiki 拉取卡带数据</button></div></div>`;
+  }
   if(!chars.length) $("#nmList").innerHTML=`<div class="empty">还没有角色</div>`;
   $("#btnFetchCassette").onclick=async()=>{
     const btn=$("#btnFetchCassette"); btn.disabled=true; btn.textContent="拉取中…（约 15 秒）";
@@ -1329,6 +1343,7 @@ const COMMON_LABELS = {
   coin_arc: ["甲硬币 · 弧盘全程", "枚"],
 };
 async function renderCommon(){
+  $("#main").innerHTML='<div class="card"><div class="muted">加载中…</div></div>';
   const r = await api("/api/common-costs").catch(e=>({error:e.message}));
   if(r.error){ $("#main").innerHTML=`<div class="card"><div class="banner warn">${esc(r.error)}</div></div>`; return; }
   const listInput=(key,i,val)=>`<input type="number" min="0" data-cc="${key}" data-i="${i}" value="${val}" style="width:80px">`;
@@ -1530,6 +1545,7 @@ function statusTag(st){
   return m[0]?`<span class="tag ${m[0]}">${m[1]}</span>`:`<span class="tag">${esc(st)}</span>`;
 }
 async function renderHistory(){
+  $("#main").innerHTML='<div class="card"><div class="muted">加载中…</div></div>';
   const r=await api("/api/history");
   const chart=historyChart(r.history);
   const rows=(r.history||[]).slice().reverse().map(h=>{
@@ -1585,6 +1601,7 @@ let CODEX_CUSTOM = {characters: [], weapons: []};
 const CX_FAMILIES = ["絮语", "掠影", "数符", "幻妄"];
 
 async function renderCodex(){
+  $("#main").innerHTML='<div class="card"><div class="muted">加载中…</div></div>';
   const r = await api("/api/game-data").catch(e=>({error:e.message}));
   if(r.error){ $("#main").innerHTML=`<div class="card"><div class="banner warn">${esc(r.error)}</div></div>`; return; }
   CODEX_CUSTOM = r.custom || {characters: [], weapons: []};
