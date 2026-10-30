@@ -100,6 +100,58 @@ def _sanitize_character(raw):
         str(k): _clamp_int(v, 0, 10**7, 0)
         for k, v in extra.items() if str(k) in planner.ALL_ORDER  # 全量目录（体力本+外部）
     }
+    # ===== 角色档案扩展（真机反馈第三批）——缺失/类型不符时回落默认，绝不抛异常 =====
+    def _text(key, limit=32):
+        value = raw.get(key)
+        return value.strip()[:limit] if isinstance(value, str) and value.strip() else None
+
+    # 属性/物态：弧盘适配过滤依赖（为空时弧盘页显示全部并提示）
+    char["attribute"] = _text("attribute", 8)
+    char["matter_state"] = _text("matter_state", 8)
+    # 觉醒档位 0-6
+    char["awakening"] = _clamp_int(raw.get("awakening"), 0, 6, 0)
+    # 异能技能拆分：普攻/变轨/极轨/援护 cur/tgt（体力计划仍用 ability_level 总轨）
+    skills = raw.get("skills") if isinstance(raw.get("skills"), dict) else {}
+    entry_skills = {}
+    for k in ("normal", "variable", "orbit", "assist"):
+        block = skills.get(k) if isinstance(skills.get(k), dict) else {}
+        entry_skills[k] = {"cur": _clamp_int(block.get("cur"), 0, 10, 0),
+                           "tgt": _clamp_int(block.get("tgt"), 0, 10, 0)}
+    char["skills"] = entry_skills
+    # 都市特技（1-2 个，名字+等级）
+    talents = raw.get("city_talents") if isinstance(raw.get("city_talents"), list) else []
+    char["city_talents"] = []
+    for t in talents[:2]:
+        if isinstance(t, dict) and str(t.get("name", "")).strip():
+            char["city_talents"].append({"name": str(t["name"]).strip()[:32],
+                                         "lv": _clamp_int(t.get("lv"), 0, 5, 0)})
+    # 空幕卡带（1 张/角色：套装+主属性）
+    cassette = raw.get("cassette") if isinstance(raw.get("cassette"), dict) else {}
+    char["cassette"] = {"set": str(cassette.get("set", "")).strip()[:48] or None,
+                        "main": str(cassette.get("main", "")).strip()[:24] or None}
+    # 驱动块（多件只记录：形状/品质/主属性/副词条×4，≤8 件）
+    drivers = raw.get("drivers") if isinstance(raw.get("drivers"), list) else []
+    char["drivers"] = []
+    for d in drivers[:8]:
+        if not isinstance(d, dict) or not str(d.get("shape", "")).strip():
+            continue
+        char["drivers"].append({
+            "shape": str(d.get("shape")).strip()[:16],
+            "quality": str(d.get("quality")).strip()[:8],
+            "main": str(d.get("main", "")).strip()[:24],
+            "subs": [str(x).strip()[:24] for x in (d.get("subs") or [])[:4]
+                     if isinstance(x, str) and x.strip()]})
+    # 最佳词条组（≤3 组：标签+主属性+副词条×4）
+    groups = raw.get("stigma_groups") if isinstance(raw.get("stigma_groups"), list) else []
+    char["stigma_groups"] = []
+    for g in groups[:3]:
+        if not isinstance(g, dict):
+            continue
+        char["stigma_groups"].append({
+            "label": str(g.get("label", "")).strip()[:32] or f"词条组{len(char['stigma_groups'])+1}",
+            "main": str(g.get("main", "")).strip()[:24],
+            "subs": [str(x).strip()[:24] for x in (g.get("subs") or [])[:4]
+                     if isinstance(x, str) and x.strip()]})
     return char
 
 
@@ -833,6 +885,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/compat-report":
             self._send(200, build_compat_report(self._oknte()),
                        "text/markdown; charset=utf-8")
+        elif path == "/api/teams":
+            STATE.ensure_today()
+            self._send(200, {"teams": _sanitize_teams(STATE.data)})
         elif path == "/api/common-costs":
             data = self._game_data_or_none()
             if data is None:

@@ -608,7 +608,6 @@ function renderChars(){
   const parkedBox = $("#parkedBox");
   const place = c => {
     const el = charCard(c, st.characters.findIndex(x=>x.id===c.id), tracks);
-    makeDraggable(el, list);
     (c.enabled ? list : document.getElementById("parkedCards")).appendChild(el);
   };
   const activeCount = st.characters.filter(c=>c.enabled).length;
@@ -1136,10 +1135,55 @@ function renderInv(){
 /* ---------- 数据表 ---------- */
 const GENERIC_MATS=[["exp_char","角色经验（猎人攻略）"],["exp_arc","弧盘经验（染剂）"],["coin","甲硬币"],
   ["ability_mat","技能书（按角色所选系）"],["arc_mat","弧盘突破·罐头（按角色所选系）"],["console_mat","空幕（按角色所选节点）"]];
+let UPGRADES_CACHE = undefined;  // undefined=未加载, null=尚未抓取, object=已抓取
+async function renderUpgradeBlock(host){
+  if(UPGRADES_CACHE === undefined){
+    try{ UPGRADES_CACHE = await api("/api/wiki/upgrades"); }
+    catch(e){ UPGRADES_CACHE = null; }
+  }
+  const chars = UPGRADES_CACHE ? Object.entries(UPGRADES_CACHE.characters||{}) : [];
+  const matName = (d, id) => (d.materials||{})[id]?.name || id;
+  const itemsTxt = (d, items) => (items||[]).map(i=>`${esc(matName(d,i.id))}×${i.amount}`).join("、");
+  const pick = $("#upgChar") ? $("#upgChar").value : (chars[0]?.[0]||"");
+  const body = $("#upgBody");
+  if(!chars.length){
+    body.innerHTML = `<div class="empty">尚未抓取角色技能/突破数据</div>
+      <div class="row" style="margin-top:8px"><button class="btn sec mini" id="btnUpgFetch">🌐 从 wiki 拉取全部角色数据（约 1 分钟）</button></div>`;
+    const btn=document.getElementById("btnUpgFetch");
+    btn.onclick=async()=>{ btn.disabled=true; btn.textContent="拉取中…（27 个角色，约 1 分钟）";
+      try{ const fr=await fetch("/api/wiki/fetch-upgrades",{method:"POST",signal:AbortSignal.timeout(180000)});
+        const d=await fr.json();
+        toast(d.ok?`已抓取 ${d.count} 个角色`:(d.error||"拉取失败"), d.ok?"ok":"err");
+        UPGRADES_CACHE = undefined; renderUpgradeBlock(host);
+      }catch(e){alertErr(e); btn.disabled=false; btn.textContent="🌐 从 wiki 拉取全部角色数据（约 1 分钟）";}
+    };
+    return;
+  }
+  const d = UPGRADES_CACHE.characters[pick] || UPGRADES_CACHE.characters[Object.keys(UPGRADES_CACHE.characters)[0]];
+  const ascRows = (d.ascension||[]).map((a,i)=>`
+    <tr><td class="num"><b>突破${i+1}</b>（Lv${a.level}）</td><td>${itemsTxt(d,a.items)}</td></tr>`).join("");
+  const skillRows = (d.skills||[]).map(s=>`
+    <tr><td rowspan="${s.levels.length}"><b>${esc(s.name)}</b></td>${
+      s.levels.map((lv,i)=>`${i>0?"<tr>":""}<td class="num">Lv${lv.level}${lv.require_breakthrough?`（需突破${lv.require_breakthrough}）`:""}</td><td>${itemsTxt(d,lv.items)}</td>${i<s.levels.length-1?"</tr>":""}`).join("")}
+    </tr>`).join("");
+  body.innerHTML = `
+    <div class="row" style="margin-bottom:8px">
+      <select id="upgChar">${chars.map(([slug,c])=>`<option value="${esc(slug)}" ${slug===pick?"selected":""}>${esc(c.name||slug)}</option>`).join("")}</select>
+      <button class="btn sec mini" id="btnUpgRefetch">🔄 重新拉取</button></div>
+    <div style="font-size:13px;color:var(--acc);margin:6px 0">角色突破（0-6 档）</div>
+    <table><tr><th>档位</th><th>材料</th></tr>${ascRows}</table>
+    <div style="font-size:13px;color:var(--acc);margin:12px 0 6px">异能技能逐级材料</div>
+    <table><tr><th>技能</th><th>等级</th><th>材料</th></tr>${skillRows}</table>`;
+  $("#upgChar").onchange=()=>renderUpgradeBlock(host);
+  $("#btnUpgRefetch").onclick=async()=>{ UPGRADES_CACHE=undefined; renderUpgradeBlock(host); };
+}
+
 function renderTables(){
   const y=BOOT.tables.yields.per_run, hy=BOOT.tables.yields.hunter_yield||{};
   const M=BOOT.tables.materials, all=allMaterials();
   $("#main").innerHTML=`
+    <div class="card"><h3>角色突破 / 异能技能材料表<span class="h-sub">来自 wiki 角色页逐项数据；按角色查看</span></h3>
+      <div id="upgBody"><div class="muted">加载中…</div></div></div>
     <div class="card"><h3>每轮产出<span class="h-sub">体力本 40 体力/轮，务必校准：掉落随世界等级变化；填小=多刷，填大=少刷</span></h3>
       <div class="mat-grid">
       ${M.targets.map(t=>`<div class="mat-item"><label title="${esc(t.source||"")}">${esc(t.display_name||t.name)}</label>
@@ -1171,6 +1215,7 @@ function renderTables(){
       <button class="btn" id="saveReq">保存需求表</button>
     </div>`;
   buildReqEditor();
+  renderUpgradeBlock($("#upgBody"));
   $("#saveYields").onclick=async()=>{
     const per_run={};
     document.querySelectorAll("[data-y]").forEach(inp=>per_run[inp.dataset.y]=+inp.value||0);
