@@ -253,6 +253,111 @@ def fetch_wiki_groupings(timeout=10):
     return groups
 
 
+# ---------- 角色逐技能/突破 与 空幕卡带 抓取（阶段：图鉴数据扩展） ----------
+
+WIKI_ROOT = "https://wiki.mysqil.com"
+SITEMAP_URL = WIKI_ROOT + "/sitemap-0.xml"
+CASSETTES_PAGE = WIKI_ROOT + "/cassettes/"
+UPGRADES_JSON = os.path.join(_MYSQIL_DIR, "upgrades.json")
+CASSETTES_JSON = os.path.join(_MYSQIL_DIR, "cassettes.json")
+
+# 词条池（wiki /cassettes/drivers/ 取证；驱动块主属性固定为 攻击力+生命值）
+CASSETTE_MAIN_STATS = ["攻击力(%)", "生命值(%)", "防御力(%)", "暴击率", "暴击伤害",
+                       "倾陷强度", "环合强度"]
+DRIVER_MAIN_STATS = ["攻击力", "生命值"]
+CASSETTE_SUB_STATS = ["暴击率", "暴击伤害", "攻击力(%)", "攻击力", "生命值(%)", "生命值",
+                      "防御力(%)", "防御力", "元素伤害加成", "全伤害加成", "倾陷强度"]
+
+
+def _extract_data_attr(page_html, attr):
+    """提取 HTML 标签上 HTML 转义的 JSON data 属性（wiki 角色页 data-upgrade 等）。"""
+    import html as html_mod
+    m = re.search(rf'{attr}="([^"]*)"', page_html)
+    if not m:
+        raise ValueError(f"页面缺少 {attr} 数据（结构可能已改版）")
+    return json.loads(html_mod.unescape(m.group(1)))
+
+
+def _page_title(page_html):
+    m = re.search(r"<title>([^<·]+)", page_html)
+    return m.group(1).strip() if m else ""
+
+
+def _character_slugs_from_sitemap(timeout):
+    sitemap = _http_get(SITEMAP_URL, timeout)
+    return sorted(set(re.findall(r"/characters/([^/<]+)/", sitemap)))
+
+
+def fetch_character_upgrade(slug, timeout=15):
+    """抓取单个角色详情页：data-upgrade（skills 逐技能 levels / ascension 突破 0-6 /
+    materials 字典）+ 页面标题（角色名）。"""
+    raw = _http_get(f"{WIKI_ROOT}/characters/{urllib.parse.quote(slug)}/", timeout)
+    upgrade = _extract_data_attr(raw, "data-upgrade")
+    name = _page_title(raw) or slug
+    return {"slug": slug, "name": name, "skills": upgrade.get("skills", []),
+            "ascension": upgrade.get("ascension", []),
+            "materials": upgrade.get("materials", {})}
+
+
+def fetch_all_upgrades(timeout=15, slugs=None):
+    """批量抓取全部角色逐技能/突破数据，落盘 upgrades.json。返回 (结果, 失败清单)。"""
+    if not slugs:
+        slugs = _character_slugs_from_sitemap(timeout)
+    characters, failed = {}, []
+    for i, slug in enumerate(slugs):
+        try:
+            d = fetch_character_upgrade(slug, timeout)
+            characters[slug] = d
+        except (OSError, ValueError) as e:
+            failed.append({"slug": slug, "error": str(e)})
+    payload = {"fetched_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+               "characters": characters}
+    if characters:
+        save_json_atomic(UPGRADES_JSON, payload)
+    return payload, failed
+
+
+def fetch_cassettes(timeout=15):
+    """抓取空幕卡带：12 套套装（名称+产出属性系）+ 主/副词条池，落盘 cassettes.json。"""
+    raw = _http_get(CASSETTES_PAGE, timeout)
+    slugs = []
+    for m in re.finditer(r'href="/cassettes/([^"/]+)/"', raw):
+        slug = m.group(1)
+        if slug != "drivers" and slug not in slugs:
+            slugs.append(slug)
+    elements = ("暗系", "魂系", "相系", "灵系", "光系", "咒系")
+    sets = []
+    for slug in slugs:
+        page = _http_get(f"{CASSETTES_PAGE}{urllib.parse.quote(slug)}/", timeout)
+        name = _page_title(page) or slug
+        elem = next((e for e in elements if e in page), "泛用")
+        sets.append({"slug": slug, "name": name, "element": elem})
+    payload = {"fetched_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+               "sets": sets,
+               "main_stats": CASSETTE_MAIN_STATS,
+               "driver_main_stats": DRIVER_MAIN_STATS,
+               "sub_stats": CASSETTE_SUB_STATS}
+    save_json_atomic(CASSETTES_JSON, payload)
+    return payload
+
+
+def load_cassettes():
+    """读取已抓取的卡带数据（无则返回 None，调用方提示先抓取）。"""
+    try:
+        with open(CASSETTES_JSON, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def load_upgrades():
+    try:
+        with open(UPGRADES_JSON, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
 # ---------- 角色反查与预填 ----------
 
 def reverse_lookup(groups, name):
