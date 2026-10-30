@@ -177,6 +177,29 @@ def _sanitize_custom_character(raw):
     else:
         entry["mob_base_total"] = None
     entry["skill_confidence"] = "manual"
+    # 觉醒档位 0-6（真机反馈：角色档案扩展）
+    entry["awakening"] = _clamp_int(raw.get("awakening"), 0, 6, 0)
+    # 异能技能拆分：普攻/变轨/极轨/援护 cur/tgt + 都市特技（1-2 个，lv 各异）
+    skills = raw.get("skills") if isinstance(raw.get("skills"), dict) else {}
+    entry["skills"] = {k: {"cur": _clamp_int((skills.get(k) or {}).get("cur"), 0, 10, 0),
+                           "tgt": _clamp_int((skills.get(k) or {}).get("tgt"), 0, 10, 0)}
+                       for k in ("normal", "variable", "orbit", "assist")}
+    talents = raw.get("city_talents") if isinstance(raw.get("city_talents"), list) else []
+    entry["city_talents"] = [{"name": str(t.get("name", ""))[:32],
+                              "lv": _clamp_int(t.get("lv"), 0, 5, 0)}
+                             for t in talents[:2] if isinstance(t, dict) and t.get("name")]
+    # 词条组（最佳 2-3 组；主属性 1 + 副属性 4）
+    groups = raw.get("stigma_groups") if isinstance(raw.get("stigma_groups"), list) else []
+    clean_groups = []
+    for g in groups[:3]:
+        if not isinstance(g, dict):
+            continue
+        clean_groups.append({
+            "label": str(g.get("label", "")).strip()[:32] or f"词条组{len(clean_groups)+1}",
+            "main": str(g.get("main", "")).strip()[:24],
+            "subs": [str(x).strip()[:24] for x in (g.get("subs") or [])[:4]
+                     if isinstance(x, str) and x.strip()]})
+    entry["stigma_groups"] = clean_groups
     return entry
 
 
@@ -239,6 +262,28 @@ def _auto_fill_extra_needs(chars):
         manual = {k: v for k, v in (char.get("extra_needs") or {}).items() if k not in prefill}
         char["extra_needs"] = {**manual, **prefill}
     return chars
+
+
+def _sanitize_teams(raw):
+    """配队：[{name, members:[角色名 ≤4]}]；队内唯一，跨队可重复（用户语义）。"""
+    teams = raw.get("teams") if isinstance(raw.get("teams"), list) else []
+    clean, seen_names = [], set()
+    for t in teams[:20]:
+        if not isinstance(t, dict):
+            continue
+        name = str(t.get("name", "")).strip()[:32] or f"队伍{len(clean)+1}"
+        key = name
+        if key in seen_names:
+            continue
+        seen_names.add(key)
+        members, seen_m = [], set()
+        for m in (t.get("members") or [])[:4]:
+            n = str(m).strip()[:32]
+            if n and n not in seen_m:
+                seen_m.add(n)
+                members.append(n)
+        clean.append({"name": name, "members": members})
+    return clean
 
 
 def _sanitize_libraries(raw):
@@ -648,16 +693,21 @@ class Handler(BaseHTTPRequestHandler):
             oknte = self._oknte()
             STATE.ensure_today()
             try:  # 游戏目录角色名（供『按目录导入角色』下拉）；损坏不阻塞面板
+                gd = game_data.load()
                 gd_chars = [c["name"] + ("" if c.get("live") else "（未上线）")
-                            for c in game_data.load().get("characters", [])]
+                            for c in gd.get("characters", [])]
+                gd_attr_map = {k: v for k, v in (gd.get("attribute_to_skill_series") or {}).items()
+                               if k != "_note"}
             except (OSError, ValueError, KeyError, TypeError):
                 gd_chars = []
+                gd_attr_map = {}
             self._send(200, {
                 "state": STATE.data,
                 "tables": _tables(),
                 "game_characters": gd_chars,
                 "compat": oknte.compat_check(),
                 "build": _build_info(),
+                "attr_map": gd_attr_map,
                 "admin": is_admin(),
                 "oknte_running": oknte.is_running_cached(),
             })
@@ -744,6 +794,18 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, f.read(), "text/plain; charset=utf-8")
             except OSError as e:
                 self._send(500, {"error": f"日志读取失败：{e}"})
+        elif path == "/api/wiki/upgrades":
+            data = wiki_fetch.load_upgrades()
+            if not data:
+                self._send(404, {"error": "尚未抓取角色技能/突破数据，请先在图鉴页执行拉取"})
+                return
+            self._send(200, data)
+        elif path == "/api/wiki/cassettes":
+            data = wiki_fetch.load_cassettes()
+            if not data:
+                self._send(404, {"error": "尚未抓取空幕卡带数据，请先在图鉴页执行拉取"})
+                return
+            self._send(200, data)
         elif path == "/api/export":
             self._send(200, build_export())
         elif path == "/api/backups":
@@ -877,6 +939,23 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, payload)
             else:
                 self._send(400, {"error": "action 必须是 libraries 或 character"})
+        elif path == "/api/wiki/fetch-upgrades":
+            # 批量抓取 27+ 角色详情页：耗时较长（~60s），前端用长超时调用
+            try:
+                payload, failed = wiki_fetch.fetch_all_upgrades(timeout=15)
+            except (OSError, ValueError) as e:
+                self._send(502, {"ok": False, "error": f"wiki 拉取失败：{e}"})
+                return
+            self._send(200, {"ok": True, "count": len(payload.get("characters", {})),
+                             "failed": failed, "fetched_at": payload.get("fetched_at")})
+        elif path == "/api/wiki/fetch-cassettes":
+            try:
+                payload = wiki_fetch.fetch_cassettes(timeout=15)
+            except (OSError, ValueError) as e:
+                self._send(502, {"ok": False, "error": f"wiki 拉取失败：{e}"})
+                return
+            self._send(200, {"ok": True, "sets": len(payload.get("sets", [])),
+                             "fetched_at": payload.get("fetched_at")})
         elif path == "/api/inventory/ocr":
             # 实验性：截屏 OCR 原文返回，匹配与预填都在前端完成（绝不直接写库存）
             try:
@@ -1052,9 +1131,18 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/stop":
             ok, msg = RUNNER.stop()
             self._send(200, {"ok": ok, "message": msg})
+        elif path == "/api/teams":
+            STATE.ensure_today()
+            self._send(200, {"teams": _sanitize_teams(STATE.data)})
         elif path == "/api/today/clear-blacklist":
             cleared = clear_today_blacklist()
             self._send(200, {"ok": True, "cleared": cleared})
+        elif path == "/api/teams/save":
+            clean = _sanitize_teams(body)
+            with STATE.lock:
+                STATE.data["teams"] = clean
+                STATE.save()
+            self._send(200, {"ok": True, "teams": clean})
         elif path == "/api/history/confirm":
             day = str(body.get("day", ""))[:10]
             time_str = str(body.get("time", ""))[:8]
