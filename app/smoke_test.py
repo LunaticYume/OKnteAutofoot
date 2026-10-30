@@ -176,9 +176,10 @@ def _step_preview():
 
 def _step_export_import_backups():
     exported = _request("/api/export")
-    assert exported.get("schema") == 2 and isinstance(exported.get("settings"), dict) \
+    assert exported.get("schema") == 3 and isinstance(exported.get("settings"), dict) \
         and isinstance(exported.get("characters"), list) and "yields" in exported \
-        and "char_library" in exported and "weapon_library" in exported, \
+        and "char_library" in exported and "weapon_library" in exported \
+        and "teams" in exported, \
         f"/api/export 结构异常: {sorted(exported.keys())}"
     # 回环导入：改一个库存值导回（守卫会恢复三个数据文件）
     payload = dict(exported)

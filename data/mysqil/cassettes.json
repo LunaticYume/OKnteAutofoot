@@ -1,0 +1,91 @@
+{
+  "fetched_at": "2026-10-31 13:48:11",
+  "sets": [
+    {
+      "slug": "shiluo-guangmang",
+      "name": "失落光芒",
+      "element": "光系"
+    },
+    {
+      "slug": "emozhixie-zuzhou",
+      "name": "恶魔之血",
+      "element": "魂系"
+    },
+    {
+      "slug": "senlin-yinghuozhixin",
+      "name": "森林萤火之心",
+      "element": "灵系"
+    },
+    {
+      "slug": "zhenhong-shuangshengdie",
+      "name": "真红双生蝶",
+      "element": "咒系"
+    },
+    {
+      "slug": "jietou-quanwang",
+      "name": "街头拳王",
+      "element": "相系"
+    },
+    {
+      "slug": "diyabolosi",
+      "name": "迪亚波罗斯",
+      "element": "暗系"
+    },
+    {
+      "slug": "shouwei-wangguo",
+      "name": "守卫王国",
+      "element": "泛用"
+    },
+    {
+      "slug": "xiaoxiao-damaoxian",
+      "name": "小小大冒险",
+      "element": "泛用"
+    },
+    {
+      "slug": "yingzhi-xintiao",
+      "name": "影之信条",
+      "element": "泛用"
+    },
+    {
+      "slug": "tiyà-yèjianjiuguan",
+      "name": "缇娅的夜间酒馆",
+      "element": "泛用"
+    },
+    {
+      "slug": "jingmi-shanzhuang",
+      "name": "静谧山庄",
+      "element": "泛用"
+    },
+    {
+      "slug": "yinsu-lancìwei",
+      "name": "音速蓝刺猬",
+      "element": "泛用"
+    }
+  ],
+  "main_stats": [
+    "攻击力(%)",
+    "生命值(%)",
+    "防御力(%)",
+    "暴击率",
+    "暴击伤害",
+    "倾陷强度",
+    "环合强度"
+  ],
+  "driver_main_stats": [
+    "攻击力",
+    "生命值"
+  ],
+  "sub_stats": [
+    "暴击率",
+    "暴击伤害",
+    "攻击力(%)",
+    "攻击力",
+    "生命值(%)",
+    "生命值",
+    "防御力(%)",
+    "防御力",
+    "元素伤害加成",
+    "全伤害加成",
+    "倾陷强度"
+  ]
+}

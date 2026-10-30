@@ -288,15 +288,37 @@ def _character_slugs_from_sitemap(timeout):
     return sorted(set(re.findall(r"/characters/([^/<]+)/", sitemap)))
 
 
+def _city_talents_from_upgrade(upgrade):
+    """从 data-upgrade.skills[] 识别都市特技：升级材料含 CityAbility_UpMaterial
+    的技能（消耗 CityAbility_UpMaterial+fons，等级 1-5 或 1-2；与战斗技能同数组，
+    这是唯一可靠判据）。返回 [{name, max_level}]。"""
+    talents = []
+    for skill in upgrade.get("skills", []):
+        if not isinstance(skill, dict) or not skill.get("name"):
+            continue
+        is_city = any(
+            isinstance(item, dict) and item.get("id") == "CityAbility_UpMaterial"
+            for lv in skill.get("levels", []) if isinstance(lv, dict)
+            for item in (lv.get("items") or []))
+        if not is_city:
+            continue
+        levels = [int(lv.get("level") or 0) for lv in skill.get("levels", [])
+                  if isinstance(lv, dict)]
+        talents.append({"name": str(skill["name"])[:32],
+                        "max_level": max(levels) if levels else 0})
+    return talents
+
+
 def fetch_character_upgrade(slug, timeout=15):
     """抓取单个角色详情页：data-upgrade（skills 逐技能 levels / ascension 突破 0-6 /
-    materials 字典）+ 页面标题（角色名）。"""
+    materials 字典）+ 都市特技（city_talents，名称与满级档）+ 页面标题（角色名）。"""
     raw = _http_get(f"{WIKI_ROOT}/characters/{urllib.parse.quote(slug)}/", timeout)
     upgrade = _extract_data_attr(raw, "data-upgrade")
     name = _page_title(raw) or slug
     return {"slug": slug, "name": name, "skills": upgrade.get("skills", []),
             "ascension": upgrade.get("ascension", []),
-            "materials": upgrade.get("materials", {})}
+            "materials": upgrade.get("materials", {}),
+            "city_talents": _city_talents_from_upgrade(upgrade)}
 
 
 def fetch_all_upgrades(timeout=15, slugs=None):
@@ -318,13 +340,18 @@ def fetch_all_upgrades(timeout=15, slugs=None):
 
 
 def fetch_cassettes(timeout=15):
-    """抓取空幕卡带：12 套套装（名称+产出属性系）+ 主/副词条池，落盘 cassettes.json。"""
+    """抓取空幕卡带：各套装（名称+产出属性系）+ 主/副词条池，落盘 cassettes.json。
+
+    卡带列表页链接两种形态都接受（wiki 改版前后）：
+    href="/cassettes/<slug>/" 与 href="/cassettes/<slug>"；排除 drivers 页与 .webp 图片。
+    """
     raw = _http_get(CASSETTES_PAGE, timeout)
     slugs = []
-    for m in re.finditer(r'href="/cassettes/([^"/]+)/"', raw):
+    for m in re.finditer(r'href="/cassettes/([^"/]+?)/?"', raw):
         slug = m.group(1)
-        if slug != "drivers" and slug not in slugs:
-            slugs.append(slug)
+        if slug == "drivers" or slug.endswith(".webp") or slug in slugs:
+            continue
+        slugs.append(slug)
     elements = ("暗系", "魂系", "相系", "灵系", "光系", "咒系")
     sets = []
     for slug in slugs:
@@ -356,6 +383,19 @@ def load_upgrades():
             return json.load(f)
     except (OSError, ValueError):
         return None
+
+
+def city_talents_by_name():
+    """已抓取快照中的都市特技名单（角色名 → [{name, max_level}]）；
+    未抓取/快照损坏返回 {}，调用方据此跳过预填（绝不编造）。"""
+    data = load_upgrades()
+    if not isinstance(data, dict):
+        return {}
+    out = {}
+    for entry in (data.get("characters") or {}).values():
+        if isinstance(entry, dict) and entry.get("name") and entry.get("city_talents"):
+            out[entry["name"]] = entry["city_talents"]
+    return out
 
 
 # ---------- 角色反查与预填 ----------

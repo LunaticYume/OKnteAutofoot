@@ -1,6 +1,7 @@
 """规划器状态持久化：设置、角色、库存、当日进度、历史。"""
 import json
 import os
+import shutil
 import sys
 import threading
 import uuid
@@ -18,14 +19,21 @@ STATE_FILE = os.path.join(DATA_DIR, "state.json")
 def save_json_atomic(path, data):
     """全项目唯一的 JSON 原子写实现（state.json/yields/requirements/runtime 共用）。
 
-    tmp 写全 → 旧主文件轮转为 .bak（上一次完好版本）→ tmp 替换为主文件。
-    任何时刻崩溃，主文件要么是旧完整内容、要么是新完整内容，绝不出现半截 JSON；
-    替换窗口内主文件短暂缺失时，读取方由 .bak 兜底（见 load_json）。
+    tmp 写全 → 复制当前主文件为 .bak（上一次完好版本）→ tmp 原子替换主文件。
+    任何时刻崩溃，主文件要么是旧完整内容、要么是新完整内容，绝不出现半截 JSON。
+    旧实现先用 os.replace 把主文件轮转为 .bak 再替换，两步之间崩溃会让主文件
+    缺失、只剩 .bak（真机曾出现该形态的 state.json）——现改为先复制后替换，
+    主文件除原子替换瞬间外始终存在。
     """
     tmp = Path(path + ".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     if os.path.exists(path):
-        os.replace(path, path + ".bak")
+        bak_tmp = Path(path + ".bak.tmp")
+        try:
+            shutil.copyfile(path, bak_tmp)
+            os.replace(bak_tmp, path + ".bak")
+        except OSError:
+            pass  # .bak 落后一版可接受；绝不因备份失败丢掉本次写入
     os.replace(tmp, path)
 
 
@@ -70,18 +78,30 @@ DEFAULT_SETTINGS = {
 
 TRACK_KEYS = ["char_level", "ability_level", "arc_level", "console_level"]
 
-STATE_SCHEMA = 2  # 自身数据格式版本（导出/导入与未来迁移的依据）；v2: 角色库/武器库/追猎记账
+STATE_SCHEMA = 3  # 自身数据格式版本（导出/导入与未来迁移的依据）
+# v2: 角色库/武器库/追猎记账；v3: teams 兜底 + 清洗卡带空值曾被存成字符串 "None" 的脏数据
 
 
 def _migrate(data):
-    """schema 迁移钩子：v1 文件按 v2 兼容读取并补默认键；未来版本在这里逐级升级后再使用。"""
+    """schema 迁移钩子：逐级升级；幂等、只补缺/修脏值，绝不删除任何用户数据。"""
     if not isinstance(data, dict):
         data = {}
     data.setdefault("char_library", [])
     data.setdefault("weapon_library", [])
+    data.setdefault("teams", [])
     today = data.get("today")
     if isinstance(today, dict):
         today.setdefault("hunter_spent", 0)
+    for char in data.get("characters") or []:
+        if not isinstance(char, dict):
+            continue
+        cassette = char.get("cassette")
+        if isinstance(cassette, dict):
+            # 旧版 sanitize 把 None 用 str() 转成了字符串 "None" 存库（v3 前的缺陷），
+            # 回显时与下拉选项永远匹配不上——这里清洗回 None，字段本身保留
+            for key in ("set", "main"):
+                if cassette.get(key) == "None":
+                    cassette[key] = None
     data["schema"] = STATE_SCHEMA
     return data
 

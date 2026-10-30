@@ -123,6 +123,13 @@ def find_character(data, name):
     raise ValueError(f"游戏目录中没有角色『{name}』")
 
 
+def mob_base_id(entry):
+    """角色族群 → 小怪素材基础档 id（突破/技能升级共用）；族群未知返回 None。"""
+    if not isinstance(entry, dict):
+        return None
+    return _MOB_FAMILY_TO_IDS.get(entry.get("mob_family") or "", ("",))[0] or None
+
+
 def character_material_mapping(data, entry, costs):
     """单个角色条目 → 具体实名材料的通用数量映射（boss/weekly/mobs 三类；同一处真相，
     供『按目录导入角色』与『通用材料表一键应用』共用）。costs 为（可校准的）通用数量。
@@ -190,6 +197,18 @@ def build_character_import(data, name):
     # 直接材料需求：boss/周本/小怪（与『通用材料表一键应用』同一映射真相）
     extra, _skipped = character_material_mapping(data, entry, dict(COMMON_COST_DEFAULTS))
     char["extra_needs"] = extra
+    # 都市特技：wiki 已抓取快照存在时按角色预填名字与槽位数（实机数据决定 1 或 2 位，
+    # 满足"根据角色实际情况开放位置"）；等级留 0 由用户填。未抓取/未命中不预填，绝不编造。
+    try:
+        from .wiki_fetch import city_talents_by_name  # 局部导入避免环
+        talents = city_talents_by_name().get(entry["name"]) or []
+    except Exception:  # noqa: BLE001 —— 快照缺失/损坏时静默跳过预填
+        talents = []
+    if talents:
+        char["city_talents"] = [{"name": str(t.get("name", ""))[:32], "lv": 0}
+                                for t in talents[:2] if t.get("name")]
+        if char["city_talents"]:
+            char["city_talent_slots"] = 2 if len(char["city_talents"]) > 1 else 1
     return char
 
 

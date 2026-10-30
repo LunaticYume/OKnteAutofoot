@@ -4,6 +4,8 @@ import math
 import os
 from datetime import datetime, timedelta
 
+from . import game_data
+from . import growth
 from .state import DATA_DIR, STATE
 
 # ok-nte 上游硬日上限：BaseStaminaTask.DAILY_STAMINA_REQUIREMENT=180 +
@@ -97,11 +99,67 @@ def _ladder_cost(track_key, cur, tgt):
     return items
 
 
+_CATALOG_CACHE = {"stamp": None, "data": {}}
+
+
+def catalog():
+    """游戏目录（含图鉴覆盖层），按文件 mtime 失效的进程内缓存（热路径保护）。"""
+    paths = (game_data.GAME_DATA_FILE, game_data.CUSTOM_FILE)
+    stamp = tuple(os.path.getmtime(p) for p in paths if os.path.exists(p))
+    if _CATALOG_CACHE["stamp"] != stamp:
+        try:
+            _CATALOG_CACHE["data"] = game_data.load()
+        except (OSError, ValueError):
+            _CATALOG_CACHE["data"] = {}
+        _CATALOG_CACHE["stamp"] = stamp
+    return _CATALOG_CACHE["data"]
+
+
+def catalog_entry(character):
+    """角色名 → 目录条目（未收录返回 None）。"""
+    name = (character or {}).get("name")
+    if not name:
+        return None
+    for entry in catalog().get("characters", []):
+        if isinstance(entry, dict) and entry.get("name") == name:
+            return entry
+    return None
+
+
+def managed_material_ids(character):
+    """模型托管的材料键（BOSS 掉落/周本/族群小怪）：旧版按"满级总量"自动写入
+    extra_needs 的三类键，现由成长模型按逐级/门槛口径计算——无论模型当前是否
+    产出需求，这些键都不再从 extra_needs 计入（避免门槛模型下旧总量制造假缺口）。
+    数据保留在库不删除。目录未收录的角色返回空集（手填值是唯一来源，照常计入）。"""
+    entry = catalog_entry(character)
+    if not entry:
+        return set()
+    managed = set()
+    for key in ("boss_material", "weekly_material"):
+        mat_id = (entry.get(key) or {}).get("mat_id")
+        if mat_id:
+            managed.add(mat_id)
+    base_id = game_data.mob_base_id(entry)
+    if base_id:
+        managed.add(base_id)
+    return managed
+
+
 def character_needs(character):
-    """单个角色的材料需求：练度轨道换算 + 直接填写的缺口。"""
+    """单个角色的材料需求：练度轨道 + 成长材料（wiki 权威）+ 手工缺口。
+
+    - tracks：角色等级/弧盘/空幕轨道按需求表梯换算；ability_level 旧单轨不再参与
+      （错误口径：四技能只计一份书，已由 growth 按四技能逐级计算取代；旧梯数据保留）。
+    - growth：四技能 cur→tgt 逐级 + 天赋解锁 + 角色等级门槛（31/41/51/61/71）突破
+      BOSS/小怪（与觉醒档位无关）。
+    - extra_needs：手工自定义缺口；模型托管键（BOSS/周本/族群小怪，旧版自动写入）
+      不计入——模型已按逐级/门槛口径计算，旧"总量"值不再叠加或生效。
+    """
     needs = {}
     variant = _variant_map(character)
     for track_key, levels in character.get("tracks", {}).items():
+        if track_key == "ability_level":
+            continue
         try:
             cur, tgt = int(levels.get("cur", 0)), int(levels.get("tgt", 0))
         except (TypeError, ValueError):
@@ -109,7 +167,12 @@ def character_needs(character):
         for generic, count in _ladder_cost(track_key, cur, tgt).items():
             mat_id = variant.get(generic, generic)
             needs[mat_id] = needs.get(mat_id, 0) + count
+    for mat_id, count in growth.character_growth_needs(character, catalog_entry(character)).items():
+        needs[mat_id] = needs.get(mat_id, 0) + count
+    managed = managed_material_ids(character)
     for mat_id, count in (character.get("extra_needs") or {}).items():
+        if mat_id in managed:
+            continue  # 模型托管键（旧自动总量行）：不计旧值（数据保留在库，仅不参与计算）
         try:
             needs[mat_id] = needs.get(mat_id, 0) + max(0, int(count))
         except (TypeError, ValueError):
@@ -150,6 +213,7 @@ def snapshot():
             "id": character["id"],
             "name": character.get("name", ""),
             "rows": rows,
+            "managed": sorted(managed_material_ids(character)),
         })
     gaps = {}
     for mat_id, need in total_needs.items():
@@ -232,13 +296,17 @@ def make_plan(oknte=None, now=None):
             warnings.append(f"{item['name']}：产量未校准（为0），已跳过，请在『数据表』填写每轮产出")
 
     local_used = int(today.get("used_stamina", 0) or 0)
-    used = local_used
-    stamina_used_note = f"已耗体力取本地记录 {used}"
+    hunter_spent = int(today.get("hunter_spent", 0) or 0)
+    # 日常与追猎共用游戏内同一体力池：本地口径必须相加，否则两边各记各的账、
+    # 同一池被双倍预订（真机反馈"体力消耗计算错误"）。ok-nte 日志扫描值为游戏内
+    # 全口径（已含追猎），取两者较大值，绝不重复扣减。
+    used = local_used + hunter_spent
+    stamina_used_note = f"已耗体力取本地记录 {local_used}（日常）+ {hunter_spent}（追猎）"
     if oknte is not None:
         scanned = oknte.scan_used_stamina(day)
         if scanned is not None and scanned > used:
             used = scanned
-            stamina_used_note = f"已耗体力取 ok-nte 日志扫描值 {scanned}（本地记录 {local_used}）"
+            stamina_used_note = f"已耗体力取 ok-nte 日志扫描值 {scanned}（本地：日常 {local_used} + 追猎 {hunter_spent}）"
 
     settings = STATE.settings
     limit = max(0, int(settings.get("daily_stamina_limit", 180) or 0))
@@ -444,7 +512,9 @@ def preview_days(days=3, now=None):
 
     day0 = STATE.day_key(now)
     today = _today_view(day0)
-    used = int(today.get("used_stamina", 0) or 0)
+    # 与 make_plan 同口径：日常与追猎共用一个体力池，第 0 天额度要扣掉两者之和
+    used = (int(today.get("used_stamina", 0) or 0)
+            + int(today.get("hunter_spent", 0) or 0))
     # 与 make_plan 同口径：ok-nte 日志扫描值只在执行器落账，预演用本地记录（确定性）
     virtual = {k: int(v or 0) for k, v in STATE.inventory.items()}
     snap = snapshot()

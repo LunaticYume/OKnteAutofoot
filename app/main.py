@@ -15,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from app import planner
 from app import game_data
+from app import growth
 from app import wiki_fetch
 from app.oknte_adapter import OkNte, OkNteError
 from app.runner import RUNNER
@@ -69,6 +70,15 @@ def _clamp_int(value, lo, hi, fallback):
     return max(lo, min(hi, value))
 
 
+def _opt_text(value, limit):
+    """可空文本：None/空白 → None；绝不把 None 变成字符串 "None"（旧版缺陷：
+    str(None)=="None" 被当作真值存库，回显时与下拉选项永远匹配不上）。"""
+    if value is None:
+        return None
+    text = str(value).strip()[:limit]
+    return text or None
+
+
 def _sanitize_character(raw):
     char = new_character(str(raw.get("name", ""))[:32])
     # 空/缺失 id 重新生成，避免落库后出现空主键（str(raw["id"]) 允许自定义值）
@@ -108,27 +118,35 @@ def _sanitize_character(raw):
     # 属性/物态：弧盘适配过滤依赖（为空时弧盘页显示全部并提示）
     char["attribute"] = _text("attribute", 8)
     char["matter_state"] = _text("matter_state", 8)
-    # 觉醒档位 0-6
+    # 觉醒档位 0-6：独立记录字段（用户实机口径：与突破材料无关，不参与计算）
     char["awakening"] = _clamp_int(raw.get("awakening"), 0, 6, 0)
-    # 异能技能拆分：普攻/变轨/极轨/援护 cur/tgt（体力计划仍用 ability_level 总轨）
+    # 异能=技能：四技能（普攻/变轨/极轨/援护）cur/tgt，上限取 wiki skillUpgrade
+    # 实际覆盖的最高级（growth.skill_max()，当前数据为 10），不再硬编码
+    skill_top = growth.skill_max()
     skills = raw.get("skills") if isinstance(raw.get("skills"), dict) else {}
     entry_skills = {}
-    for k in ("normal", "variable", "orbit", "assist"):
+    for k in growth.SKILL_KEYS:
         block = skills.get(k) if isinstance(skills.get(k), dict) else {}
-        entry_skills[k] = {"cur": _clamp_int(block.get("cur"), 0, 10, 0),
-                           "tgt": _clamp_int(block.get("tgt"), 0, 10, 0)}
+        entry_skills[k] = {"cur": _clamp_int(block.get("cur"), 0, skill_top, 0),
+                           "tgt": _clamp_int(block.get("tgt"), 0, skill_top, 0)}
     char["skills"] = entry_skills
-    # 都市特技（1-2 个，名字+等级）
+    # 天赋解锁（wiki talentUnlock 两档，角色可选开启；参与技能材料计算）
+    raw_unlocks = raw.get("talent_unlocks")
+    unlocks = raw_unlocks if isinstance(raw_unlocks, list) else []
+    char["talent_unlocks"] = [bool(unlocks[i]) if i < len(unlocks) else False
+                              for i in range(2)]
+    # 都市特技（1-2 个，名字+等级；开放槽位数 1|2，由实机数据/用户开关决定）
     talents = raw.get("city_talents") if isinstance(raw.get("city_talents"), list) else []
     char["city_talents"] = []
     for t in talents[:2]:
         if isinstance(t, dict) and str(t.get("name", "")).strip():
             char["city_talents"].append({"name": str(t["name"]).strip()[:32],
                                          "lv": _clamp_int(t.get("lv"), 0, 5, 0)})
-    # 空幕卡带（1 张/角色：套装+主属性）
+    char["city_talent_slots"] = _clamp_int(raw.get("city_talent_slots"), 1, 2, 1)
+    # 空幕卡带（1 张/角色：套装+主属性）；空值必须是 None（不是字符串 "None"）
     cassette = raw.get("cassette") if isinstance(raw.get("cassette"), dict) else {}
-    char["cassette"] = {"set": str(cassette.get("set", "")).strip()[:48] or None,
-                        "main": str(cassette.get("main", "")).strip()[:24] or None}
+    char["cassette"] = {"set": _opt_text(cassette.get("set"), 48),
+                        "main": _opt_text(cassette.get("main"), 24)}
     # 驱动块（多件只记录：形状/品质/主属性/副词条×4，≤8 件）
     drivers = raw.get("drivers") if isinstance(raw.get("drivers"), list) else []
     char["drivers"] = []
@@ -152,6 +170,14 @@ def _sanitize_character(raw):
             "main": str(g.get("main", "")).strip()[:24],
             "subs": [str(x).strip()[:24] for x in (g.get("subs") or [])[:4]
                      if isinstance(x, str) and x.strip()]})
+    # 导入置信度元数据（目录调研结论）：纯展示/提示用，不参与任何计算。
+    # 此前不在白名单内，落库即丢 → 导入完成提示永远显示"全部字段高/中置信"。
+    confidence = raw.get("game_confidence")
+    if isinstance(confidence, dict) and confidence:
+        char["game_confidence"] = {str(k)[:32]: str(v)[:200]
+                                   for k, v in confidence.items() if v}
+    else:
+        char["game_confidence"] = None
     return char
 
 
@@ -338,6 +364,26 @@ def _sanitize_teams(raw):
     return clean
 
 
+def duplicate_character_names(chars):
+    """后端重名互斥的判定（与『按目录导入』同一口径；此前只在前端拦截）。"""
+    names = [c.get("name") for c in chars if isinstance(c, dict) and c.get("name")]
+    return sorted({n for n in names if names.count(n) > 1})
+
+
+def reorder_characters(ids):
+    """按 id 重排角色数组：只排列现有对象，绝不重建——任何字段都不会丢。
+    未出现在 ids 里的角色（如"不想练"区的停用角色）按原相对顺序追加在尾部；
+    列表顺序 = 补齐优先级（planner.snapshot 消费数组序）。"""
+    with STATE.lock:
+        by_id = {c.get("id"): c for c in STATE.data["characters"]}
+        ordered = [by_id[i] for i in ids if i in by_id]
+        seen = set(ids)
+        ordered += [c for c in STATE.data["characters"] if c.get("id") not in seen]
+        STATE.data["characters"] = ordered
+        STATE.save()
+    return ordered
+
+
 def _sanitize_libraries(raw):
     """角色库：非空去重字符串列表（≤32字/项，≤200项）。
     武器库允许同名多条（用户语义：同名多把，不同角色各用各的把），不做去重。"""
@@ -410,6 +456,7 @@ def build_export():
             "characters": copy.deepcopy(STATE.data["characters"]),
             "char_library": copy.deepcopy(STATE.data.get("char_library", [])),
             "weapon_library": copy.deepcopy(STATE.data.get("weapon_library", [])),
+            "teams": copy.deepcopy(STATE.data.get("teams", [])),
             "inventory": copy.deepcopy(STATE.data["inventory"]),
             "common_costs": _common_costs(),
             "yields": {"per_run": dict(planner.YIELDS["per_run"]),
@@ -467,6 +514,8 @@ def apply_import(payload):
             clean_costs = _sanitize_common_costs(payload["common_costs"])
             STATE.data["common_costs"] = {**(STATE.data.get("common_costs") or {}),
                                           **clean_costs}
+        if "teams" in payload:  # 配队随导入迁移（v3 起导出包含；旧文件无此段不动）
+            STATE.data["teams"] = _sanitize_teams(payload)
         STATE.data["schema"] = STATE_SCHEMA
         STATE.save()
     _save_json_atomic(os.path.join(DATA_DIR, "yields.json"), clean_yields)
@@ -760,6 +809,7 @@ class Handler(BaseHTTPRequestHandler):
                 "compat": oknte.compat_check(),
                 "build": _build_info(),
                 "attr_map": gd_attr_map,
+                "skill_max": growth.skill_max(),
                 "admin": is_admin(),
                 "oknte_running": oknte.is_running_cached(),
             })
@@ -772,6 +822,25 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"history": STATE.history[-200:], "today": STATE.today})
         elif path == "/api/yield-suggestions":
             self._send(200, planner.yield_suggestions())
+        elif path == "/api/breakthrough-needs":
+            # 突破门槛视图（纯读）：等级 cur→tgt 跨越的每道门槛（30→31…）材料 + 持有/缺少，
+            # 数据全部来自 wiki charBreak 真实表与目录归属，无前端硬编码数字。
+            rows = []
+            for char in STATE.characters:
+                entry = planner.catalog_entry(char)
+                tracks = char.get("tracks") or {}
+                levels = tracks.get("char_level") if isinstance(tracks.get("char_level"), dict) else {}
+                rows.append({
+                    "id": char.get("id"), "name": char.get("name", ""),
+                    "level_cur": levels.get("cur", 0),
+                    "level_tgt": levels.get("tgt", 0),
+                    "awakening": char.get("awakening") or 0,
+                    "in_catalog": entry is not None,
+                    "gates": growth.character_breakthrough_rows(
+                        char, entry, STATE.inventory),
+                })
+            self._send(200, {"characters": rows,
+                             "skill_max": growth.skill_max()})
         elif path == "/api/preview":
             days = 3
             if "?" in self.path:
@@ -924,12 +993,27 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(body.get("characters"), list):
                 self._send(400, {"error": "characters 必须是数组"})
                 return
+            dupes = []
             with STATE.lock:
                 chars = [_sanitize_character(c) for c in body["characters"][:50]]
                 chars = _auto_fill_extra_needs(chars)
-                STATE.data["characters"] = chars
-                STATE.save()
+                # 后端重名互斥（此前只在前端拦截，绕过前端即可造出重名角色）
+                dupes = duplicate_character_names(chars)
+                if not dupes:
+                    STATE.data["characters"] = chars
+                    STATE.save()
+            if dupes:
+                self._send(409, {"error": "角色名重复（互斥录入）："
+                                          + "、".join(dupes) + "；请修正后再保存"})
+                return
             self._send(200, {"ok": True, "characters": STATE.characters})
+        elif path == "/api/characters/reorder":
+            ids = body.get("ids")
+            if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+                self._send(400, {"error": "ids 必须是字符串数组"})
+                return
+            reorder_characters([str(i) for i in ids])
+            self._send(200, {"ok": True})
         elif path == "/api/inventory":
             inv = body.get("inventory")
             if not isinstance(inv, dict):
@@ -1186,9 +1270,6 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/stop":
             ok, msg = RUNNER.stop()
             self._send(200, {"ok": ok, "message": msg})
-        elif path == "/api/teams":
-            STATE.ensure_today()
-            self._send(200, {"teams": _sanitize_teams(STATE.data)})
         elif path == "/api/today/clear-blacklist":
             cleared = clear_today_blacklist()
             self._send(200, {"ok": True, "cleared": cleared})
@@ -1399,6 +1480,49 @@ def _run_edge_app_window(url):
     return True
 
 
+def _backfill_characters_from_catalog():
+    """启动回填（schema v3 配套）：旧版 _sanitize_character 白名单缺陷曾把实机角色的
+    attribute/matter_state 洗成 null，导致弧盘/空幕适配过滤失效。这里按角色名从
+    游戏目录找回——只补空值，绝不覆盖已有数据；幂等（目录未命中则不动）。
+    另：wiki 都市特技快照已抓取时，为 city_talents 为空的目录命中角色预填特技名
+    与槽位数（1 或 2 位，按实机数据决定；等级留 0）。"""
+    chars = STATE.characters
+    if not chars:
+        return
+    try:
+        data = game_data.load()
+    except (OSError, ValueError):
+        return
+    try:
+        from .wiki_fetch import city_talents_by_name
+        wiki_talents = city_talents_by_name()
+    except Exception:  # noqa: BLE001 —— 快照缺失不阻塞回填
+        wiki_talents = {}
+    by_name = {c.get("name"): c for c in data.get("characters", []) if isinstance(c, dict)}
+    changed = False
+    with STATE.lock:
+        for char in chars:
+            entry = by_name.get(char.get("name"))
+            if not entry:
+                continue
+            for key in ("attribute", "matter_state"):
+                if not char.get(key) and entry.get(key):
+                    char[key] = entry[key]
+                    changed = True
+            if wiki_talents and not char.get("city_talents"):
+                talents = wiki_talents.get(char.get("name")) or []
+                prefill = [{"name": str(t.get("name", ""))[:32], "lv": 0}
+                           for t in talents[:2] if t.get("name")]
+                if prefill:
+                    char["city_talents"] = prefill
+                    char["city_talent_slots"] = 2 if len(prefill) > 1 else 1
+                    changed = True
+    if changed:
+        STATE.save()
+        print("启动回填：已按游戏目录/wiki 快照补回缺失的角色属性/物态/都市特技名"
+              "（只补空值，不覆盖已有数据）")
+
+
 def _graceful_shutdown(server):
     """窗口关闭后的优雅退出：先停执行器并给记账留时间，避免留下未决执行。"""
     print("窗口已关闭，正在退出…")
@@ -1429,6 +1553,8 @@ def main():
 def _run_panel():
     # 启动对账：上次面板异常退出遗留的运行状态在此判定（只读检测，不拉起/杀进程）
     summary = RUNNER.recover_on_startup()
+    # 启动回填：旧版缺陷洗掉的角色属性/物态按目录找回（只补空值，见函数说明）
+    _backfill_characters_from_catalog()
     if summary.get("pending"):
         print("恢复提示：检测到未决执行（accounted 前崩溃遗留），处理前不会开始新的执行：")
         for p in summary["pending"]:
