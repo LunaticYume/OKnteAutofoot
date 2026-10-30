@@ -332,7 +332,8 @@ async function renderOverview(){
   const pend = run.pending||[];
   const limit = st.settings.daily_stamina_limit;
   const p = plan.plan||{}, steps = p.steps||[], d = p.detail;
-  const used = today.used_stamina??0;
+  // 日常与追猎共用游戏内体力池：总览展示合并口径（与 planner.make_plan 的预算扣减一致）
+  const used = (today.used_stamina??0) + (today.hunter_spent??0);
   const stepsHtml = steps.length ? `<div class="steps">${steps.map((s,i)=>`
       <div class="step"><div class="step-n">${i+1}</div>
         <div class="step-main">
@@ -378,7 +379,7 @@ async function renderOverview(){
     </div>
     <div class="tiles">
       <div class="tile">${ringSvg(limit>0?used/limit:0)}
-        <div class="t-main"><b class="num">${used}<span style="font-size:13px;color:var(--faint)">/${limit}</span></b><span>今日已耗体力（含手动）</span></div></div>
+        <div class="t-main"><b class="num">${used}<span style="font-size:13px;color:var(--faint)">/${limit}</span></b><span>今日已耗体力（日常+追猎）</span></div></div>
       <div class="tile"><div class="t-main"><b class="num">${p.budget??0}</b><span>日常剩余额度</span></div></div>
       <div class="tile">${ringSvg(hunterPct)}
         <div class="t-main"><b class="num">${today.hunter_spent??0}<span style="font-size:13px;color:var(--faint)">/${st.settings.anomaly_hunter_stamina??180}</span></b><span>追猎已耗 / 额度</span></div></div>
@@ -515,7 +516,7 @@ async function doDryRun(){
   }catch(e){ body.innerHTML=`<div class="banner warn">预演失败：${esc(e.message)}</div>`; }
 }
 function stateShort(run){
-  const map={idle:"空闲",running:"运行中",stopping:"停止中",waiting:"等待中",done:"已完成",error:"出错",interrupted:"已中断"};
+  const map={idle:"空闲",running:"运行中",stopping:"停止中",waiting:"等待中",done:"已完成",stopped:"已停止",error:"出错",interrupted:"已中断"};
   const mode = run.mode==="hunter"?"【追猎】":run.mode==="daily"?"【日常】":"";
   return mode + (map[run.state]||run.state);
 }
@@ -580,11 +581,17 @@ async function startHunterRun(){
 }
 
 /* ---------- 角色（含角色库/武器库） ---------- */
-function renderChars(){
+async function renderChars(){
+  $("#main").innerHTML='<div class="card"><div class="muted">加载中…</div></div>';
   const st = BOOT.state;
   const tracks = BOOT.tables.requirements.tracks||{};
   const added = new Set(st.characters.map(c=>c.name));  // 互斥录入：已添加的名字从目录下拉消失
   const gdNames = (BOOT.game_characters||[]).filter(n=>!added.has(n.replace(/（未上线）$/,"")));
+  // 培养进度快照（服务端按 四技能/天赋/觉醒目标/轨道 计算）：失败不阻塞角色页
+  const snap = await api("/api/status").catch(()=>null);
+  const rowsByChar = {};
+  if(snap && snap.snapshot) (snap.snapshot.characters||[]).forEach(c=>{ rowsByChar[c.name]=c.rows||[]; });
+  const rowsOf = name => rowsByChar[name];
   $("#main").innerHTML = `
     <datalist id="charNameList">${(BOOT.game_characters||[])
       .map(n=>`<option value="${esc(n.replace(/（未上线）$/,""))}">`).join("")}</datalist>
@@ -595,7 +602,7 @@ function renderChars(){
         <button class="btn sec" id="btnImportLibs">⬇ 导入全角色/全武器到库</button>
       </div></div>
     <div class="card"><div class="row" style="justify-content:space-between">
-      <h3 style="margin:0">角色列表<span class="h-sub">列表顺序 = 补齐优先级，从上到下；异能系下拉已用可读名，弧盘/空幕请到专属页按名字选择</span></h3>
+      <h3 style="margin:0">角色列表<span class="h-sub">列表顺序 = 补齐优先级，从上到下；异能系下拉已用可读名，弧盘与空幕在各自专属页维护</span></h3>
       <button class="btn" id="addChar">＋ 新建角色</button>
     </div></div>
     <div id="charList"></div>
@@ -608,7 +615,7 @@ function renderChars(){
   const list = $("#charList");
   const parkedBox = $("#parkedBox");
   const place = c => {
-    const el = charCard(c, st.characters.findIndex(x=>x.id===c.id), tracks);
+    const el = charCard(c, st.characters.findIndex(x=>x.id===c.id), tracks, rowsOf);
     (c.enabled ? list : document.getElementById("parkedCards")).appendChild(el);
   };
   const activeCount = st.characters.filter(c=>c.enabled).length;
@@ -619,9 +626,11 @@ function renderChars(){
   st.characters.forEach(place);
   $("#addChar").onclick = ()=>{
     st.characters.push({id:Math.random().toString(16).slice(2,10),name:"新角色",enabled:true,
-      weapon:"",mats:{ability:1,arc:1,console:1},
+      weapon:"",mats:{ability:1,arc:1,console:1},awakening:0,awakening_tgt:0,
+      skills:{normal:{cur:1,tgt:1},variable:{cur:1,tgt:1},orbit:{cur:1,tgt:1},assist:{cur:1,tgt:1}},
+      talent_unlocks:[false,false],city_talents:[],city_talent_slots:1,
       tracks:Object.fromEntries(Object.keys(tracks).map(k=>[k,{cur:1,tgt:1}])),extra_needs:{}});
-    const el=charCard(st.characters[st.characters.length-1], st.characters.length-1, tracks);
+    const el=charCard(st.characters[st.characters.length-1], st.characters.length-1, tracks, rowsOf);
     el.classList.add("open");
     list.appendChild(el);
     el.scrollIntoView({behavior:"smooth",block:"center"});
@@ -630,23 +639,38 @@ function renderChars(){
     const chars=[];
     document.querySelectorAll(".char").forEach(el=>{
       const base=st.characters.find(ch=>ch.id===el.dataset.cid) || st.characters[+el.dataset.idx];
-      const tracks={};
-      el.querySelectorAll("[data-track]").forEach(inp=>{tracks[inp.dataset.track]=tracks[inp.dataset.track]||{};tracks[inp.dataset.track][inp.dataset.tk]=+inp.value||0;});
+      // 轨道合并而非整体重建：本页只渲染角色等级/异能等级两行，arc_level/console_level
+      // 由弧盘页/空幕页维护——此前整体覆盖把那两条轨道重置回 1→1（弧盘信息丢失根因）
+      const tracks={...(base.tracks||{})};
+      el.querySelectorAll("[data-track]").forEach(inp=>{
+        tracks[inp.dataset.track]={...(tracks[inp.dataset.track]||{}),[inp.dataset.tk]:+inp.value||0};});
       const extra={};
       el.querySelectorAll(".extra-list .row").forEach(row=>{
         const sel=row.querySelector("select"), num=row.querySelector("input[type=number]");
         const v=+num?.value||0;
         if(v>0 && sel?.value) extra[sel.value]=v;
       });
-      const skills={};
+      const skills={...(base.skills||{})};
       el.querySelectorAll(".c-skill").forEach(inp=>{
-        skills[inp.dataset.skill]=skills[inp.dataset.skill]||{};
-        skills[inp.dataset.skill][inp.dataset.tk]=+inp.value||0;});
+        skills[inp.dataset.skill]={...(skills[inp.dataset.skill]||{}),[inp.dataset.tk]:+inp.value||0};});
+      // 都市特技：两个槽位的已填数据都保留（关闭第2位只是隐藏/锁定入口，
+      // 不删除已录的特技记录；city_talent_slots 控制开放数）
+      const city_talents=[];
+      el.querySelectorAll(".c-ct-name").forEach(inp=>{
+        const name=inp.value.trim(); if(!name) return;
+        const lv=el.querySelector(`.c-ct-lv[data-ct="${inp.dataset.ct}"]`);
+        city_talents.push({name, lv:+lv?.value||0});
+      });
+      const ct2=el.querySelector(".c-ct2-open");
       chars.push({...base,
         name:el.querySelector(".c-name").value.trim()||base.name,
         enabled:el.querySelector(".c-enabled").checked,
         awakening:+el.querySelector(".c-awaken").value||0,
-        skills, city_talents:base.city_talents||[], stigma_groups:base.stigma_groups||[],
+        awakening_tgt:+el.querySelector(".c-awaken-tgt").value||0,
+        talent_unlocks:[...el.querySelectorAll(".c-talent")].map(x=>x.checked),
+        skills, city_talents,
+        city_talent_slots: ct2?.checked?2:1,
+        stigma_groups:base.stigma_groups||[],
         // 弧盘绑定与武器在「弧盘」页维护：本页保留原值
         weapon:base.weapon||"",
         mats:{ability:+el.querySelector(".c-ability").value||base.mats?.ability||1,
@@ -708,11 +732,21 @@ function abilityOptionsFor(c){
   const series=c.skill_series||(attr?a2s[attr]:null);
   return seriesOptions("ability", 5, c.mats?.ability, series?+String(series).replace("ability_",""):null);
 }
-function charCard(c,i,tracks){
+function abilitySeriesOptions(sel){
+  /* 技能书系下拉（图鉴录入用）：可读名，绝不显示 ability_N 内部ID */
+  const targets=(BOOT.tables.materials||{}).targets||[];
+  return [1,2,3,4,5].map(n=>{
+    const t=targets.find(x=>x.id===`ability_${n}`);
+    const label=t?(t.display_name||t.name).split("（")[0]:`技能书系${n}`;
+    return `<option value="ability_${n}" ${sel===`ability_${n}`?"selected":""}>${esc(label)}</option>`;
+  }).join("");
+}
+function charCard(c,i,tracks,rowsOf){
   const div=document.createElement("div");
   div.className="char"; div.dataset.idx=i; div.dataset.cid=c.id;
+  const skillTop = BOOT.skill_max||10;  // wiki skillUpgrade 实际上限（bootstrap 下发）
   const trackRows = Object.entries(tracks)
-    .filter(([k])=>k==="char_level"||k==="ability_level")  // 弧盘/空幕移至专属页
+    .filter(([k])=>k==="char_level")  // 技能材料已按四技能逐级计算；弧盘/空幕在专属页
     .map(([k,t])=>`
     <div class="row" style="gap:6px"><label style="width:92px">${esc(t.name)}</label>
       <input type="number" data-track="${k}" data-tk="cur" value="${c.tracks?.[k]?.cur??1}" min="0"> <span class="muted">→</span>
@@ -720,6 +754,20 @@ function charCard(c,i,tracks){
       <button class="btn sec mini" data-act="maxTrack" data-max="${t.max??999}" title="目标一键设为满级">满级</button>
     </div>`).join("");
   const extraRows = Object.entries(c.extra_needs||{}).map(([m,v])=>extraRow(m,v)).join("") || `<div class="muted extra-empty">（未填写）</div>`;
+  // 培养进度与材料缺口（服务端 snapshot 按 四技能/天赋/觉醒目标/轨道 实时计算）
+  const progRows=(rowsOf?(rowsOf(c.name)||[]):[])
+    .filter(r=>r.need>0)
+    .map(r=>`<div class="row" style="gap:6px"><span class="chip acc" style="max-width:220px">${esc(r.name)}</span>
+      <span class="num">需 ${r.need} / 持 ${r.have} / 差 ${r.gap}</span>${r.farmable?`<span class="muted num">约 ${r.runs} 轮</span>`:`<span class="muted">外部来源</span>`}</div>`).join("")
+    || `<div class="muted">（无材料需求：设置目标等级/觉醒档后自动计算）</div>`;
+  const ctSlots = c.city_talent_slots ?? ((c.city_talents?.length>1)?2:1);
+  const ct = i2 => (c.city_talents||[])[i2]||{};
+  const ctEditor = i2 => `
+    <input class="c-ct-name" data-ct="${i2}" value="${esc(ct(i2).name||"")}" placeholder="特技名${i2+1}" style="width:110px">
+    <select class="c-ct-lv" data-ct="${i2}">${[0,1,2,3,4,5].map(n=>`<option value="${n}" ${(ct(i2).lv??0)===n?"selected":""}>Lv.${n}</option>`).join("")}</select>`;
+  const nmChip = c.cassette?.set
+    ? "卡带 " + esc(c.cassette.set) + "·" + esc(c.cassette.main || "未选主属性") + " · 驱动块 " + (c.drivers||[]).length + " 件"
+    : "卡带未选择 · 驱动块 " + (c.drivers||[]).length + " 件";
   div.innerHTML=`
     <div class="head">
       <span class="drag-handle" title="拖动排序" style="cursor:grab;color:var(--faint);font-size:15px;letter-spacing:-1px">⋮⋮</span>
@@ -727,36 +775,53 @@ function charCard(c,i,tracks){
       <input class="c-name" list="charNameList" style="width:150px" value="${esc(c.name)}" placeholder="角色名">
       <span class="muted">异能系</span><select class="c-ability" style="max-width:230px">${abilityOptionsFor(c)}</select>
       <span class="grow"></span>
-      <button class="btn sec mini" data-act="maxAll" title="角色/异能等级目标全部设为满级">全部满级</button>
+      <button class="btn sec mini" data-act="maxAll" title="角色等级/技能/觉醒目标全部设为满级">全部满级</button>
       <button class="btn sec mini" data-act="up" title="上移（优先级更高）">↑</button>
       <button class="btn sec mini" data-act="down" title="下移">↓</button>
       <button class="btn sec mini" data-act="del">删除</button>
       <button class="btn sec mini" data-act="fold">详情</button>
     </div>
     <div class="body">
-      <div class="row" style="gap:6px;margin-bottom:8px">
+      <div class="row" style="gap:6px;margin-bottom:8px;flex-wrap:wrap">
         <span class="muted">觉醒档位</span>
-        <select class="c-awaken">${[0,1,2,3,4,5,6].map(n=>`<option value="${n}" ${(c.awakening??0)===n?"selected":""}>觉醒 ${n}</option>`).join("")}</select>
-        <span class="muted">技能等级（普攻/变轨/极轨/援护 →）</span>
+        <select class="c-awaken" title="当前觉醒档（0=未突破）">${[0,1,2,3,4,5,6].map(n=>`<option value="${n}" ${(c.awakening??0)===n?"selected":""}>${n}</option>`).join("")}</select>
+        <span class="muted">→</span>
+        <select class="c-awaken-tgt" title="觉醒目标档（突破材料按档差计算）">${[0,1,2,3,4,5,6].map(n=>`<option value="${n}" ${(c.awakening_tgt??c.awakening??0)===n?"selected":""}>${n}</option>`).join("")}</select>
+        <span class="muted">技能（普攻/变轨/极轨/援护 →，上限 ${skillTop}）</span>
         ${["normal","variable","orbit","assist"].map(k=>{
           const names={normal:"普攻",variable:"变轨",orbit:"极轨",assist:"援护"};
           const cur=c.skills?.[k]?.cur??1, tgt=c.skills?.[k]?.tgt??1;
           return `<span class="muted">${names[k]}</span>
-            <input type="number" class="c-skill" data-skill="${k}" data-tk="cur" value="${cur}" min="0" max="10" style="width:56px">
+            <input type="number" class="c-skill" data-skill="${k}" data-tk="cur" value="${cur}" min="0" max="${skillTop}" style="width:56px">
             <span class="muted">→</span>
-            <input type="number" class="c-skill" data-skill="${k}" data-tk="tgt" value="${tgt}" min="0" max="10" style="width:56px">`;
+            <input type="number" class="c-skill" data-skill="${k}" data-tk="tgt" value="${tgt}" min="0" max="${skillTop}" style="width:56px">`;
         }).join("")}
+        <label class="switch" title="天赋解锁一（wiki talentUnlock，开启计入技能材料）"><input type="checkbox" class="c-talent" data-tier="0" ${c.talent_unlocks?.[0]?"checked":""}><span class="sl"></span></label><span class="muted">天赋1</span>
+        <label class="switch" title="天赋解锁二（wiki talentUnlock，开启计入技能材料）"><input type="checkbox" class="c-talent" data-tier="1" ${c.talent_unlocks?.[1]?"checked":""}><span class="sl"></span></label><span class="muted">天赋2</span>
+      </div>
+      <div class="row" style="gap:6px;margin-bottom:8px;flex-wrap:wrap">
+        <span class="muted">都市特技</span>
+        ${ctEditor(0)}
+        <label class="switch" title="按角色实际情况开放第 2 特技位（默认关闭，不强制显示）"><input type="checkbox" class="c-ct2-open" ${ctSlots>1?"checked":""}><span class="sl"></span></label><span class="muted">开放第2位</span>
+        <span class="ct2-wrap" style="${ctSlots>1?"":"display:none"}">${ctEditor(1)}</span>
       </div>
       <div class="grid" style="margin-bottom:10px">${trackRows}</div>
-      <div class="row" style="margin:6px 0">
-        <span class="chip acc">弧盘 → 「弧盘/空幕」页</span>
-        <span class="chip acc">空幕 → 「弧盘/空幕」页</span>
+      <div class="row" style="margin:6px 0;flex-wrap:wrap">
+        <span class="chip acc">弧盘：${esc(c.weapon||"未选择")}（「弧盘」页维护）</span>
+        <span class="chip acc">空幕：${nmChip}（「空幕」页维护）</span>
       </div>
-      <div style="font-size:13px;color:var(--acc);margin:6px 0">直接材料需求 <span class="muted">（BOSS/周本/小怪已按目录自动计算；自定义材料可手填叠加）</span></div>
+      <div style="font-size:13px;color:var(--acc);margin:6px 0">培养进度与材料缺口 <span class="muted">（四技能/天赋/觉醒目标/轨道实时计算；技能书/小怪/周本/BOSS 已按逐级逐档模型）</span></div>
+      <div class="grid prog-list">${progRows}</div>
+      <div style="font-size:13px;color:var(--acc);margin:6px 0">额外材料登记 <span class="muted">（自定义材料；与模型重合的键不叠加，避免双记）</span></div>
       <div class="grid extra-list">${extraRows}</div>
       <button class="btn sec mini" data-act="addExtra" style="margin-top:8px">＋ 添加材料</button>
     </div>`;
   div.querySelector('[data-act="fold"]').onclick=()=>div.classList.toggle("open");
+  const ct2Toggle=div.querySelector(".c-ct2-open");
+  if(ct2Toggle) ct2Toggle.onchange=()=>{
+    const wrap=div.querySelector(".ct2-wrap");
+    if(wrap) wrap.style.display=ct2Toggle.checked?"":"none";
+  };
   const handle = div.querySelector(".drag-handle");
   handle.addEventListener("mousedown", ()=>{ div.draggable = true; });
   handle.addEventListener("mouseup", ()=>{ div.draggable = false; });
@@ -768,11 +833,12 @@ function charCard(c,i,tracks){
     const srcId = e.dataTransfer.getData("text/plain");
     if(!srcId || srcId===div.dataset.cid) return;
     const list = document.getElementById("charList");
+    if(!list || !list.contains(div)) return;  // 不想练区的卡片不参与拖动排序
     const src = list.querySelector(`.char[data-cid="${srcId}"]`);
     if(!src || src===div) return;
     list.insertBefore(src, div);
     if(window.reindexChars) window.reindexChars();
-    toast("排序已更新，记得点「保存角色」");
+    persistCharOrder();
   });
   div.querySelector(".c-enabled").onchange = ()=>{
     const target = div.querySelector(".c-enabled").checked
@@ -791,9 +857,11 @@ function charCard(c,i,tracks){
       const btn=row.querySelector('[data-act="maxTrack"]');
       if(tgt&&btn) tgt.value=btn.dataset.max;
     });
+    div.querySelectorAll(".c-skill[data-tk='tgt']").forEach(inp=>inp.value=skillTop);
+    const at=div.querySelector(".c-awaken-tgt"); if(at) at.value=6;
   };
-  div.querySelector('[data-act="up"]').onclick=()=>{if(div.previousElementSibling)div.parentNode.insertBefore(div,div.previousElementSibling);reindex();};
-  div.querySelector('[data-act="down"]').onclick=()=>{if(div.nextElementSibling)div.parentNode.insertBefore(div.nextElementSibling,div);reindex();};
+  div.querySelector('[data-act="up"]').onclick=()=>{if(div.previousElementSibling){div.parentNode.insertBefore(div,div.previousElementSibling);reindex();persistCharOrder();}};
+  div.querySelector('[data-act="down"]').onclick=()=>{if(div.nextElementSibling){div.parentNode.insertBefore(div.nextElementSibling,div);reindex();persistCharOrder();}};
   div.querySelector('[data-act="addExtra"]').onclick=()=>{
     div.querySelector(".extra-empty")?.remove();
     div.querySelector(".extra-list").insertAdjacentHTML("beforeend",extraRow("ability_1",0));
@@ -813,6 +881,17 @@ window.updateParkedCount = ()=>{
   const sum=document.getElementById("parkedSummary"); if(sum) sum.textContent=`不想练（${n}）`;
   box.style.display = n ? "" : "none";
 };
+async function persistCharOrder(){
+  /* 拖动/上移下移后立即持久化顺序（专用 reorder 端点只按 id 重排，不重建角色对象，
+     任何字段都不会丢；刷新与重启后顺序保留——列表顺序=补齐优先级） */
+  const host=document.getElementById("charList"); if(!host) return;
+  const ids=[...host.querySelectorAll(".char")].map(el=>el.dataset.cid).filter(Boolean);
+  try{ await api("/api/characters/reorder",{ids});
+    const byId=new Map((BOOT.state.characters||[]).map(c=>[c.id,c]));
+    BOOT.state.characters=ids.map(i=>byId.get(i)).filter(Boolean)
+      .concat((BOOT.state.characters||[]).filter(c=>!ids.includes(c.id)));
+  }catch(e){alertErr(e);}
+}
 
 /* ---------- 弧盘（武器中心：适配过滤 + 搜索 + S/A 排序 + 材料按目标计算） ---------- */
 async function renderArc(){
@@ -820,14 +899,14 @@ async function renderArc(){
   const tracks = BOOT.tables.requirements.tracks||{};
   const chars = BOOT.state.characters||[];
   const gd = await api("/api/game-data").catch(()=>({}));
-  const weaponMeta = {};  // 目录武器名 → {matter_state, rarity}（B 级忽略）
+  const weaponMeta = {};  // 目录武器名 → {matter_state, rarity}（全稀有度收录：适配过滤按物态、排序按稀有度）
   (gd.weapons||[]).forEach(w=>{
-    if(w && w.name && (w.rarity==="S" || w.rarity==="A"))
-      weaponMeta[w.name] = {matter_state: w.matter_state||"", rarity: w.rarity||"A"};
+    if(w && w.name)
+      weaponMeta[w.name] = {matter_state: w.matter_state||"", rarity: w.rarity||""};
   });
   const state_to_can = gd.matter_state_to_can||{};
   const targets = (BOOT.tables.materials||{}).targets||[];
-  const arcDisplayName = n => { const t=targets.find(x=>x.id===`arc_${n}`); return t?(t.display_name||t.name):`arc_${n}`; };
+  const arcDisplayName = n => { const t=targets.find(x=>x.id===`arc_${n}`); return t?(t.display_name||t.name):`罐头系${n}（名称缺失）`; };
   const snap = await api("/api/status").catch(()=>null);
   const rowsByChar = {};
   if(snap && snap.snapshot) (snap.snapshot.characters||[]).forEach(c=>{ rowsByChar[c.name] = c.rows||[]; });
@@ -868,16 +947,18 @@ async function renderArc(){
   };
 }
 function arcWeaponOptions(c, weaponMeta, term){
-  /* 只显示与角色物态适配的弧盘（角色物态未知时全显示）+ 武器库实例 + 自定义；
-     S→A 排序；term 搜索过滤 */
+  /* 只显示与角色物态适配的弧盘（角色物态未知时全显示并提示）；
+     武器库实例与目录条目一律按目录元数据（物态/稀有度）过滤与排序——
+     此前 from:"lib" 无条件放行，导致"导入全库后下拉=全量"（适配范围失效）；
+     S→A→B 排序；term 搜索过滤；已选弧盘即使不在适配列表也保留显示（不丢已选值） */
   const libNames=[...new Set(BOOT.state.weapon_library||[])];
-  const all=[...libNames.map(n=>({name:n, from:"lib"})),
+  const all=[...libNames.map(n=>({name:n, from:"lib", ...(weaponMeta[n]||{})})),
              ...Object.keys(weaponMeta).filter(n=>!libNames.includes(n))
                       .map(n=>({name:n, from:"cat", rarity:weaponMeta[n].rarity, ms:weaponMeta[n].matter_state}))];
   const 适配 = c.matter_state||"";
   const rank = r => r==="S"?0:r==="A"?1:2;
-  let rows = all.map(x=>({...x, rarity: x.rarity || "", ms: x.ms || ""}));
-  if(适配) rows = rows.filter(x=>!x.ms || x.ms===适配 || x.from==="lib");
+  let rows = all.map(x=>({name:x.name, from:x.from, rarity:x.rarity||"", ms:x.ms||x.matter_state||""}));
+  if(适配) rows = rows.filter(x=>x.ms===适配);
   if(term) rows = rows.filter(x=>x.name.toLowerCase().includes(term.toLowerCase()));
   rows.sort((a,b)=> (rank(a.rarity)-rank(b.rarity)) || a.name.localeCompare(b.name,"zh"));
   let opts=`<option value="" ${!c.weapon?"selected":""}>（未选择弧盘）</option>`;
@@ -885,7 +966,7 @@ function arcWeaponOptions(c, weaponMeta, term){
     const tag=x.rarity?`（${x.rarity}）`:"";
     opts+=`<option value="${esc(x.name)}" ${x.name===c.weapon?"selected":""}>${esc(x.name)}${tag}</option>`;});
   if(c.weapon && !rows.some(x=>x.name===c.weapon))
-    opts+=`<option value="${esc(c.weapon)}" selected>${esc(c.weapon)}（自定义）</option>`;
+    opts+=`<option value="${esc(c.weapon)}" selected>${esc(c.weapon)}（当前已选·不在适配列）</option>`;
   return opts;
 }
 function arcCard(c, tracks, weaponMeta, state_to_can, arcDisplayName, gapOf){
@@ -962,7 +1043,17 @@ async function renderNullmux(){
   const subStats=(NULLMUX_CASSETTES||{}).sub_stats||[];
   const driverMains=(NULLMUX_CASSETTES||{}).driver_main_stats||["攻击力","生命值"];
   const chars=BOOT.state.characters||[];
+  const consoleT=(BOOT.tables.requirements.tracks||{}).console_level||{max:20};
   const elemOf=c=>({光:"光系",暗:"暗系",灵:"灵系",咒:"咒系",相:"相系",魂:"魂系"}[c.attribute]||"");
+  const nodeOpts=cur=>{
+    /* 空幕结点下拉：只列 materials 数据表中真实存在的可刷副本（兔子洞节点），
+       名称取 display_name——移除/未收录的副本不会出现在数据表，也就不会出现 */
+    const nodes=(BOOT.tables.materials.targets||[]).filter(t=>/^console_\d+$/.test(t.id));
+    return `<option value="" ${!cur?"selected":""}>（未选择空幕结点）</option>`
+      + nodes.map(t=>{
+        const n=+t.id.split("_")[1];
+        return `<option value="${n}" ${+cur===n?"selected":""}>${esc(t.display_name||t.name)}</option>`;}).join("");
+  };
   const suitOpts=(c,cur)=>{
     const el=elemOf(c);
     const fit=sets.filter(x=>el && x.element===el);
@@ -971,25 +1062,26 @@ async function renderNullmux(){
     let out=`<option value="" ${!cur?"selected":""}>（未选择卡带）</option>`;
     [...fit,...generic,...others].forEach(x=>{
       out+=`<option value="${esc(x.name)}" ${x.name===cur?"selected":""}>${esc(x.name)}${x.element&&x.element!=="泛用"?`（${esc(x.element)}）`:"（泛用）"}</option>`;});
-    return out.join("");
+    return out;
   };
   try {
     $("#main").innerHTML=`
-      <div class="banner info">空幕装备 = <b>1 张卡带</b>（主属性×1 + 副词条×4，按角色属性适配）+ <b>多个驱动块</b>（主属性固定 攻击力+生命值，只记录）。
-        角色旁仅展示最佳 2-3 组词条。${sets.length?`已载入 ${sets.length} 套卡带`:"（卡带数据未抓取：点下方按钮从 wiki 拉取）"}</div>
+      <div class="banner info">空幕装备 = <b>1 张卡带</b>（主属性×1 + 副词条×4，按角色属性适配）+ <b>多个驱动块</b>（主属性固定 攻击力+生命值，只记录）+ <b>空幕结点/等级</b>（刷取目标与等级目标）。
+        角色旁仅展示最佳 2-3 组词条（用户维护，与实际装备记录分区）。${sets.length?`已载入 ${sets.length} 套卡带`:"（卡带数据未抓取：点下方按钮从 wiki 拉取）"}</div>
       <div class="card"><div class="row">
         <button class="btn sec mini" id="btnFetchCassette">${sets.length?"🔄 重新拉取卡带数据":"🌐 从 wiki 拉取卡带数据"}</button>
         <span class="muted" id="cassetteFetchInfo"></span></div></div>
-      <div id="nmList">${chars.length?chars.map(c=>nullmuxCard(c,sets,mainStats,subStats,driverMains,suitOpts,statOpts)).join(""):""}</div>
+      <div id="nmList">${chars.length?chars.map(c=>nullmuxCard(c,sets,mainStats,subStats,driverMains,suitOpts,statOpts,nodeOpts,consoleT)).join(""):""}</div>
       <div class="row" style="margin-top:12px"><button class="btn big" id="saveNm">保存空幕记录</button></div>`;
   } catch (e) {
     // 渲染失败也要给出可用出口（拉取按钮 + 错误信息），绝不白屏/残留上一页
     $("#main").innerHTML=`
       <div class="banner warn">空幕页渲染失败：${esc(e.message)}</div>
       <div class="card"><div class="row">
-        <button class="btn sec mini" id="btnFetchCassette">🌐 从 wiki 拉取卡带数据</button></div></div>`;
+        <button class="btn sec mini" id="btnFetchCassette">🌐 从 wiki 拉取卡带数据</button></div></div>
+      <div id="nmList"></div>`;
   }
-  if(!chars.length) $("#nmList").innerHTML=`<div class="empty">还没有角色</div>`;
+  if(!chars.length && $("#nmList")) $("#nmList").innerHTML=`<div class="empty">还没有角色</div>`;
   $("#btnFetchCassette").onclick=async()=>{
     const btn=$("#btnFetchCassette"); btn.disabled=true; btn.textContent="拉取中…（约 15 秒）";
     try{ const fr=await fetch("/api/wiki/fetch-cassettes",{method:"POST",signal:AbortSignal.timeout(120000)});
@@ -997,7 +1089,8 @@ async function renderNullmux(){
       NULLMUX_CASSETTES=null; renderNullmux();
     }catch(e){alertErr(e); btn.disabled=false; btn.textContent="🌐 从 wiki 拉取卡带数据";}
   };
-  $("#saveNm").onclick=async()=>{
+  const saveNmBtn=$("#saveNm");
+  if(saveNmBtn) saveNmBtn.onclick=async()=>{
     const charsOut=BOOT.state.characters.map(c=>{
       const el=document.querySelector(`.nm-card[data-cid="${c.id}"]`);
       if(!el) return c;
@@ -1006,23 +1099,37 @@ async function renderNullmux(){
         shape:row.querySelector(".d-shape").value, quality:row.querySelector(".d-quality").value,
         main:row.querySelector(".d-main").value, subs:[...row.querySelectorAll(".d-sub")].map(x=>x.value||"").slice(0,4)}))
         .filter(d=>d.shape);
-      return {...c, cassette, drivers};
+      // 空幕结点/等级（拆页后恢复的编辑入口）；轨道合并保存，不动其他页维护的字段
+      const mats={...(c.mats||{})};
+      const nodeSel=el.querySelector(".nm-node");
+      if(nodeSel) mats.console=+nodeSel.value||mats?.console||1;
+      const tracks={...(c.tracks||{})};
+      el.querySelectorAll(".nm-console").forEach(inp=>{
+        tracks.console_level={...(tracks.console_level||{}),[inp.dataset.tk]:+inp.value||0};});
+      return {...c, cassette, drivers, mats, tracks};
     });
     try{ const r=await api("/api/characters",{characters:charsOut});
       BOOT.state.characters=r.characters||charsOut; toast("空幕记录已保存"); renderNullmux();
     }catch(e){alertErr(e);}
   };
 }
-function nullmuxCard(c,sets,mainStats,subStats,driverMains,suitOpts,statOpts){
+function nullmuxCard(c,sets,mainStats,subStats,driverMains,suitOpts,statOpts,nodeOpts,consoleT){
   const cassette=c.cassette||{};
   const drivers=c.drivers||[];
   const groups=(c.stigma_groups&&c.stigma_groups.length)?c.stigma_groups:[{label:"词条组 1",main:"",subs:["","","",""]}];
   return `
     <div class="card nm-card" data-cid="${esc(c.id)}">
-      <h3>${esc(c.name)}<span class="h-sub">卡带 ×1 + 驱动块（只记录）</span></h3>
+      <h3>${esc(c.name)}<span class="h-sub">卡带 ×1 + 驱动块（只记录）+ 空幕结点/等级</span></h3>
       <div class="set-row"><label>卡带套装</label>
         <select class="nm-set" style="max-width:260px">${suitOpts(c,cassette.set)}</select>
         <label>主属性</label><select class="nm-main" style="width:140px">${statOpts(mainStats,cassette.main)}</select></div>
+      <div class="set-row"><label>空幕结点</label>
+        <select class="nm-node" style="max-width:240px">${nodeOpts(c.mats?.console)}</select>
+        <label>空幕等级</label>
+        <input type="number" class="nm-console" data-tk="cur" value="${c.tracks?.console_level?.cur??1}" min="0" style="width:70px">
+        <span class="muted">→</span>
+        <input type="number" class="nm-console" data-tk="tgt" value="${c.tracks?.console_level?.tgt??1}" min="0" max="${consoleT?.max??20}" style="width:70px">
+        <span class="muted">（逐级消耗 wiki 未收录，留空待校准）</span></div>
       <div class="row" style="margin:6px 0 2px"><span class="muted">最佳词条组（≤3 组）</span>
         <button class="btn sec mini nm-add-group">＋ 词条组</button></div>
       ${(groups||[]).map((g,gi)=>`
@@ -1192,10 +1299,34 @@ async function renderUpgradeBlock(host){
   $("#btnUpgRefetch").onclick=async()=>{ UPGRADES_CACHE=undefined; renderUpgradeBlock(host); };
 }
 
+async function renderBreakthroughBlock(host){
+  /* 角色突破逐档材料（本地权威模型）：wiki charBreak 逐档表 + 目录材料归属 + 库存持有 */
+  host.innerHTML='<div class="muted">加载中…</div>';
+  let r;
+  try{ r=await api("/api/breakthrough-needs"); }
+  catch(e){ host.innerHTML=`<div class="banner warn">加载失败：${esc(e.message)}</div>`; return; }
+  const rows=(r.characters||[]).filter(c=>c.stages&&c.stages.length);
+  if(!rows.length){
+    host.innerHTML=`<div class="muted">没有待突破的角色：把角色卡的「觉醒目标」调高于「当前档」即自动出现逐档材料与缺口。</div>`;
+    return;
+  }
+  host.innerHTML=rows.map(c=>`
+    <div style="margin:10px 0 4px"><b>${esc(c.name)}</b>
+      <span class="muted num">觉醒 ${c.awakening} → ${c.awakening_tgt}</span>
+      ${c.in_catalog?"":`<span class="tag warn">目录未收录：BOSS/小怪归属缺失，仅硬币可算</span>`}</div>
+    <table><tr><th>档位</th><th>突破门槛</th><th>材料（需 / 持 / 缺）</th></tr>
+      ${c.stages.map(s=>`<tr><td class="num"><b>第 ${s.stage} 档</b></td><td class="num">Lv${s.level_gate}</td>
+        <td>${s.mats.map(m=>`${esc(m.name)} <span class="num">需${m.need} / 持${m.have} / 缺<b>${m.short}</b></span>`).join("、")||"（材料归属未收录）"}</td></tr>`).join("")}
+    </table>`).join("")
+    +`<div class="muted" style="margin-top:6px">数据源：wiki charBreak 逐档真实表（本地 mysqil 快照）+ 目录材料归属；与角色页培养缺口同源，不做前端硬编码。</div>`;
+}
+
 function renderTables(){
   const y=BOOT.tables.yields.per_run, hy=BOOT.tables.yields.hunter_yield||{};
   const M=BOOT.tables.materials, all=allMaterials();
   $("#main").innerHTML=`
+    <div class="card"><h3>角色突破逐档材料（觉醒档 → 目标档）<span class="h-sub">按角色计算 需/持/缺；调高角色卡「觉醒目标」即可规划后续档位</span></h3>
+      <div id="btBody"><div class="muted">加载中…</div></div></div>
     <div class="card"><h3>角色突破 / 异能技能材料表<span class="h-sub">来自 wiki 角色页逐项数据；按角色查看</span></h3>
       <div id="upgBody"><div class="muted">加载中…</div></div></div>
     <div class="card"><h3>每轮产出<span class="h-sub">体力本 40 体力/轮，务必校准：掉落随世界等级变化；填小=多刷，填大=少刷</span></h3>
@@ -1225,10 +1356,11 @@ function renderTables(){
     </div>
     <div class="card"><h3>养成需求表<span class="h-sub">等级段 → 材料数量，表单编辑</span></h3>
       <div id="reqEditor"></div>
-      <div class="muted" style="margin:8px 0">角色经验/弧盘经验/技能书/罐头/空幕为通用键，会按每个角色选择的系自动对应具体材料；BOSS 掉落等实名材料直接选。</div>
+      <div class="muted" style="margin:8px 0">角色经验/弧盘经验/技能书/罐头/空幕为通用键，会按每个角色选择的系自动对应具体材料；BOSS 掉落等实名材料直接选。技能书逐级材料现按四技能模型从 wiki 数据计算，本表 ability_level 行不再参与计算（数据保留兼容）。</div>
       <button class="btn" id="saveReq">保存需求表</button>
     </div>`;
   buildReqEditor();
+  renderBreakthroughBlock($("#btBody"));
   renderUpgradeBlock($("#upgBody"));
   $("#saveYields").onclick=async()=>{
     const per_run={};
@@ -1540,7 +1672,7 @@ function historyChart(history){
 }
 function statusTag(st){
   const map={done:["ok","完成"],short:["warn","体力不足"],skipped:["warn","跳过"],
-    failed:["err","失败"],reconciled:["acc","已对账"]};
+    failed:["err","失败"],stopped:["acc","已停止"],reconciled:["acc","已对账"]};
   const m=map[st]||["",""];
   return m[0]?`<span class="tag ${m[0]}">${m[1]}</span>`:`<span class="tag">${esc(st)}</span>`;
 }
@@ -1620,7 +1752,7 @@ async function renderCodex(){
         <button class="btn sec mini" id="btnWikiFetch">🌐 从 wiki 拉取养成预填</button>
         <span id="cx_wiki_info" class="muted"></span></div>
       <div class="banner info" id="cx_wiki_summary" style="display:none"></div>
-      <div class="set-row"><label>技能书系</label><select id="cx_skill"><option value="">（未填）</option>${[1,2,3,4,5].map(n=>`<option value="ability_${n}">ability_${n}</option>`).join("")}</select>
+      <div class="set-row"><label>技能书系</label><select id="cx_skill"><option value="">（未填）</option>${abilitySeriesOptions("")}</select>
         <label>书系名</label><input id="cx_book" placeholder="如 雏鸟的希冀" style="width:130px">
         <label>小怪族</label><select id="cx_family"><option value="">（未填）</option>${opt(CX_FAMILIES)}</select>
         <label>小怪白当量</label><input type="number" id="cx_mob" value="390" style="width:80px"></div>

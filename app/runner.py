@@ -382,10 +382,10 @@ class Runner:
             step = plan["steps"][0]
             for attempt in (1, 2):
                 if self.stop_event.is_set():
-                    self._finish("done", "已手动停止")
+                    self._finish("stopped", "已手动停止")
                     return
                 outcome = self._execute_step(oknte, step, attempt)
-                if outcome[0] in ("done", "short", "skipped", "busy"):
+                if outcome[0] in ("done", "short", "skipped", "busy", "stopped"):
                     break
                 if attempt == 1:
                     self._log(f"步骤失败（{outcome[2]}），重试一次")
@@ -399,6 +399,8 @@ class Runner:
                     break
                 continue
             self._settle(step, status, spent, note)
+            if status == "stopped":
+                break  # 手动停止：记 "stopped" 不记失败、不拉黑，立即收尾
             if status == "failed" and (note or "").startswith("启动失败"):
                 # 启动失败（互斥/环境）不是游戏内失败：已按"不拉黑"落账，等待后重试
                 if not continuous:
@@ -424,7 +426,7 @@ class Runner:
                     break
                 continue
 
-        self._finish("done", "已手动停止")
+        self._finish("stopped", "已手动停止")
         _notify("异环规划器", "已手动停止")
 
     def _seconds_until_reset(self):
@@ -491,7 +493,7 @@ class Runner:
             return "failed", 0, f"启动失败：配置隔离失败：{e}"
 
         if self.stop_event.is_set():
-            return "failed", 0, "手动停止（未拉起任务）"
+            return "stopped", 0, "手动停止（未拉起任务）"
 
         cmd, cwd, env = oknte.run_command(launcher)
         day = STATE.ensure_today()
@@ -521,7 +523,7 @@ class Runner:
         if self.stop_event.is_set():
             # 写配置已成功，但用户已点停止：绝不拉起新任务（真机反馈"点停止还在启动"）
             self._write_runtime(execution=None)
-            return "failed", 0, "手动停止（未拉起任务）"
+            return "stopped", 0, "手动停止（未拉起任务）"
 
         try:
             self.child = subprocess.Popen(
@@ -556,8 +558,10 @@ class Runner:
         try:
             while True:
                 if self.stop_event.is_set():
+                    # 用户手动停止：状态记 "stopped"（此前误记 "failed"，历史里显示
+                    # "失败/手动停止" 还触发当日拉黑——真机反馈"点停止显示失败 notfound"）
                     self._kill_child()
-                    return "failed", 0, "手动停止"
+                    return "stopped", 0, "手动停止"
                 monitor.feed(tail.read_new())
                 rc = self.child.poll()
                 if rc is not None:
@@ -620,10 +624,10 @@ class Runner:
             step = plan["steps"][0]
             for attempt in (1, 2):
                 if self.stop_event.is_set():
-                    self._finish("done", "已手动停止")
+                    self._finish("stopped", "已手动停止")
                     return
                 outcome = self._execute_hunter_step(oknte, step, attempt)
-                if outcome[0] in ("done", "short", "skipped", "busy"):
+                if outcome[0] in ("done", "short", "skipped", "busy", "stopped"):
                     break
                 if attempt == 1:
                     self._log(f"步骤失败（{outcome[2]}），重试一次")
@@ -636,6 +640,8 @@ class Runner:
                     break
                 continue
             self._settle_hunter(step, status, spent, note)
+            if status == "stopped":
+                break  # 手动停止：记 "stopped" 不记失败、不拉黑，立即收尾
             if status == "failed" and (note or "").startswith("启动失败"):
                 if not continuous:
                     self._finish("done", f"启动失败：{note}")
@@ -673,7 +679,7 @@ class Runner:
                     break
                 continue
 
-        self._finish("done", "已手动停止")
+        self._finish("stopped", "已手动停止")
         _notify("异环规划器", "已手动停止")
 
     def _execute_hunter_step(self, oknte, step, attempt):
@@ -692,7 +698,7 @@ class Runner:
             return "failed", 0, f"启动失败：配置隔离失败：{e}"
 
         if self.stop_event.is_set():
-            return "failed", 0, "手动停止（未拉起任务）"
+            return "stopped", 0, "手动停止（未拉起任务）"
 
         cmd, cwd, env = oknte.run_command_hunter(launcher)
         day = STATE.ensure_today()

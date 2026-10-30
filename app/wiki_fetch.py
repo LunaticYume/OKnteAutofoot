@@ -318,13 +318,18 @@ def fetch_all_upgrades(timeout=15, slugs=None):
 
 
 def fetch_cassettes(timeout=15):
-    """抓取空幕卡带：12 套套装（名称+产出属性系）+ 主/副词条池，落盘 cassettes.json。"""
+    """抓取空幕卡带：各套装（名称+产出属性系）+ 主/副词条池，落盘 cassettes.json。
+
+    卡带列表页链接两种形态都接受（wiki 改版前后）：
+    href="/cassettes/<slug>/" 与 href="/cassettes/<slug>"；排除 drivers 页与 .webp 图片。
+    """
     raw = _http_get(CASSETTES_PAGE, timeout)
     slugs = []
-    for m in re.finditer(r'href="/cassettes/([^"/]+)/"', raw):
+    for m in re.finditer(r'href="/cassettes/([^"/]+?)/?"', raw):
         slug = m.group(1)
-        if slug != "drivers" and slug not in slugs:
-            slugs.append(slug)
+        if slug == "drivers" or slug.endswith(".webp") or slug in slugs:
+            continue
+        slugs.append(slug)
     elements = ("暗系", "魂系", "相系", "灵系", "光系", "咒系")
     sets = []
     for slug in slugs:
