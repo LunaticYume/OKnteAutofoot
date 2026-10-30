@@ -828,8 +828,8 @@ def test_runner_continuous_busy_wait_retry_stop():
             assert not r.thread.is_alive(), "stop 应立即打断等待（5 秒内线程退出）"
             assert elapsed < 5, f"stop 打断应即时，实际耗时 {elapsed:.1f} 秒"
             snap = r.snapshot()
-            assert snap["state"] == "done" and snap["message"] == "已手动停止", \
-                f"停止后应为 done/已手动停止，实际 {snap['state']}/{snap['message']!r}"
+            assert snap["state"] == "stopped" and snap["message"] == "已手动停止", \
+                f"停止后应为 stopped/已手动停止（不记失败），实际 {snap['state']}/{snap['message']!r}"
         finally:
             runner_mod.OkNte = orig_oknte
             if r.thread is not None and r.thread.is_alive():
@@ -1209,7 +1209,7 @@ def test_e2e_busy_instance_and_wait_stop():  # 场景B + C(waiting)：已有实�
         assert ok
         r.thread.join(timeout=5)
         assert not r.thread.is_alive() and time.time() - t0 < 5, "等待中停止必须秒级返回"
-        assert r.snapshot()["state"] == "done" and r.snapshot()["message"] == "已手动停止"
+        assert r.snapshot()["state"] == "stopped" and r.snapshot()["message"] == "已手动停止"
 
 
 @case
@@ -1231,6 +1231,18 @@ def test_e2e_running_stop_kills_child():  # 场景C(running)：停止即终止�
         assert not r.thread.is_alive(), "停止后线程应退出"
         assert _wait_until(lambda: not runner_mod._pid_alive(child_pid), timeout=10), \
             "子进程应被终止（契约：停止即终止）"
+        # 停止行为语义（真机反馈"点停止显示 失败/notfound"的回归防线）：
+        # 历史必须记 "stopped" 而非 "failed"，且不得把目标加入当日拉黑
+        assert r.snapshot()["state"] == "stopped", \
+            f"停止后终态应为 stopped，实际 {r.snapshot()['state']}"
+        stopped_entries = [e for e in STATE.data["history"]
+                           if e.get("status") == "stopped" and "停止" in (e.get("note") or "")]
+        assert stopped_entries, "手动停止应留下一条 status=stopped 的历史记录"
+        failed_stops = [e for e in STATE.data["history"]
+                        if e.get("status") == "failed" and "手动停止" in (e.get("note") or "")]
+        assert not failed_stops, f"手动停止不得记为 failed：{failed_stops}"
+        assert not STATE.data["today"].get("blacklist"), \
+            f"手动停止不得触发当日拉黑，实际 {STATE.data['today']['blacklist']}"
 
 
 @case
@@ -1542,13 +1554,14 @@ def test_export_import_and_rollback():
             STATE.data["inventory"] = {"coin": 3}
             STATE.data["characters"] = [_char("c1", "导出角色", {"coin": 30})]
             STATE.save()
-            assert STATE.data["schema"] == 2, "save 应写入 schema=2"
+            assert STATE.data["schema"] == 3, "save 应写入 schema=3"
 
             # -- 导出结构 --
             export = main_mod.build_export()
-            assert export["schema"] == 2 and export["settings"]["daily_stamina_limit"] > 0 \
+            assert export["schema"] == 3 and export["settings"]["daily_stamina_limit"] > 0 \
                 and len(export["characters"]) == 1 and export["inventory"] == {"coin": 3} \
-                and "per_run" in export["yields"] and "tracks" in export["requirements"], \
+                and "per_run" in export["yields"] and "tracks" in export["requirements"] \
+                and "teams" in export, \
                 f"导出结构异常: {sorted(export.keys())}"
 
             # -- 合法导入：整体生效 + 自动备份 + 数据表落盘（tmp 目录）--
@@ -1969,7 +1982,13 @@ def test_game_data_import_character():
 
 @case
 def test_game_data_requirements_linkage():
-    """灵可导入 + 满级目标 → 计划产出合理的技能书/罐头轮数（数据→计划联动）。"""
+    """灵可导入 + 满级目标 → 计划产出合理的技能书/罐头轮数（数据→计划联动）。
+
+    技能材料口径（异能=技能 改造后）：四技能各自 1→10 逐级（wiki skillUpgrade，
+    单技能 1→10 = 书184/小怪184/硬币43.7万/周本8）+ 天赋解锁两档（书15/硬币7万/周本3）
+    + 角色等级 1→80 跨越门槛 30/40/50/60/70 的突破材料（BOSS 86/小怪 201，wiki charBreak；
+    门槛硬币已含在等级梯，不重复计）。
+    """
     import app.main as main_mod
     with _StateGuard():
         data = game_data_mod.load()
@@ -1982,6 +2001,9 @@ def test_game_data_requirements_linkage():
                           "ability_level": {"cur": 1, "tgt": 13},
                           "arc_level": {"cur": 1, "tgt": 80},
                           "console_level": {"cur": 1, "tgt": 1}}
+        char["skills"] = {k: {"cur": 1, "tgt": 10}
+                          for k in ("normal", "variable", "orbit", "assist")}
+        char["talent_unlocks"] = [True, True]
         STATE.data["characters"] = [char]
         # mysqil 鉴别7 口径（生产默认）：coin 12万/局、经验 22.5万/12.5万/局、书·罐头 18/局
         planner.YIELDS["per_run"]["coin"] = 120000
@@ -1993,26 +2015,29 @@ def test_game_data_requirements_linkage():
         STATE.data["settings"]["daily_stamina_limit"] = 99999  # 大额度：验证多步骤完整规划
         planner.UPSTREAM_DAILY_CAP = 10 ** 9  # 本用例模拟无上游上限，验证完整贪心
         snap = planner.snapshot()
-        # mysqil 逐段合计：技能书白当量 199、罐头白当量 230、角色经验 649.6 万
         by_id = {row["mat_id"]: row for c in snap["characters"] for row in c["rows"]}
-        assert by_id["ability_1"]["need"] == 199, by_id["ability_1"]
+        # 四技能×(1→10) 书 184×4=736 + 天赋 15 = 751（旧单轨口径 199 少算 4 倍，已废弃）
+        assert by_id["ability_1"]["need"] == 751, by_id["ability_1"]
         assert by_id["arc_2"]["need"] == 230, by_id["arc_2"]
         assert by_id["exp_char"]["need"] == 6496000
         assert by_id["boss_pick_watermoon"]["need"] == 86 and not by_id["boss_pick_watermoon"]["farmable"]
-        assert by_id["mob_silhouette_c"]["need"] == 390 and not by_id["mob_silhouette_c"]["farmable"]
+        # 小怪 = 四技能逐级 184×4=736 + 六门槛(31/41/51/61/71/满级80) 5+12+18+36+54+81=206
+        assert by_id["mob_silhouette_c"]["need"] == 942 and not by_id["mob_silhouette_c"]["farmable"]
+        wk_rows = [r for r in by_id.values() if r["mat_id"].startswith("wk_")]
+        assert wk_rows and wk_rows[0]["need"] == 35, "周本 = 四技能 8×4 + 天赋 3"
         # coin 已校准 → 正常排步；贪心顺序按 TARGET_ORDER
         plan = planner.make_plan(now=NOW)
         mat_ids = [s["mat_id"] for s in plan["steps"]]
         assert mat_ids == ["exp_char", "exp_arc", "coin", "ability_1", "arc_2"], mat_ids
         by = {s["mat_id"]: s for s in plan["steps"]}
-        assert (by["ability_1"]["runs"], by["ability_1"]["gain"]) == (12, 216), by["ability_1"]
+        assert (by["ability_1"]["runs"], by["ability_1"]["gain"]) == (42, 756), by["ability_1"]
         assert (by["arc_2"]["runs"], by["arc_2"]["gain"]) == (13, 234), by["arc_2"]
         assert by["exp_char"]["runs"] == 29, "6496000/225000=28.87→29 局"
         assert by["exp_arc"]["runs"] == 30, "3727000/125000=29.8→30 局"
-        # coin 需求 = 全轨道硬币合计（角色214.8万+技能50.7万+弧盘161.2万=426.7万）
+        # coin 需求 = 角色轨道 2148212（已含门槛硬币）+ 弧盘轨道 1512099 + 技能 437000×4+70000
         coin_need = by_id["coin"]["need"]
-        assert coin_need == 4167311, coin_need  # 214.8万+50.7万+109.2万+42万（弧盘突破）
-        assert by["coin"]["runs"] == -(-coin_need // 120000) == 35, by["coin"]["runs"]
+        assert coin_need == 5478311, coin_need
+        assert by["coin"]["runs"] == -(-coin_need // 120000) == 46, by["coin"]["runs"]
         assert not any(s["mat_id"].startswith(("boss_", "mob_", "wk_")) for s in plan["steps"]), \
             "外部来源材料绝不能进体力本计划"
         planner.UPSTREAM_DAILY_CAP = 180  # 恢复上游上限（其他用例依赖默认值）
@@ -2404,6 +2429,244 @@ def test_planner_upstream_cap_and_cumulative_target():
             assert daily["目标消耗体力"] == 140, daily
             items = json.load(open(ok.profile_items, encoding="utf-8"))["Routine Items"]
             assert [e["id"] for e in items if e.get("enabled")] == ["daily_anomaly"], items
+
+
+# ---------- 回归：v3 迁移 / sanitize 修复 / 重排 / 重名互斥 / 体力同池（本轮修复） ----------
+
+@case
+def test_migrate_v3_cassette_none_and_teams():
+    """v3 迁移：清洗卡带字符串 "None" 脏值、补 teams 兜底；幂等、不删任何数据。"""
+    from app.state import _migrate, STATE_SCHEMA
+    dirty = {"characters": [
+        {"id": "a", "name": "甲", "cassette": {"set": "None", "main": "None"}},
+        {"id": "b", "name": "乙", "cassette": {"set": "守卫萝卜的回响", "main": "攻击力"}},
+        {"id": "c", "name": "丙", "cassette": None},
+    ]}
+    out = _migrate(copy.deepcopy(dirty))
+    assert out["schema"] == STATE_SCHEMA == 3
+    assert out["characters"][0]["cassette"] == {"set": None, "main": None}, "字符串 None 应清洗回 None"
+    assert out["characters"][1]["cassette"] == {"set": "守卫萝卜的回响", "main": "攻击力"}, "正常值不得改动"
+    assert out["characters"][2]["cassette"] is None
+    assert out["teams"] == [], "teams 缺失应补默认空数组"
+    again = _migrate(out)  # 幂等
+    assert again == out
+    # 数据总量不变（只加不删）
+    assert len(again["characters"]) == len(dirty["characters"])
+
+
+@case
+def test_sanitize_opt_text_and_game_confidence():
+    """卡带空值必须落成 None（旧版 str(None)=="None" 污染）；game_confidence 保留透传。"""
+    import app.main as main_mod
+    raw = {"id": "x", "name": "测试角色",
+           "cassette": {"set": None, "main": None},
+           "game_confidence": {"skill": "low", "boss": "medium", "notes": "技能书系未查到"}}
+    clean = main_mod._sanitize_character(raw)
+    assert clean["cassette"] == {"set": None, "main": None}, clean["cassette"]
+    assert clean["game_confidence"]["skill"] == "low", "导入置信度不得被洗掉"
+    # 空字符串同样落 None
+    clean2 = main_mod._sanitize_character({"id": "x", "name": "测试角色",
+                                           "cassette": {"set": "", "main": "  "}})
+    assert clean2["cassette"] == {"set": None, "main": None}
+    # 无置信度信息时为 None（不报错）
+    clean3 = main_mod._sanitize_character({"id": "x", "name": "测试角色"})
+    assert clean3["game_confidence"] is None
+
+
+@case
+def test_characters_reorder_preserves_fields():
+    """重排只按 id 排列现有对象：字段零丢失；未列出者按原序追加（停用角色不丢）。"""
+    import app.main as main_mod
+    with _StateGuard():
+        STATE.data["settings"] = dict(DEFAULT_SETTINGS)
+        STATE.data["today"] = _empty_today()
+        a = main_mod._sanitize_character({"id": "aaa", "name": "甲",
+                                          "tracks": {"arc_level": {"cur": 3, "tgt": 60}},
+                                          "awakening": 4})
+        b = main_mod._sanitize_character({"id": "bbb", "name": "乙", "enabled": False})
+        c = main_mod._sanitize_character({"id": "ccc", "name": "丙"})
+        STATE.data["characters"] = [a, b, c]
+        STATE.save()
+        ordered = main_mod.reorder_characters(["ccc", "aaa"])
+        assert [x["id"] for x in ordered] == ["ccc", "aaa", "bbb"], "未列出的 bbb 应按原序追加尾部"
+        a2 = next(x for x in STATE.data["characters"] if x["id"] == "aaa")
+        assert a2["tracks"]["arc_level"] == {"cur": 3, "tgt": 60}, "重排不得动 arc_level"
+        assert a2["awakening"] == 4 and b["enabled"] is False
+        saved = json.load(open(STATE_FILE, encoding="utf-8"))
+        assert [x["id"] for x in saved["characters"]] == ["ccc", "aaa", "bbb"], "重排应持久化"
+
+
+@case
+def test_duplicate_character_names_rejected():
+    """后端重名互斥：与导入同口径，绕过前端也造不出重名角色。"""
+    import app.main as main_mod
+    chars = [main_mod._sanitize_character({"id": "a", "name": "甲"}),
+             main_mod._sanitize_character({"id": "b", "name": "甲"}),
+             main_mod._sanitize_character({"id": "c", "name": "乙"})]
+    assert main_mod.duplicate_character_names(chars) == ["甲"]
+    assert main_mod.duplicate_character_names(chars[:1] + chars[2:]) == []
+
+
+@case
+def test_daily_budget_subtracts_hunter_spend():
+    """体力同池：日常预算必须扣除当日追猎已耗（此前两边各记各账，同一池被双倍预订）。"""
+    with _StateGuard():
+        STATE.data["settings"] = dict(DEFAULT_SETTINGS, daily_stamina_limit=180)
+        STATE.data["today"] = {"date": DAY, "used_stamina": 40, "planner_spent": 40,
+                               "hunter_spent": 60, "blacklist": [], "entries": []}
+        STATE.data["inventory"] = {}
+        STATE.data["characters"] = [_char("c1", "同池角色", {"coin": 7})]
+        plan = planner.make_plan(now=NOW)
+        assert plan["detail"]["used_stamina"] == 100, \
+            f"已耗应为 日常40+追猎60=100，实际 {plan['detail']['used_stamina']}"
+        assert plan["detail"]["budget_total"] == 80, \
+            f"预算应为 180-100=80，实际 {plan['detail']['budget_total']}"
+
+
+# ---------- 成长模型（异能=技能 改造）：四技能逐级 / 天赋 / 突破逐档 ----------
+
+@case
+def test_growth_skill_ladder_and_breakthrough():
+    """growth 模型数值全部来自 wiki cultivation_data 真实表（无硬编码）。"""
+    from app import growth as g
+    assert g.skill_max() == 10, "wiki skillUpgrade 覆盖到 10 级"
+    # 单技能 1→10：书 184 / 族群小怪 184 / 硬币 437000 / 周本 8（mysqil 逐段合计）
+    c = g.skill_segment_cost(1, 10)
+    assert (c["skill_book"], c["field_mat"], c["coins"], c["weekly"]) == (184, 184, 437000, 8), c
+    # 部分段 6→8 = (6,7)+(7,8) = 书 15+27、硬币 60000+80000、周本 1+1
+    c2 = g.skill_segment_cost(6, 8)
+    assert (c2["skill_book"], c2["coins"], c2["weekly"]) == (42, 140000, 2), c2
+    assert g.skill_segment_cost(5, 5) == {"skill_book": 0, "field_mat": 0, "coins": 0, "weekly": 0}
+    assert g.skill_segment_cost(0, 3)["skill_book"] == 2 + 3, "cur=0 视同 1 起算"
+    # 天赋解锁两档：书 15 / 硬币 70000 / 周本 3
+    t = g.talent_cost([1, 2])
+    assert (t["skill_book"], t["coins"], t["weekly"]) == (15, 70000, 3), t
+    # 突破门槛（用户实机口径 + wiki 角色页对位）：Lv X 突破 = charBreak[X-10]；
+    # 五档 31/41/51/61/71 + 满级 80 最终突破；六档 BOSS 合计恰为 86、小怪 206
+    assert g.breakthrough_gate_cost(30) == [0, 5, 25000], g.breakthrough_gate_cost(30)
+    assert g.breakthrough_gate_cost(40) == [2, 12, 50000]
+    assert g.breakthrough_gate_cost(80) == [36, 81, 150000]
+    assert sum(g.breakthrough_gate_cost(x)[0] for x in (*g.LEVEL_GATES, g.FINAL_GATE)) == 86
+    assert sum(g.breakthrough_gate_cost(x)[1] for x in (*g.LEVEL_GATES, g.FINAL_GATE)) == 206
+    # 门槛跨越判定：停在门槛级去下一级需要材料（30→31 突破）；目标恰好=门槛即尚未突破；
+    # 满级 80 最终突破在目标到达 80 时计入
+    assert g.crossed_gates(1, 80) == [30, 40, 50, 60, 70, 80]
+    assert g.crossed_gates(25, 45) == [30, 40]
+    assert g.crossed_gates(30, 31) == [30] and g.crossed_gates(1, 30) == []
+    assert g.crossed_gates(80, 80) == [] and g.crossed_gates(31, 40) == []
+    assert g.crossed_gates(1, 79) == [30, 40, 50, 60, 70] and g.crossed_gates(79, 80) == [80]
+
+
+@case
+def test_character_growth_needs_mapping():
+    """成长材料映射：书→所选系、小怪→族群基础档、周本/BOSS→目录归属、硬币通用；
+    突破材料由角色等级门槛推导（与觉醒档位无关）；目录缺失时只算可映射部分。"""
+    from app import growth as g
+    char = {"mats": {"ability": 2},
+            "tracks": {"char_level": {"cur": 25, "tgt": 45}},
+            "skills": {k: {"cur": 1, "tgt": 10} for k in g.SKILL_KEYS},
+            "talent_unlocks": [True, False], "awakening": 2}
+    entry = {"mob_family": "絮语", "weekly_material": {"mat_id": "wk_test"},
+             "boss_material": {"mat_id": "boss_test"}}
+    needs = g.character_growth_needs(char, entry)
+    assert needs["ability_2"] == 184 * 4 + 6, needs          # 四技能书 736 + 天赋1 6
+    # 小怪 = 技能 736 + 门槛30→31(5) + 门槛40→41(12)【LvX 突破 = charBreak[X-10]】
+    assert needs["mob_whisper_c"] == 736 + 5 + 12, needs
+    assert needs["boss_test"] == 2, needs                    # 门槛 30 无 BOSS；40→41 需 2
+    assert needs["wk_test"] == 8 * 4 + 1, needs              # 技能周本 32 + 天赋1 1
+    assert needs["coin"] == 437000 * 4 + 30000, needs        # 硬币只来自技能/天赋（门槛硬币已含在等级梯）
+    # 等级目标不跨门槛 → 无突破材料；觉醒档位变化不影响任何材料
+    same_level = dict(char, tracks={"char_level": {"cur": 1, "tgt": 1}}, awakening=6)
+    needs_low = g.character_growth_needs(same_level, entry)
+    assert "boss_test" not in needs_low and needs_low["ability_2"] == needs["ability_2"]
+    # 目录未收录：书/硬币仍算，族群/周本/BOSS 归属缺失不编造
+    bare = g.character_growth_needs(char, None)
+    assert bare["ability_2"] == 736 + 6 and "mob_whisper_c" not in bare \
+        and "wk_test" not in bare and "boss_test" not in bare
+    # 门槛视图：等级 25→45 → 两道门槛（30→31、40→41），持有可抵扣缺少
+    rows = g.character_breakthrough_rows(char, entry, inventory={"boss_test": 5})
+    assert [r["gate"] for r in rows] == [30, 40], rows
+    assert rows[0]["to_level"] == 31 and rows[1]["to_level"] == 41
+    boss_row = next(m for m in rows[0]["mats"] if m["mat_id"] == "boss_test")
+    assert boss_row["need"] == 0 and boss_row["have"] == 5 and boss_row["short"] == 0
+    mob_row = next(m for m in rows[0]["mats"] if m["mat_id"] == "mob_whisper_c")
+    assert mob_row["need"] == 5 and mob_row["short"] == 5
+
+
+@case
+def test_wiki_city_talents_extraction_and_prefill():
+    """都市特技：wiki data-upgrade 按 CityAbility_UpMaterial 识别（唯一可靠判据）；
+    导入按快照预填名字与槽位数（1 或 2 位由实机数据决定，等级留 0）。"""
+    import app.main as main_mod
+    from app import wiki_fetch as wf
+    upgrade = {"skills": [
+        {"name": "寻宝时刻", "levels": [
+            {"level": 1, "items": [{"id": "CityAbility_UpMaterial", "amount": 2}]},
+            {"level": 5, "items": [{"id": "CityAbility_UpMaterial", "amount": 24}]}]},
+        {"name": "普通战斗技能", "levels": [
+            {"level": 2, "items": [{"id": "ability_book_p", "amount": 3}]}]},
+        {"name": "垂钓大师", "levels": [
+            {"level": 2, "items": [{"id": "CityAbility_UpMaterial", "amount": 4},
+                                   {"id": "fons", "amount": 1500}]}]},
+    ]}
+    talents = wf._city_talents_from_upgrade(upgrade)
+    assert [t["name"] for t in talents] == ["寻宝时刻", "垂钓大师"], talents
+    assert talents[0]["max_level"] == 5 and talents[1]["max_level"] == 2
+    assert wf._city_talents_from_upgrade({"skills": []}) == []
+    orig = wf.city_talents_by_name
+    data = game_data_mod.load()
+    try:
+        wf.city_talents_by_name = lambda: {"浔": talents}
+        raw = game_data_mod.build_character_import(data, "浔")
+        assert [t["name"] for t in raw["city_talents"]] == ["寻宝时刻", "垂钓大师"]
+        assert raw["city_talent_slots"] == 2 and all(t["lv"] == 0 for t in raw["city_talents"])
+        clean = main_mod._sanitize_character(raw)
+        assert clean["city_talent_slots"] == 2 and len(clean["city_talents"]) == 2
+        # 只有一个特技的角色：槽位=1
+        wf.city_talents_by_name = lambda: {"灵可": talents[:1]}
+        raw2 = game_data_mod.build_character_import(data, "灵可")
+        assert [t["name"] for t in raw2["city_talents"]] == ["寻宝时刻"]
+        assert raw2["city_talent_slots"] == 1
+        # 快照未收录该角色：不预填（绝不编造）
+        wf.city_talents_by_name = lambda: {}
+        raw3 = game_data_mod.build_character_import(data, "浔")
+        assert not raw3.get("city_talents")
+    finally:
+        wf.city_talents_by_name = orig
+
+
+@case
+def test_planner_growth_integration_no_double_count():
+    """planner 接入成长模型：ability_level 旧轨不再计算；托管键（BOSS/周本/小怪旧
+    自动总量）不计入；其余自定义键叠加累计（改了即同步）。"""
+    with _StateGuard():
+        STATE.data["settings"] = dict(DEFAULT_SETTINGS)
+        STATE.data["today"] = _empty_today()
+        char = {
+            "id": "g1", "name": "成长角色", "enabled": True,
+            "mats": {"ability": 1, "arc": 1, "console": 1},
+            "tracks": {"char_level": {"cur": 1, "tgt": 1},
+                       "ability_level": {"cur": 1, "tgt": 13},  # 旧轨：应被忽略
+                       "arc_level": {"cur": 1, "tgt": 1}},
+            "skills": {k: {"cur": 1, "tgt": 10} for k in
+                       ("normal", "variable", "orbit", "assist")},
+            "talent_unlocks": [False, False], "awakening": 0,
+            "extra_needs": {"ability_1": 500, "mob_whisper_c": 999, "exp_char": 777},
+        }
+        STATE.data["characters"] = [char]
+        orig_entry = planner.catalog_entry
+        planner.catalog_entry = lambda c: {"mob_family": "絮语",
+                                           "weekly_material": {"mat_id": "wk_test"},
+                                           "boss_material": {"mat_id": "boss_test"}}
+        try:
+            needs = planner.character_needs(char)
+            managed = planner.managed_material_ids(char)
+        finally:
+            planner.catalog_entry = orig_entry
+        assert needs["ability_1"] == 736 + 500, needs  # 四技能 184×4 + 自定义叠加
+        assert needs["mob_whisper_c"] == 736, needs    # 托管键（族群=絮语）：extra 999 不计入
+        assert needs["exp_char"] == 777, needs         # 自定义键照常累计
+        assert managed == {"mob_whisper_c", "wk_test", "boss_test"}, managed
 
 
 # ---------- 汇总 ----------
