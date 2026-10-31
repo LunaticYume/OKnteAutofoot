@@ -480,7 +480,7 @@ def projected_stamina(now=None):
     if base < 0:
         return None
     rate = max(0.0, float(settings.get("stamina_regen_per_hour") or 0))
-    cap = max(1.0, float(settings.get("stamina_cap") or 240))
+    cap = max(1.0, float(settings.get("stamina_cap") or 320))
     now = now or datetime.now()
     hours = max(0.0, (now - at).total_seconds() / 3600)
     return round(min(cap, base + rate * hours), 1)
@@ -502,7 +502,7 @@ def preview_days(days=3, now=None):
     settings = STATE.settings
     limit = max(0, int(settings.get("daily_stamina_limit", 180) or 0))
     rate = max(0.0, float(settings.get("stamina_regen_per_hour") or 0))
-    cap = max(1.0, float(settings.get("stamina_cap") or 240))
+    cap = max(1.0, float(settings.get("stamina_cap") or 320))
     if rate > 0 and rate * 24 < limit:
         warnings.append(
             f"体力恢复速率({rate}/小时)×24={rate * 24:g} 低于每日限额 {limit}，"
