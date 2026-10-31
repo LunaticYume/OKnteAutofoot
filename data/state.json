@@ -52,10 +52,6 @@
       "attribute": null,
       "matter_state": null,
       "awakening": 0,
-<<<<<<< HEAD
-=======
-      "awakening_tgt": 0,
->>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
       "skills": {
         "normal": {
           "cur": 0,
@@ -79,10 +75,7 @@
         false
       ],
       "city_talents": [],
-<<<<<<< HEAD
       "city_talent_slots": 1,
-=======
->>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
       "cassette": {
         "set": null,
         "main": null
@@ -119,10 +112,7 @@
         }
       },
       "extra_needs": {
-<<<<<<< HEAD
         "exp_char": 777,
-=======
->>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
         "boss_sea_tear": 86,
         "wk_memory": 11,
         "mob_delusion_c": 390
@@ -131,10 +121,6 @@
       "attribute": "相",
       "matter_state": "聚合",
       "awakening": 0,
-<<<<<<< HEAD
-=======
-      "awakening_tgt": 0,
->>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
       "skills": {
         "normal": {
           "cur": 0,
@@ -157,7 +143,6 @@
         false,
         false
       ],
-<<<<<<< HEAD
       "city_talents": [
         {
           "name": "垂钓大师",
@@ -169,9 +154,6 @@
         }
       ],
       "city_talent_slots": 2,
-=======
-      "city_talents": [],
->>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
       "cassette": {
         "set": null,
         "main": null
@@ -195,11 +177,7 @@
       "tracks": {
         "char_level": {
           "cur": 1,
-<<<<<<< HEAD
           "tgt": 80
-=======
-          "tgt": 1
->>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
         },
         "ability_level": {
           "cur": 1,
@@ -223,7 +201,6 @@
       "attribute": "光",
       "matter_state": "固态",
       "awakening": 0,
-<<<<<<< HEAD
       "skills": {
         "normal": {
           "cur": 8,
@@ -232,17 +209,6 @@
         "variable": {
           "cur": 9,
           "tgt": 9
-=======
-      "awakening_tgt": 3,
-      "skills": {
-        "normal": {
-          "cur": 0,
-          "tgt": 10
-        },
-        "variable": {
-          "cur": 0,
-          "tgt": 7
->>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
         },
         "orbit": {
           "cur": 0,
@@ -267,10 +233,7 @@
           "lv": 2
         }
       ],
-<<<<<<< HEAD
       "city_talent_slots": 2,
-=======
->>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
       "cassette": {
         "set": "失落光芒",
         "main": "暴击率"
@@ -318,10 +281,6 @@
       "attribute": "光",
       "matter_state": "聚合",
       "awakening": 0,
-<<<<<<< HEAD
-=======
-      "awakening_tgt": 0,
->>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
       "skills": {
         "normal": {
           "cur": 0,
@@ -344,7 +303,6 @@
         false,
         false
       ],
-<<<<<<< HEAD
       "city_talents": [
         {
           "name": "偶尔摸鱼",
@@ -356,9 +314,6 @@
         }
       ],
       "city_talent_slots": 2,
-=======
-      "city_talents": [],
->>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
       "cassette": {
         "set": null,
         "main": null
