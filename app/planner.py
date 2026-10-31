@@ -126,7 +126,6 @@ def catalog_entry(character):
     return None
 
 
-<<<<<<< HEAD
 def managed_material_ids(character):
     """模型托管的材料键（BOSS 掉落/周本/族群小怪）：旧版按"满级总量"自动写入
     extra_needs 的三类键，现由成长模型按逐级/门槛口径计算——无论模型当前是否
@@ -146,23 +145,15 @@ def managed_material_ids(character):
     return managed
 
 
-=======
->>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
 def character_needs(character):
     """单个角色的材料需求：练度轨道 + 成长材料（wiki 权威）+ 手工缺口。
 
     - tracks：角色等级/弧盘/空幕轨道按需求表梯换算；ability_level 旧单轨不再参与
       （错误口径：四技能只计一份书，已由 growth 按四技能逐级计算取代；旧梯数据保留）。
-<<<<<<< HEAD
     - growth：四技能 cur→tgt 逐级 + 天赋解锁 + 角色等级门槛（31/41/51/61/71）突破
       BOSS/小怪（与觉醒档位无关）。
     - extra_needs：手工自定义缺口；模型托管键（BOSS/周本/族群小怪，旧版自动写入）
       不计入——模型已按逐级/门槛口径计算，旧"总量"值不再叠加或生效。
-=======
-    - growth：四技能 cur→tgt 逐级 + 天赋解锁 + 觉醒 cur→tgt 逐档突破。
-    - extra_needs：手工/历史自动写入的缺口；与成长模型重合的键（BOSS/周本/族群小怪
-      ——旧版按"满级总量"自动写入）以逐级模型值为准、不叠加，避免同一材料双记。
->>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
     """
     needs = {}
     variant = _variant_map(character)
@@ -178,16 +169,10 @@ def character_needs(character):
             needs[mat_id] = needs.get(mat_id, 0) + count
     for mat_id, count in growth.character_growth_needs(character, catalog_entry(character)).items():
         needs[mat_id] = needs.get(mat_id, 0) + count
-<<<<<<< HEAD
     managed = managed_material_ids(character)
     for mat_id, count in (character.get("extra_needs") or {}).items():
         if mat_id in managed:
             continue  # 模型托管键（旧自动总量行）：不计旧值（数据保留在库，仅不参与计算）
-=======
-    for mat_id, count in (character.get("extra_needs") or {}).items():
-        if mat_id in needs:
-            continue  # 模型已按逐级/逐档口径计算该材料：不叠加旧"总量"值（不删原数据，仅不双记）
->>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
         try:
             needs[mat_id] = needs.get(mat_id, 0) + max(0, int(count))
         except (TypeError, ValueError):

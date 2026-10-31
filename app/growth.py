@@ -1,6 +1,5 @@
 """角色成长材料模型（数据源：data/mysqil/cultivation_data.json，环世全鉴权威快照）。
 
-<<<<<<< HEAD
 口径与 wiki 养成计算器（DetailedCalc.js）逐行核对，并按用户实机规则修正：
 - 四技能（普攻/变轨/极轨/援护）各自独立 1→10：每段消耗 [技能书, 族群小怪, 硬币, 周本]
   （skillUpgrade 段 "1,2".."9,10"，单技能 1→10 合计 书184/小怪184/硬币43.7万/周本8）；
@@ -14,18 +13,6 @@
 旧 requirements.ability_level 1→13 单轨是错误口径（四技能只计了 1 份书、天赋硬拼在
 10→13 段），由本模块取代其计算职能；旧梯数据保留在 requirements.json 不删除。
 都市特技升级消耗 CityAbility_UpMaterial+fons（方斯），均非体力本材料，不纳入体力计划。
-=======
-口径与 wiki 养成计算器（DetailedCalc.js）逐行核对：
-- 四技能（普攻/变轨/极轨/援护）各自独立 1→10：每段消耗 [技能书, 族群小怪, 硬币, 周本]
-  （skillUpgrade 段 "1,2".."9,10"，单技能 1→10 合计 书184/小怪184/硬币43.7万/周本8）；
-- 天赋解锁 2 档（角色可选开启）：每档 [书, 硬币, 周本] = [6,3万,1] / [9,4万,2]（talentUnlock）；
-- 角色突破 6 档（觉醒 1-6，门槛 20/30/40/50/60/70 级）：每档 [BOSS, 族群小怪, 硬币]
-  （charBreak，6 档合计 BOSS 86 / 小怪 206 / 硬币 52.5 万）。
-
-旧 requirements.ability_level 1→13 单轨是错误口径（四技能只计了 1 份书、天赋硬拼在
-10→13 段），由本模块取代其计算职能；旧梯数据保留在 requirements.json 不删除。
-都市特技在 wiki 数据块中无材料记录，按用户要求不纳入计算。
->>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
 """
 import json
 import os
@@ -36,14 +23,10 @@ from .state import DATA_DIR
 CULTIVATION_FILE = os.path.join(DATA_DIR, "mysqil", "cultivation_data.json")
 
 SKILL_KEYS = ("normal", "variable", "orbit", "assist")  # 普攻/变轨/极轨/援护
-<<<<<<< HEAD
 AWAKENING_MAX = 6  # 觉醒档位 0-6（独立记录字段，与突破材料无关）
 # 突破等级门槛（用户实机口径：满级后突破到下一个十级，如 30→31）；
 # wiki charBreak 还有 20 档一行（0 BOSS/5 小怪/2.5万硬币），按实机口径不计入
 LEVEL_GATES = (30, 40, 50, 60, 70)
-=======
-AWAKENING_MAX = 6  # 觉醒档位 0-6（0=未突破；charBreak 覆盖 1-6 档）
->>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
 
 _DATA = None
 
@@ -97,7 +80,6 @@ def talent_cost(tiers):
     return total
 
 
-<<<<<<< HEAD
 BREAKTHROUGH_LEVELS = (20, 30, 40, 50, 60, 70)  # wiki charBreak 原始键
 # 突破门槛（用户实机口径 + wiki 角色页对位核实）：满级 30/40/50/60/70 后突破到
 # 31/41/51/61/71；另有满级 80 的最终突破（wiki 突破6）。
@@ -124,40 +106,19 @@ def crossed_gates(cur, tgt):
     return gates
 
 
-=======
-BREAKTHROUGH_LEVELS = (20, 30, 40, 50, 60, 70)  # 觉醒 1-6 对应的突破等级门槛（charBreak 键）
-
-
-def breakthrough_stage_cost(stage):
-    """第 stage 档突破（1..6）的材料 [BOSS, 族群小怪, 硬币]；越界返回 None。"""
-    cb = _load().get("charBreak", {})
-    if not 1 <= int(stage) <= len(BREAKTHROUGH_LEVELS):
-        return None
-    seg = cb.get(str(BREAKTHROUGH_LEVELS[int(stage) - 1]))
-    return [int(seg[0]), int(seg[1]), int(seg[2])] if seg else None
-
-
->>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
 def _add(needs, mat_id, count):
     if mat_id and count > 0:
         needs[mat_id] = needs.get(mat_id, 0) + count
 
 
 def character_growth_needs(character, entry):
-<<<<<<< HEAD
     """单个角色的成长材料（mat_id → 数量）：四技能 + 天赋解锁 + 等级门槛突破。
-=======
-    """单个角色的成长材料（mat_id → 数量）：四技能 + 天赋解锁 + 觉醒档差突破。
->>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
 
     entry 为游戏目录条目（提供书系/族群/周本/BOSS 归属）；目录未收录的角色
     （entry=None）技能书仍按所选书系计算，族群/周本/BOSS 归属缺失的类别跳过
     （缺映射不编造）。技能材料书系用角色所选 mats.ability。
-<<<<<<< HEAD
     突破材料与觉醒档位无关：由 tracks.char_level 的 cur→tgt 跨越 31/41/51/61/71
     门槛推导（BOSS+小怪；硬币已含在等级梯）。
-=======
->>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
     """
     needs = {}
     mats = character.get("mats") or {}
@@ -182,7 +143,6 @@ def character_growth_needs(character, entry):
     _add(needs, "coin", cost["coins"])
     _add(needs, weekly_id, cost["weekly"])
 
-<<<<<<< HEAD
     tracks = character.get("tracks") or {}
     levels = tracks.get("char_level") if isinstance(tracks.get("char_level"), dict) else {}
     try:
@@ -194,21 +154,10 @@ def character_growth_needs(character, entry):
         if seg:
             _add(needs, boss_id, seg[0])
             _add(needs, base_id, seg[1])
-=======
-    cur = int(character.get("awakening") or 0)
-    tgt = max(int(character.get("awakening_tgt") or 0), cur)  # 目标低于当前按当前（不产生负需求）
-    for stage in range(cur + 1, tgt + 1):
-        seg = breakthrough_stage_cost(stage)
-        if seg:
-            _add(needs, boss_id, seg[0])
-            _add(needs, base_id, seg[1])
-            _add(needs, "coin", seg[2])
->>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
     return needs
 
 
 def character_breakthrough_rows(character, entry, inventory=None):
-<<<<<<< HEAD
     """突破门槛视图（纯读）：等级 cur→tgt 跨越的每一道门槛材料与持有/缺少。
 
     返回 [{gate, to_level, mats:[{mat_id, name, need, have, short}]}]；
@@ -231,36 +180,11 @@ def character_breakthrough_rows(character, entry, inventory=None):
             continue
         mats = []
         for mat_id, need in zip((boss_id, base_id), (seg[0], seg[1])):
-=======
-    """突破逐档视图（纯读）：觉醒 cur→tgt 的每一档材料与持有/缺少。
-
-    返回 [{stage, level_gate, mats:[{mat_id, name, need, have, short}], done}]；
-    数据全部来自 charBreak 真实表，材料归属来自目录条目，不使用任何硬编码数字。
-    """
-    from .planner import display_name  # 局部导入避免环（planner 不在启动期导入 growth 之外的模块）
-    inv = inventory if inventory is not None else {}
-    cur = int(character.get("awakening") or 0)
-    tgt = max(int(character.get("awakening_tgt") or 0), cur)
-    boss_id = ((entry or {}).get("boss_material") or {}).get("mat_id")
-    base_id = game_data.mob_base_id(entry) if entry else None
-    rows = []
-    for stage in range(cur + 1, tgt + 1):
-        seg = breakthrough_stage_cost(stage)
-        if not seg:
-            continue
-        mats = []
-        for mat_id, need in zip((boss_id, base_id, "coin"), seg):
->>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
             if not mat_id:
                 continue
             have = int(inv.get(mat_id, 0) or 0)
             mats.append({"mat_id": mat_id, "name": display_name(mat_id),
                          "need": need, "have": have, "short": max(0, need - have)})
-<<<<<<< HEAD
         rows.append({"gate": gate, "to_level": gate if gate == FINAL_GATE else gate + 1,
                      "mats": mats})
-=======
-        rows.append({"stage": stage, "level_gate": BREAKTHROUGH_LEVELS[stage - 1],
-                     "mats": mats, "done": False})
->>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
     return rows
