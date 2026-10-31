@@ -837,7 +837,7 @@ class Handler(BaseHTTPRequestHandler):
                     "awakening": char.get("awakening") or 0,
                     "in_catalog": entry is not None,
                     "gates": growth.character_breakthrough_rows(
-                        char, entry, STATE.inventory),
+                        char, entry, planner.equivalent_inventory(STATE.inventory)),
                 })
             self._send(200, {"characters": rows,
                              "skill_max": growth.skill_max()})
