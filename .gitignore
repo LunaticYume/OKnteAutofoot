@@ -15,7 +15,14 @@ tools/_build/
 # 用户/运行时数据（只保留 data/ 下的数据表：materials/yields/requirements/game_data/mysqil）
 data/backups/
 data/*.bak
+data/*.corrupt
+data/*.tmp
 data/runtime.json
+data/state.json
+data/state.json.bak
+
+# wiki 抓取原始备份（正式快照 mysqil/*.json 保留入库，.bak 原始页不入库）
+data/mysqil/*.bak
 
 # 图鉴覆盖层（用户手录的角色/武器；属用户数据不入库）
 data/game_data_custom.json
