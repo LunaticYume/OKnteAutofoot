@@ -115,6 +115,7 @@
   .chip.ok{color:var(--ok);border-color:rgba(62,207,142,.4);background:rgba(62,207,142,.07)}
   .chip.acc{color:var(--acc);border-color:rgba(83,182,255,.4);background:rgba(83,182,255,.07)}
   .chip.warn{color:var(--warn);border-color:rgba(245,181,68,.4);background:rgba(245,181,68,.07)}
+  .ocr-off{opacity:.45}  /* OCR 命中预览行取消勾选：弱化显示（应用/保存时跳过该行） */
 
   table{width:100%;border-collapse:collapse;font-size:13px}
   th,td{padding:7px 9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}
@@ -285,10 +286,13 @@ function qConfirm(msg){
   });
 }
 
-async function api(path, body){
+async function api(path, body, timeoutMs=15000){
   const opt = body===undefined ? {} : {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)};
-  // 本地面板不该有请求挂死：15 秒超时兜底，失败走「加载失败」横幅而不是无限空白
-  const res = await fetch(path, {...opt, signal: AbortSignal.timeout(15000)});
+  // 本地面板不该有请求挂死：默认 15 秒超时兜底，失败走「加载失败」横幅而不是无限空白。
+  // 慢端点按后端最坏耗时传入更大的 timeoutMs（如 /api/ocr/capture 截屏链路最坏 ≈120s：
+  // _bind_game_window→窗口枚举 PS timeout=30s + 截图 _ocr_run_ps 默认 timeout=90s），
+  // 否则慢机器上客户端先超时报错、后端截图却实际成功，用户按报错重试反复失败
+  const res = await fetch(path, {...opt, signal: AbortSignal.timeout(timeoutMs)});
   const data = await res.json().catch(()=>({}));
   if(!res.ok) throw new Error(data.error||res.status);
   return data;
@@ -305,6 +309,12 @@ function allMaterials(){
 }
 function matAllName(id){const m=allMaterials().find(x=>x.id===id);return m?m.display:id;}
 function matName(id){return matAllName(id);}
+/* 材料全量下拉选项（targets + extra_materials）：与库存页 data-inv 输入一一对应；
+   OCR 未识别材料映射专用——generic 键（exp_char 等）没有库存输入框，映射了也应用不了，不列入 */
+function matAllOptions(sel){
+  return allMaterials().map(m=>
+    `<option value="${esc(m.id)}" ${m.id===sel?"selected":""}>${esc(m.display)}</option>`).join("");
+}
 function obtainTag(o){
   return o==="stamina"?`<span class="tag acc">体力本</span>`
     :o==="hunter"?`<span class="tag warn">追猎</span>`:`<span class="tag">外部</span>`;
@@ -588,6 +598,13 @@ async function renderChars(){
   if(snap && snap.snapshot) (snap.snapshot.characters||[]).forEach(c=>{
     rowsByChar[c.name]={rows:c.rows||[], managed:c.managed||[]};});
   const rowsOf = name => rowsByChar[name];
+  // 弧盘下拉数据（与弧盘页同源：目录实名+物态）：失败不阻塞角色页
+  const gd = await api("/api/game-data").catch(()=>({}));
+  const weaponMeta = {};
+  (gd.weapons||[]).forEach(w=>{
+    if(w && w.name) weaponMeta[w.name]={matter_state:w.matter_state||"", rarity:w.rarity||""};
+  });
+  const stateToCan = gd.matter_state_to_can||{};
   $("#main").innerHTML = `
     <datalist id="charNameList">${(BOOT.game_characters||[])
       .map(n=>`<option value="${esc(n.replace(/（未上线）$/,""))}">`).join("")}</datalist>
@@ -600,9 +617,13 @@ async function renderChars(){
         <button class="btn sec" id="btnImportLibs">⬇ 导入全角色/全武器到库</button>
       </div></div>
     <div class="card"><div class="row" style="justify-content:space-between">
-      <h3 style="margin:0">角色列表<span class="h-sub">列表顺序 = 补齐优先级，从上到下；异能系下拉已用可读名，弧盘与空幕在各自专属页维护</span></h3>
-      <button class="btn" id="addChar">＋ 新建角色</button>
+      <h3 style="margin:0">角色列表<span class="h-sub">列表顺序 = 补齐优先级，从上到下；异能系与弧盘可在此直接选择，空幕在专属页维护</span></h3>
+      <div class="row" style="gap:8px">
+        <button class="btn sec mini" id="btnLvlOcr">📷 识别等级（实验）</button>
+        <button class="btn" id="addChar">＋ 新建角色</button>
+      </div>
     </div></div>
+    <div id="lvlPreview"></div>
     <div id="charList"></div>
     <details id="parkedBox" style="margin-top:10px">
       <summary class="muted" id="parkedSummary" style="cursor:pointer">不想练（0）</summary>
@@ -611,7 +632,7 @@ async function renderChars(){
   const list = $("#charList");
   const parkedBox = $("#parkedBox");
   const place = c => {
-    const el = charCard(c, st.characters.findIndex(x=>x.id===c.id), tracks, rowsOf);
+    const el = charCard(c, st.characters.findIndex(x=>x.id===c.id), tracks, rowsOf, weaponMeta, stateToCan);
     (c.enabled ? list : document.getElementById("parkedCards")).appendChild(el);
   };
   const activeCount = st.characters.filter(c=>c.enabled).length;
@@ -626,7 +647,7 @@ async function renderChars(){
       skills:{normal:{cur:1,tgt:1},variable:{cur:1,tgt:1},orbit:{cur:1,tgt:1},assist:{cur:1,tgt:1}},
       talent_unlocks:[false,false],city_talents:[],city_talent_slots:1,
       tracks:Object.fromEntries(Object.keys(tracks).map(k=>[k,{cur:1,tgt:1}])),extra_needs:{}});
-    const el=charCard(st.characters[st.characters.length-1], st.characters.length-1, tracks, rowsOf);
+    const el=charCard(st.characters[st.characters.length-1], st.characters.length-1, tracks, rowsOf, weaponMeta, stateToCan);
     el.classList.add("open");
     list.appendChild(el);
     el.scrollIntoView({behavior:"smooth",block:"center"});
@@ -672,10 +693,15 @@ async function renderChars(){
         skills, city_talents,
         city_talent_slots: ct2?.checked?2:1,
         stigma_groups:base.stigma_groups||[],
-        // 弧盘绑定与武器在「弧盘」页维护：本页保留原值
-        weapon:base.weapon||"",
+        // 弧盘绑定本页可直接选择（与「弧盘」页同源）：罐头系按所选武器物态派生
+        weapon:(()=>{const sel=el.querySelector(".c-weapon"); return sel?(sel.value||base.weapon||""):(base.weapon||"");})(),
         mats:{ability:+el.querySelector(".c-ability").value||base.mats?.ability||1,
-              arc:base.mats?.arc||1, console:base.mats?.console||1},
+              arc:(()=>{const sel=el.querySelector(".c-weapon");
+                if(!sel) return base.mats?.arc||1;
+                const w=sel.value, meta=weaponMeta[w];
+                const can=w&&meta&&stateToCan[meta.matter_state];
+                return can?(+String(can).replace("arc_","")||base.mats?.arc||1):(base.mats?.arc||1);})(),
+              console:base.mats?.console||1},
         tracks, extra_needs:extra});
     });
     const names=chars.map(x=>x.name);
@@ -684,6 +710,106 @@ async function renderChars(){
     try{ const r=await api("/api/characters",{characters:chars});
       BOOT.state.characters=r.characters||chars;  // 用服务器消毒后的数据回填，避免与重启后不一致
       toast(`已保存 ${chars.length} 个角色`); renderChars(); }catch(e){alertErr(e);}
+  };
+  $("#btnLvlOcr").onclick = async ()=>{
+    // 角色等级 OCR v2（2026-11-04 真实 UI 遍历）：逐个点头像 → 信息页（名字+Lv）→
+    // "异能"页（四技能 N/10 + 都市特技 N/5、N/2）；预览确认后分项应用
+    const btn=$("#btnLvlOcr");
+    if(OCR_LVL_RUN){ OCR_LVL_RUN.ctl.abort(); return; }  // 识别中再次点击=取消等待并尽力叫停后端
+    const old=btn.textContent;
+    // 真机 7 头像 × 每头像 2 次 OCR 在远程会话下超过 120s：等待上限放宽到 300s，
+    // 并记录 AbortController（OCR_LVL_RUN）——超时/再次点击都会 abort，
+    // catch 里 ocrFireCancel() 发后即忘叫停后端遍历
+    btn.textContent="识别中…（逐个点头像约 1-2 分钟，请勿操作游戏）";
+    const prev=$("#lvlPreview"); prev.innerHTML='<div class="muted">识别中…（再点上方按钮可取消）</div>';
+    const ctl=new AbortController(); OCR_LVL_RUN={ctl,timedOut:false};
+    const lvlTo=setTimeout(()=>{ if(OCR_LVL_RUN){ OCR_LVL_RUN.timedOut=true; ctl.abort(); } },300000);
+    try{
+      const res=await fetch("/api/characters/ocr",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:"{}",signal:ctl.signal});
+      const r=await res.json();
+      if(!res.ok) throw new Error(r.error||res.status);
+      const rows=(r.characters||[]);
+      const findCard=name=>[...document.querySelectorAll(".char")].find(e=>e.querySelector(".c-name")?.value===name);
+      const SK=["normal","variable","orbit","assist"], SKN={normal:"普攻",variable:"变轨",orbit:"极轨",assist:"援护"};
+      // 未识别/未导入行的手动映射下拉：本系统角色名单（.c-name 与 state.characters
+      // 同源，findCard 可命中）+（跳过）；选择后该行 name 替换为所选角色，三个应用按钮照常生效
+      const charOpts=(BOOT.state.characters||[]).map(c=>`<option value="${esc(c.name)}">${esc(c.name)}</option>`).join("");
+      prev.innerHTML=`<div class="card"><h3>等级识别结果<span class="h-sub">${esc(r.window||"")} · 识别 ${rows.length} 名角色${(r.warnings||[]).length?` · ${(r.warnings||[]).map(esc).join("；")}`:""}</span></h3>
+        ${rows.length?`<table><tr><th>角色名</th><th>等级</th><th>普攻</th><th>变轨</th><th>极轨</th><th>援护</th><th>特技①</th><th>特技②</th><th>本系统</th></tr>
+        ${rows.map((x,ri)=>{const has=x.name&&!!findCard(x.name);
+          return `<tr><td><b data-lname="${ri}">${esc(x.name||"（未识别）")}</b>${
+            has?"":`<div style="margin-top:4px"><select data-lmap="${ri}" style="max-width:140px" title="OCR 名字未匹配到本系统角色：手动指定后，本行的三个应用按钮按所选角色生效">
+              <option value="">（跳过）</option>${charOpts}</select></div>`}</td>
+          <td class="num">${x.level??"—"}</td><td class="num">${x.normal??"—"}</td><td class="num">${x.variable??"—"}</td>
+          <td class="num">${x.orbit??"—"}</td><td class="num">${x.assist??"—"}</td>
+          <td class="num">${x.talent1??"—"}</td><td class="num">${x.talent2??"—"}</td>
+          <td data-lstat="${ri}">${has?"<span class='tag ok'>已在列表</span>":`<span class='tag warn'>未识别/未导入</span>`}</td></tr>`;}).join("")}</table>
+        <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:8px">
+          <button class="btn" id="lvlApplyLv">应用等级 → 角色等级·当前</button>
+          <button class="btn" id="lvlApplySk">应用四技能 → 各技能·当前</button>
+          <button class="btn" id="lvlApplyTl">应用特技 → 都市特技等级</button>
+          <button class="btn sec" id="lvlDismiss">放弃</button>
+          <span class="muted">应用后仍需点「保存角色」落库；未识别名字的行先用下拉指定角色（或跳过）再应用</span></div>`
+        :`<div class="muted">未识别到角色（确认游戏停留在角色「信息」页且头像列可见）${(r.unmatched_lines||[]).length?`：${(r.unmatched_lines||[]).slice(0,8).map(esc).join(" / ")}`:""}</div>`}
+      </div>`;
+      const applyLv=$("#lvlApplyLv"), applySk=$("#lvlApplySk"), applyTl=$("#lvlApplyTl");
+      // 手动映射：把该行 name 替换为所选角色（（跳过）= 置空，应用逻辑按 !x.name 天然跳过），
+      // 三个应用按钮沿用 findCard(x.name) 的现有逻辑，无需改动
+      prev.querySelectorAll("[data-lmap]").forEach(sel=>sel.onchange=()=>{
+        const i=+sel.dataset.lmap, x=rows[i]; if(!x) return;
+        const tr=sel.closest("tr"), orig=x.name;   // OCR 原文（可能误读），跳过时保留展示
+        x.name=sel.value||null;
+        const b=tr.querySelector(`[data-lname="${i}"]`);
+        if(b) b.textContent=x.name||(orig?`${orig}（已跳过）`:"（未识别）");
+        const stat=tr.querySelector(`[data-lstat="${i}"]`);
+        if(stat) stat.innerHTML=(x.name&&findCard(x.name))?"<span class='tag ok'>已在列表</span>":"<span class='tag warn'>未识别/未导入</span>";
+      });
+      if(applyLv) applyLv.onclick=()=>{
+        let hits=0;
+        rows.forEach(x=>{ if(x.level==null||!x.name) return;
+          const card=findCard(x.name); if(!card) return;
+          const inp=card.querySelector('[data-track="char_level"][data-tk="cur"]');
+          if(inp && String(inp.value)!==String(x.level)){ inp.value=x.level; inp.style.borderColor="var(--warn)"; hits++; }});
+        toast(hits?`已预填 ${hits} 个角色等级（黄色边框），请核对后保存`:"数值无变化");
+      };
+      if(applySk) applySk.onclick=()=>{
+        let hits=0;
+        rows.forEach(x=>{ if(!x.name) return;
+          const card=findCard(x.name); if(!card) return;
+          SK.forEach(k=>{ if(x[k]==null) return;
+            const inp=card.querySelector(`.c-skill[data-skill='${k}'][data-tk='cur']`);
+            if(inp && String(inp.value)!==String(x[k])){ inp.value=x[k]; inp.style.borderColor="var(--warn)"; hits++; }});
+        });
+        toast(hits?`已预填 ${hits} 项技能当前等级（黄色边框），请核对后保存`:"数值无变化");
+      };
+      if(applyTl) applyTl.onclick=()=>{
+        let hits=0;
+        rows.forEach(x=>{ if(!x.name) return;
+          const card=findCard(x.name); if(!card) return;
+          const lv=[x.talent1, x.talent2];   // 槽位上限按游戏实测：①上限 5、②上限 2
+          lv.forEach((v,i)=>{ if(v==null) return;
+            const inp=card.querySelector(`.c-ct-lv[data-ct='${i}']`);
+            const capped=Math.min(v, i===0?5:2);
+            if(inp && String(inp.value)!==String(capped)){ inp.value=capped; inp.style.borderColor="var(--warn)"; hits++; }});
+        });
+        toast(hits?`已预填 ${hits} 项都市特技等级（黄色边框），请核对后保存`:"数值无变化");
+      };
+      const dis=$("#lvlDismiss");
+      // 放弃：尽力叫停后端遍历（此时请求多已自然结束，调用是无副作用的兜底）
+      if(dis) dis.onclick=()=>{ ocrFireCancel(); prev.innerHTML=""; };
+    }catch(e){
+      prev.innerHTML="";
+      if(e&&e.name==="AbortError"){
+        // 超时/用户取消：发后即忘叫停后端逐格遍历（当前头像点完即停，不再继续）
+        ocrFireCancel();
+        toast(OCR_LVL_RUN&&OCR_LVL_RUN.timedOut
+          ?"识别超时——后端已停止：请降低头像数或稍后再试"
+          :"已取消识别——后端已停止：请降低头像数或稍后再试","err");
+      }
+      else alertErr(e);
+    }
+    finally{ clearTimeout(lvlTo); OCR_LVL_RUN=null; btn.textContent=old; }
   };
   $("#btnImportLibs").onclick = async ()=>{
     if(!(await qConfirm("把游戏目录中的全部角色与弧盘合并进角色库/武器库？（自定义名字保留，不覆盖）")))return;
@@ -712,7 +838,8 @@ async function renderChars(){
   };
 }
 function seriesOptions(prefix, count, cur, onlyN){
-  /* ability_N/arc_N/console_N 的可读名全部来自 materials targets（雏鸟系/戏剧芯/钟表把戏…）；
+  /* ability_N/arc_N/console_N 的可读名来自 materials targets；
+     异能系显示简写（"技能书·雏鸟系（…）"→"雏鸟系"），其余前缀照旧；
      onlyN=数字时只显示该系（角色适配过滤），未定系则显示全部 */
   const targets=(BOOT.tables.materials||{}).targets||[];
   const out=[];
@@ -720,7 +847,11 @@ function seriesOptions(prefix, count, cur, onlyN){
     if(onlyN && n!==onlyN) continue;
     const id=`${prefix}_${n}`;
     const t=targets.find(x=>x.id===id);
-    const label=t?(t.display_name||t.name):id;
+    let label=t?(t.display_name||t.name):id;
+    if(prefix==="ability"){
+      const parts=label.split("·");
+      if(parts.length>1) label=parts[1].split("（")[0];
+    }
     out.push(`<option value="${n}" ${+cur===n?"selected":""}>${esc(label)}</option>`);
   }
   return out.join("");
@@ -742,7 +873,7 @@ function abilitySeriesOptions(sel){
     return `<option value="ability_${n}" ${sel===`ability_${n}`?"selected":""}>${esc(label)}</option>`;
   }).join("");
 }
-function charCard(c,i,tracks,rowsOf){
+function charCard(c,i,tracks,rowsOf,weaponMeta,stateToCan){
   const div=document.createElement("div");
   div.className="char"; div.dataset.idx=i; div.dataset.cid=c.id;
   const skillTop = BOOT.skill_max||10;  // wiki skillUpgrade 实际上限（bootstrap 下发）
@@ -788,7 +919,8 @@ function charCard(c,i,tracks,rowsOf){
       <span class="drag-handle" title="拖动排序" style="cursor:grab;color:var(--faint);font-size:15px;letter-spacing:-1px">⋮⋮</span>
       <label class="switch" title="启用/停用（停用归入不想练区）"><input type="checkbox" class="c-enabled" ${c.enabled?"checked":""}><span class="sl"></span></label>
       <input class="c-name" list="charNameList" style="width:150px" value="${esc(c.name)}" placeholder="角色名">
-      <span class="muted">异能系</span><select class="c-ability" style="max-width:230px">${abilityOptionsFor(c)}</select>
+      <span class="muted">异能系</span><select class="c-ability" style="max-width:150px">${abilityOptionsFor(c)}</select>
+      <span class="muted">弧盘</span><select class="c-weapon" style="max-width:220px" title="按角色物态适配过滤（同「弧盘」页）；罐头系随物态自动派生">${arcWeaponOptions(c, weaponMeta, "")}</select>
       <span class="grow"></span>
       <button class="btn sec mini" data-act="maxAll" title="角色等级/技能目标全部设为满级">全部满级</button>
       <button class="btn sec mini" data-act="up" title="上移（优先级更高）">↑</button>
@@ -815,7 +947,7 @@ function charCard(c,i,tracks,rowsOf){
       </div>
       <div class="grid" style="margin-bottom:10px">${trackRows}</div>
       <div class="row" style="margin:6px 0;flex-wrap:wrap">
-        <span class="chip acc">弧盘：${esc(c.weapon||"未选择")}（「弧盘」页维护）</span>
+        <span class="chip acc arc-chip">弧盘：${esc(c.weapon||"未选择")}</span>
         <span class="chip acc">空幕：${nmChip}（「空幕」页维护）</span>
       </div>
       <div style="font-size:13px;color:var(--acc);margin:6px 0">培养进度与材料缺口 <span class="muted">（四技能/天赋/角色等级实时计算；BOSS/小怪按等级门槛 31/41/51/61/71 突破自动计入）</span></div>
@@ -825,6 +957,11 @@ function charCard(c,i,tracks,rowsOf){
       <button class="btn sec mini" data-act="addExtra" style="margin-top:8px">＋ 添加材料</button>
     </div>`;
   div.querySelector('[data-act="fold"]').onclick=()=>div.classList.toggle("open");
+  // 弧盘下拉联动（与「弧盘」页同源逻辑）：选择后即时更新 chip；罐头系在保存时按物态派生
+  const arcSel=div.querySelector(".c-weapon");
+  if(arcSel) arcSel.onchange=()=>{
+    div.querySelector(".arc-chip").textContent="弧盘："+(arcSel.value||"未选择");
+  };
   // 目标等级自动 ≥ 当前等级
   div.querySelectorAll(".c-skill[data-tk='cur']").forEach(inp=>{
     inp.addEventListener("input", ()=>{
@@ -917,7 +1054,7 @@ async function persistCharOrder(){
 async function renderArc(){
   $("#main").innerHTML='<div class="card"><div class="muted">加载中…</div></div>';
   const tracks = BOOT.tables.requirements.tracks||{};
-  const chars = BOOT.state.characters||[];
+  const chars = (BOOT.state.characters||[]).filter(c=>c.enabled);  // 不想练（停用）角色不出现在弧盘页
   const gd = await api("/api/game-data").catch(()=>({}));
   const weaponMeta = {};  // 目录武器名 → {matter_state, rarity}（全稀有度收录：适配过滤按物态、排序按稀有度）
   (gd.weapons||[]).forEach(w=>{
@@ -1064,7 +1201,7 @@ async function renderNullmux(){
   const mainStats=(NULLMUX_CASSETTES||{}).main_stats||[];
   const subStats=(NULLMUX_CASSETTES||{}).sub_stats||[];
   const driverMains=(NULLMUX_CASSETTES||{}).driver_main_stats||["攻击力","生命值"];
-  const chars=BOOT.state.characters||[];
+  const chars=(BOOT.state.characters||[]).filter(c=>c.enabled);  // 不想练（停用）角色不出现在空幕页
   const consoleT=(BOOT.tables.requirements.tracks||{}).console_level||{max:20};
   const elemOf=c=>({光:"光系",暗:"暗系",灵:"灵系",咒:"咒系",相:"相系",魂:"魂系"}[c.attribute]||"");
   const nodeOpts=cur=>{
@@ -1263,21 +1400,211 @@ function renderTeamsList(teams,charNames){
 }
 
 /* ---------- 库存 ---------- */
+/* 背包 OCR v3：窗口绑定与网格标定。依赖后端 /api/ocr/windows、/api/ocr/select、
+   /api/ocr/layout、/api/ocr/capture——后两个是真轻量（读/写布局文件，走通用 15s），
+   前两个含 PowerShell 窗口枚举（后端 timeout=30s）、capture 含 PS 截屏（最坏 ≈120s），
+   走 api() 的加长超时（45s / 150s），别让客户端比后端先放弃。 */
+let OCR_CURRENT=null;  // 最近获知的绑定窗口 {process,title}（来自窗口列表或手动选择）
+let OCR_LAYOUT=null;   // 已存网格布局缓存（标定沿用 / 背包识别等待上限估算用）
+let OCR_RUN=null;      // 进行中的背包 OCR 等待 {ctl,timedOut}；识别中再点一次按钮=取消等待
+let OCR_LVL_RUN=null;  // 进行中的角色等级 OCR 等待 {ctl,timedOut}；同上，再点一次=取消
+/* 尽力叫停后端遍历（发后即忘）：POST /api/ocr/cancel 置 _OCR_CANCEL，页间生效——
+   当前页的 PS 点击序列点完即停、不再翻页/下一个目标；请求失败（旧后端 404 等）
+   静默忽略，不影响主流程。等待超时/用户取消/「放弃」都会调用 */
+function ocrFireCancel(){
+  try{ fetch("/api/ocr/cancel",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:"{}",signal:AbortSignal.timeout(3000)}).catch(()=>{}); }catch(_e){}
+}
+function ocrLayoutSummary(l){
+  if(!l||!l.first_cell) return "";
+  const pc=v=>((typeof v==="number"?v:0)*100).toFixed(1)+"%";
+  return `首格(${pc(l.first_cell.x)}, ${pc(l.first_cell.y)}) · 步长(${pc(l.step&&l.step.dx)}, ${pc(l.step&&l.step.dy)}) · ${l.cols??"?"}列×${l.rows??"?"}行`;
+}
+function updateOcrBindInfo(){
+  const el=document.getElementById("ocrBindInfo"); if(!el) return;
+  const st=(BOOT&&BOOT.state&&BOOT.state.settings)||{};
+  el.textContent = OCR_CURRENT
+    ? `当前绑定：${OCR_CURRENT.process}${OCR_CURRENT.title?`（${OCR_CURRENT.title}）`:""}`
+    : (st.game_process_name ? `当前绑定：${st.game_process_name}（已手动选择）` : "当前绑定：自动查找 HTGame.exe");
+}
+async function ocrPickWindow(){
+  // 窗口枚举后端走 PowerShell（timeout=30s，慢机器接近上限），15s 默认会白报错：传 45s
+  const r=await api("/api/ocr/windows", undefined, 45000);
+  OCR_CURRENT=r.current||null; updateOcrBindInfo();
+  const wins=r.windows||[];
+  // 后端 process 为 Get-Process 的 ProcessName（无 .exe 后缀）；剥掉 .exe 再比对，两种口径都命中
+  const isGame=w=>String(w.process||"").toLowerCase().replace(/\.exe$/,"")==="htgame";
+  const hasGame=wins.some(isGame);
+  const isCur=w=>!!OCR_CURRENT&&w.process===OCR_CURRENT.process&&(w.title||"")===(OCR_CURRENT.title||"");
+  const ov=document.createElement("div"); ov.className="modal-ov";
+  ov.innerHTML=`<div class="modal" style="max-width:620px">
+    <h3 style="margin:0 0 10px;font-size:14px">选择识别窗口<span class="h-sub">点选某行即绑定；绑定后背包/角色 OCR 的截屏与点击都用它</span></h3>
+    ${hasGame?"":'<div class="banner warn" style="margin:0 0 10px">未发现游戏窗口——请先启动游戏</div>'}
+    <div style="max-height:340px;overflow-y:auto;border:1px solid var(--line);border-radius:10px">
+    ${wins.length?`<table><tr><th>进程</th><th>窗口标题</th><th>PID</th></tr>
+      ${wins.map(w=>`<tr data-pid="${w.pid}" style="cursor:pointer${isCur(w)?";background:var(--acc-soft)":""}">
+        <td style="white-space:nowrap"><b>${esc(w.process)}</b>${isGame(w)?' <span class="tag acc">游戏</span>':""}${isCur(w)?' <span class="tag ok">当前</span>':""}</td>
+        <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(w.title||"")}">${esc(w.title||"（无标题）")}</td>
+        <td class="num">${w.pid}</td></tr>`).join("")}</table>`
+      :'<div class="muted" style="padding:14px">未枚举到可见顶层窗口</div>'}</div>
+    <div class="row" style="margin-top:12px"><span class="muted grow" id="ocrWinMsg"></span>
+      <button class="btn sec" id="ocrWinClose">关闭</button></div></div>`;
+  document.body.appendChild(ov);
+  const close=()=>ov.remove();
+  ov.onclick=e=>{ if(e.target===ov) close(); };
+  ov.querySelector("#ocrWinClose").onclick=close;
+  ov.querySelectorAll("tr[data-pid]").forEach(tr=>tr.onclick=async()=>{
+    const pid=+tr.dataset.pid;
+    const w=wins.find(x=>x.pid===pid); if(!w) return;
+    if(!isGame(w)&&!(await qConfirm(`「${w.process}」不是游戏进程（HTGame.exe），确定绑定为识别窗口吗？`)))return;
+    const msg=ov.querySelector("#ocrWinMsg"); msg.textContent="绑定中…";
+    try{
+      const sr=await api("/api/ocr/select",{pid},45000);  // 绑定含一次窗口枚举（后端 30s 上限）
+      OCR_CURRENT={process:(sr.selected&&sr.selected.process)||w.process,
+        title:(sr.selected&&sr.selected.title)??w.title};
+      // 后端已把进程名/标题写入设置并落盘 state.json，这里同步本地缓存让界面即时一致
+      const st=BOOT.state.settings||(BOOT.state.settings={});
+      st.game_process_name=OCR_CURRENT.process; st.game_window_keywords=OCR_CURRENT.title||"";
+      updateOcrBindInfo();
+      toast(`已绑定窗口：${OCR_CURRENT.process}${OCR_CURRENT.title?`（${OCR_CURRENT.title}）`:""}`);
+      close();
+    }catch(e){ msg.textContent=""; alertErr(e); }
+  });
+}
+async function ocrCalibrate(){
+  // 三点标定（2026-11-04 实测修正）：①格(0,0)中心 → ②同行相邻格(1,0)中心 →
+  // ③第一格正下方格(0,1)中心 —— dx 与 dy 分别推导（旧版两点共推导致 dy≈0、
+  // 遍历"只在同一行来回"）；cols/rows 本弹窗内直接编辑
+  // capture 传 150s：后端最坏 ≈120s（窗口枚举 PS 30s + 截图 PS 90s），15s 默认值
+  // 会让慢机器首次标定必超时（评审项：后端截图实际成功，前端却报错诱导反复重试）
+  const [lr,cr]=await Promise.all([api("/api/ocr/layout"), api("/api/ocr/capture", undefined, 150000)]);
+  const layout=lr.layout||{}; OCR_LAYOUT=layout;
+  if(!cr.image) throw new Error("后端未返回截图数据");
+  // fallback 透传消费（评审项）：截图瞬间窗口失效 → PS 回退整屏截取，
+  // 按窗口比例在此图上标定会系统性错位（后端 warnings 明言不可用于标定）——
+  // 拒绝打开标定弹窗，原因经 .catch(alertErr) 弹 toast，让用户重试截图
+  if(cr.fallback){
+    throw new Error((cr.warnings&&cr.warnings[0])||
+      "绑定窗口截图时已失效，本次为全屏截取——该图不可用于网格标定，请重试截图");
+  }
+  const ov=document.createElement("div"); ov.className="modal-ov";
+  ov.innerHTML=`<div class="modal" style="max-width:880px">
+    <h3 style="margin:0 0 6px;font-size:14px">背包网格标定（三点）<span class="h-sub">依次点击 ①第一格(0,0)中心 → ②同行相邻格(1,0)中心 → ③第一格正下方格(0,1)中心（百分比记录，与分辨率无关）</span></h3>
+    <div class="muted" style="margin-bottom:8px">当前布局：${esc(ocrLayoutSummary(layout)||"未保存")}</div>
+    <div id="calWrap" style="position:relative;display:inline-block;max-width:100%;line-height:0;overflow:hidden">
+      <img id="calImg" alt="游戏窗口截图" src="data:image/png;base64,${cr.image}"
+        style="max-width:100%;max-height:62vh;display:block;cursor:crosshair;border:1px solid var(--line2)">
+      <div id="calTip" style="position:absolute;left:0;top:0;background:rgba(4,8,12,.78);padding:2px 9px;border-radius:6px;font-size:12px;color:var(--warn)">请点击「第一格 (0,0)」中心</div>
+    </div>
+    <div class="row" style="margin-top:10px;gap:10px">
+      <span class="muted">列数</span><input type="number" id="calCols" min="1" max="20" value="${layout.cols??7}" style="width:64px">
+      <span class="muted">行数</span><input type="number" id="calRows" min="1" max="20" value="${layout.rows??4}" style="width:64px">
+      <span class="muted grow" id="calResult"></span>
+      <button class="btn sec" id="calReset">重新点击</button>
+      <button class="btn" id="calSave" style="display:none">保存布局</button>
+      <button class="btn sec" id="calClose">关闭</button></div></div>`;
+  document.body.appendChild(ov);
+  const img=ov.querySelector("#calImg"), tip=ov.querySelector("#calTip"), wrap=ov.querySelector("#calWrap"),
+        result=ov.querySelector("#calResult"), saveBtn=ov.querySelector("#calSave"),
+        colsInp=ov.querySelector("#calCols"), rowsInp=ov.querySelector("#calRows");
+  let pts=[], pending=null;  // pts：三次点击的百分比坐标
+  const draw=()=>{ wrap.querySelectorAll(".cal-dot,.cal-cell").forEach(d=>d.remove());
+    pts.forEach((p,i)=>{ const d=document.createElement("div");
+      d.className="cal-dot";
+      d.style.cssText=`position:absolute;left:${p.x}%;top:${p.y}%;width:13px;height:13px;margin:-7px 0 0 -7px;border-radius:50%;background:var(--warn);border:2px solid #fff;pointer-events:none;font:700 9px/10px sans-serif;color:#04121f;text-align:center`;
+      d.textContent=String(i+1); wrap.appendChild(d); }); };
+  const gridParams=()=>{
+    const cols=Math.min(20,Math.max(1,+colsInp.value||7));
+    const rows=Math.min(20,Math.max(1,+rowsInp.value||4));
+    let dx=0, dy=0;
+    if(pts.length>=2) dx=+(pts[1].x-pts[0].x).toFixed(3);
+    if(pts.length>=3) dy=+(pts[2].y-pts[0].y).toFixed(3);
+    return {cols, rows, dx, dy};
+  };
+  const preview=()=>{
+    if(pts.length<3) return;
+    const {cols,rows,dx,dy}=gridParams();
+    // 校验：行距/列距过小（三点几乎共线）→ 阻止保存（dy≈0 即"只在同一行来回"的根因）
+    if(rows>1&&Math.abs(dy)<0.5){ tip.textContent="③ 与 ① 的垂直距离过小——第三格必须点在「第一格正下方」的另一行格子上"; tip.style.color="var(--err)"; saveBtn.style.display="none"; return; }
+    if(cols>1&&Math.abs(dx)<0.5){ tip.textContent="② 与 ① 的水平距离过小——第二格必须点在同行相邻格子上"; tip.style.color="var(--err)"; saveBtn.style.display="none"; return; }
+    tip.textContent="三点完成 — 核对网格预览后点「保存布局」"; tip.style.color="var(--ok)";
+    // 契约口径：layout 比例字段为 0-1；UI 展示用百分比，落库前除以 100
+    pending={...layout, cols, rows,
+             first_cell:{x:+(pts[0].x/100).toFixed(4), y:+(pts[0].y/100).toFixed(4)},
+             step:{dx:+(dx/100).toFixed(4), dy:+(dy/100).toFixed(4)}};
+    let oob=0;
+    for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){
+      const x=+(pts[0].x+c*dx).toFixed(2), y=+(pts[0].y+r*dy).toFixed(2);
+      if(x<0||x>100||y<0||y>100){ oob++; continue; }
+      const d=document.createElement("div");
+      d.className="cal-cell";
+      d.style.cssText=`position:absolute;left:${x}%;top:${y}%;width:9px;height:9px;margin:-5px 0 0 -5px;border-radius:3px;border:2px solid rgba(83,182,255,.85);background:rgba(83,182,255,.15);pointer-events:none`;
+      wrap.appendChild(d);
+    }
+    result.textContent=`将保存：首格(${pts[0].x}%, ${pts[0].y}%) · 步长(${dx}%, ${dy}%) · ${cols}列×${rows}行`
+      +(oob?` —— ⚠ ${oob} 格落点越出截图范围（越界点击会点到其他应用，建议重新标定）`:"");
+    result.style.color=oob?"var(--warn)":"";
+    saveBtn.style.display="";
+  };
+  const reset=()=>{ pts=[]; pending=null; draw();
+    tip.textContent="请点击「第一格 (0,0)」中心"; tip.style.color="var(--warn)";
+    result.textContent=""; result.style.color=""; saveBtn.style.display="none"; };
+  ov.querySelector("#calReset").onclick=reset;
+  ov.querySelector("#calClose").onclick=()=>ov.remove();
+  colsInp.oninput=()=>{ if(pts.length>=3) preview(); };
+  rowsInp.oninput=()=>{ if(pts.length>=3) preview(); };
+  img.onclick=e=>{
+    if(pts.length>=3) return;
+    const r=img.getBoundingClientRect();
+    pts.push({x:+(((e.clientX-r.left)/r.width)*100).toFixed(3),
+              y:+(((e.clientY-r.top)/r.height)*100).toFixed(3)});
+    draw();
+    tip.textContent=["已记录第一格 (0,0) — 请点击「同行相邻格 (1,0)」中心",
+                     "已记录 (1,0) — 请点击「第一格正下方格 (0,1)」中心",
+                     "三点完成"][pts.length-1]||"";
+    if(pts.length>=3) preview();
+  };
+  saveBtn.onclick=async()=>{
+    if(!pending) return;
+    saveBtn.disabled=true;
+    try{
+      const sr=await api("/api/ocr/layout",{layout:pending});
+      const saved=sr.layout||pending; OCR_LAYOUT=saved;
+      toast("网格布局已保存并热生效");
+      result.textContent="已保存："+ocrLayoutSummary(saved); result.style.color="";
+      const info=document.getElementById("ocrLayoutInfo"); if(info) info.textContent="已存布局："+ocrLayoutSummary(saved);
+      saveBtn.style.display="none";
+    }catch(e){ alertErr(e); }
+    finally{ saveBtn.disabled=false; }
+  };
+}
 function renderInv(){
   const inv=BOOT.state.inventory||{};
+  const st=BOOT.state.settings||{};
   const cats={};
   allMaterials().forEach(m=>{(cats[m.category]=cats[m.category]||[]).push(m);});
   // 分档族标注（同族跨档等价折算：白:蓝:紫=1:3:9，经验按每本点数；tiers 数据驱动）
   const tierInfo=BOOT.tables.materials.tiers||{};
   const tierOf={};
   Object.entries(tierInfo).forEach(([base,spec])=>spec.tiers.forEach(t=>{tierOf[t.id]={base,f:t.f};}));
-  const escRe=s=>s.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
+  // 库存页标签用游戏内道具实名（item_names 第一别名），无实名回退现名
+  const itemNames=BOOT.tables.materials.item_names||{};
+  const invLabel=m=>{
+    // 实名优先（item_names 第一别名）；无实名回退去括号短名（"猎人攻略·蓝书"）
+    if(itemNames[m.id]&&itemNames[m.id][0]) return itemNames[m.id][0];
+    return String(m.display||m.id).split("（")[0];
+  };
   $("#main").innerHTML=`
     <div class="row save-bar"><button class="btn big" id="saveInv">保存库存</button></div>
     <div class="card"><h3>材料库存<span class="h-sub">全量材料：体力本 + BOSS掉落/周本/小怪等外部来源；先按背包实际填写，之后规划器自动累加。带「分档」的材料按 白/蓝/紫 分开录入，保存后按官方系数折算抵扣缺口</span></h3>
-    <div class="row" style="margin-bottom:10px">
-      <button class="btn sec mini" id="btnOcr">📷 抓取背包（实验）</button>
-      <span class="muted">截屏识别游戏窗口文字 → 命中的材料预填为<b>黄色边框</b> → 请核对后保存；识别不了就手填</span></div>
+    <div class="row" style="margin-bottom:6px">
+      <button class="btn sec mini" id="btnOcr">📷 逐格识别背包（实验·v3）</button>
+      <button class="btn sec mini" id="btnOcrWin">🪟 选择窗口</button>
+      <button class="btn sec mini" id="btnOcrCal">🎯 网格标定</button>
+      <span class="muted" id="ocrBindInfo"></span>
+      <span class="tag warn" id="ocrGameHint" style="display:none">未发现游戏窗口——先启动游戏</span></div>
+    <div class="muted" style="margin-bottom:10px">自动绑定 HTGame.exe 游戏窗口（可「选择窗口」手动指定）→ 自动逐格点击背包格子 → 从右侧详情面板识别名称与数量 → 可选自动翻页（≤${st.ocr_max_pages??5} 页）。首次使用建议先「网格标定」；命中预览确认后预填，识别不了就手填。<span id="ocrLayoutInfo" style="margin-left:8px"></span></div>
+    <div id="ocrPreview" style="display:none"></div>
     ${Object.entries(cats).map(([cat,items])=>`
       <div style="font-size:13px;color:var(--faint);margin:12px 0 8px">${esc(cat)}</div>
       <div class="mat-grid">
@@ -1286,33 +1613,176 @@ function renderInv(){
         const tag=tier?(tier.f===1?`<span class="tag acc" title="基行=白档/当量口径；同族蓝/紫档按系数折算">分档</span>`
                               :`<span class="tag warn" title="折算系数 ×${tier.f}">×${tier.f}</span>`):"";
         return `<div class="mat-item">
-        <label title="${esc(m.source)}">${esc(m.display)}</label>${obtainTag(m.obtain)}${tag}
+        <label title="${esc(m.source)}">${esc(invLabel(m))}</label>${obtainTag(m.obtain)}${tag}
         <input type="number" min="0" data-inv="${m.id}" value="${inv[m.id]??0}"></div>`;}).join("")}
       </div>`).join("")}
     </div>`;
   $("#btnOcr").onclick=async()=>{
-    const btn=$("#btnOcr"); btn.disabled=true; const old=btn.textContent;
-    btn.textContent="识别中…（请保持游戏窗口可见）";
+    const btn=$("#btnOcr");
+    if(OCR_RUN){ OCR_RUN.ctl.abort(); return; }  // 识别中再次点击=取消等待
+    const old=btn.textContent;
+    // 等待上限与后端最坏耗时对齐（不再是固定 120s）：
+    // 每页 = 逐格 PS 上限 min(600, 30+2×格数)（main.py _run_ps_traverse）+ 滚轮 30s（_ocr_scroll）+ page_wait
+    const lay=OCR_LAYOUT||{};
+    // 布局未拉到时按后端默认 7×4 估（main.py 默认布局），别用小网格把等待上限估短：
+    // 上限偏短会提前 abort→发 cancel，后端只是还在正常点格子
+    const cells=Math.max(1,(lay.cols??7)*(lay.rows??4));
+    const perPage=Math.min(600,30+2*cells)+30+(lay.page_wait_ms??800)/1000;
+    const pages=Math.min(20,Math.max(1,BOOT.state.settings?.ocr_max_pages??5));
+    const toMs=Math.ceil((pages*perPage+30)*1000);
+    const ctl=new AbortController(); OCR_RUN={ctl,timedOut:false};
+    const to=setTimeout(()=>{ OCR_RUN.timedOut=true; ctl.abort(); },toMs);
+    btn.textContent="识别中…（再点一次取消等待；请勿操作游戏窗口）";
+    const prev=$("#ocrPreview"); prev.style.display="none"; prev.innerHTML="";
     try{
-      const r=await api("/api/inventory/ocr", {});
-      const text=r.text||"";
-      let hits=0;
-      document.querySelectorAll("[data-inv]").forEach(inp=>{
-        const label=(inp.closest(".mat-item")?.querySelector("label")?.textContent||"").trim();
-        if(!label) return;
-        const candidates=[label, label.split("（")[0]].filter(c=>c.length>=2);
-        for(const candidate of candidates){
-          const m=new RegExp(escRe(candidate)+"\\D{0,14}(\\d{1,9})").exec(text);
-          if(m){ const v=+m[1];
-            if(v>=0 && String(inp.value)!==String(v)){ inp.value=v; inp.style.borderColor="var(--warn)"; hits++; }
-            break;
-          }
-        }
+      // 长/可取消等待，不走通用 15s api()。取消/超时只中断前端等待；catch 里会
+      // POST /api/ocr/cancel 叫停服务端（_OCR_CANCEL 页间生效：当前页点完、不再翻页；
+      // 旧后端无此端点时请求静默失败，handler 继续到自然结束）
+      const res=await fetch("/api/inventory/ocr",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:"{}",signal:ctl.signal});
+      const r=await res.json();
+      // 502=游戏未运行/找不到窗口等：直接展示后端 error 文案，不再包一层「操作失败」
+      if(!res.ok){ toast(r.error||`识别失败（HTTP ${res.status}）`,"err"); return; }
+      const matches=r.matches||{};
+      const ids=Object.keys(matches);
+      // 未识别材料（契约：unknown_items=[{name_text,count}]）——详情面板有文字但名字未收录
+      // 的格，后端单独上报；在此手动映射到系统材料，映射成功后端落别名，下次识别自动命中
+      const unknownItems=(r.unknown_items||[]).filter(u=>u&&u.name_text);
+      // 契约 v3：window 为 {process,title}|null（兼容旧的字符串口径）
+      const winTxt=!r.window?"未绑定":(typeof r.window==="object"
+        ?`${esc(r.window.process||"?")}${r.window.title?`（${esc(r.window.title)}）`:""}`:esc(r.window));
+      // 命中预览表（材料实名 ×数量，可改数后应用）；有未识别材料时也渲染空命中表，
+      // 映射成功的行要落到这里参与同一条「应用预填」通道
+      prev.style.display="block";
+      prev.innerHTML=`<div class="card"><h3>OCR 识别结果<span class="h-sub">${r.pages??0} 页 · 已点 ${r.cells_scanned??0} 格 · 窗口：${winTxt} · 命中 ${ids.length} 项${(r.warnings||[]).length?` · ${(r.warnings||[]).map(esc).join("；")}`:""}</span></h3>
+        ${(ids.length||unknownItems.length)?`<div class="grid" id="ocrHitGrid">${ids.map(id=>{
+          const label=matAllName(id);
+          return `<div class="row" style="gap:6px"><input type="checkbox" data-hit checked title="勾选=参与应用/保存；取消勾选=跳过该行（识别错的材料可排除）">
+            <span class="chip acc" style="max-width:260px">${esc(label)}</span>
+            <input type="number" min="0" data-ocr="${esc(id)}" value="${matches[id]}" style="width:90px"> <span class="muted">个</span></div>`;}).join("")
+          ||`<div class="muted">暂无命中——映射下方未识别材料后会出现在这里</div>`}</div>
+          <div class="row" style="margin-top:10px"><button class="btn" id="ocrApply">应用勾选项（黄色边框）</button>
+          <button class="btn" id="ocrApplySave">应用并保存库存</button>
+          <button class="btn sec" id="ocrDismiss">放弃</button></div>`
+        :`<div class="muted">未识别到已知材料名。可展开原文核对：${(r.unmatched_lines||[]).length} 行未命中</div>`}
+        ${unknownItems.length?`<div id="ocrUnknownBox" style="margin-top:12px"><div style="font-size:13px;color:var(--warn);margin-bottom:2px">未识别材料（${unknownItems.length} 项）<span class="muted">——OCR 原文可直接改正错字；选对应材料后点「映射并预填」，系统会学会改正后的名字，下次识别自动命中</span></div>
+          ${unknownItems.map((u,i)=>`<div class="row" style="gap:6px;margin-top:4px" data-unk="${i}">
+            <input type="text" data-unk-name="${i}" value="${esc(u.name_text)}" maxlength="60"
+              style="max-width:250px" title="OCR 原文（识别错字可直接改正，提交以这里的内容为准）">
+            <input type="number" min="0" data-unk-cnt="${i}" value="${+u.count||0}" style="width:90px" title="识别到的数量（可改）"> <span class="muted">个</span>
+            <select data-unk-sel="${i}" style="max-width:210px"><option value="">选择目标材料…</option>${matAllOptions()}</select>
+            <button class="btn sec mini" data-unk-map="${i}">映射并预填</button></div>`).join("")}
+          </div>`:""}
+        ${(r.unmatched_lines||[]).length?`<details style="margin-top:8px"><summary class="muted" style="cursor:pointer">未命中原文（${r.unmatched_lines.length} 行）</summary>
+          <div class="term" style="margin-top:6px">${(r.unmatched_lines||[]).map(l=>`<div class="ln">${esc(l)}</div>`).join("")}</div></details>`:""}
+      </div>`;
+      // 勾选行收集：命中表每行前置 checkbox（默认勾选）；取消勾选=该行不参与应用/保存，
+      // 用户可排除不想要的（含识别错的已知材料）。映射后搬进命中表的新行同样带勾选框
+      const checkedRows=()=>[...prev.querySelectorAll("[data-ocr]")].filter(inp=>{
+        const cb=inp.closest(".row")?.querySelector("[data-hit]");
+        return !cb||cb.checked;
       });
-      toast(hits?`OCR 命中 ${hits} 项已预填（黄色边框），请核对后保存`:"OCR 未识别到已知材料名", hits?"ok":"err");
-    }catch(e){alertErr(e);}
-    finally{ btn.disabled=false; btn.textContent=old; }
+      const fillChecked=()=>{
+        let hits=0;
+        checkedRows().forEach(inp=>{
+          const target=document.querySelector(`[data-inv="${inp.dataset.ocr}"]`);
+          if(!target) return;
+          const v=+inp.value||0;
+          if(String(target.value)!==String(v)){ target.value=v; target.style.borderColor="var(--warn)"; hits++; }
+        });
+        return hits;
+      };
+      // 勾选联动样式：取消勾选的行弱化显示（事件委托，覆盖映射后新增的行）
+      const hitGrid=$("#ocrHitGrid");
+      if(hitGrid) hitGrid.addEventListener("change",e=>{
+        const cb=e.target; if(!(cb instanceof HTMLInputElement)||!cb.matches("[data-hit]")) return;
+        cb.closest(".row")?.classList.toggle("ocr-off",!cb.checked);
+      });
+      const apply=$("#ocrApply");
+      if(apply) apply.onclick=()=>{
+        const hits=fillChecked();   // 只填充勾选行
+        toast(hits?`已预填 ${hits} 项（黄色边框），请核对后点「保存库存」`:"数值无变化", hits?"ok":"ok");
+        prev.style.display="none";
+      };
+      // 一键两步（修正「应用预填≠保存」两步流丢数据）：勾选行黄框预填 → 立即
+      // POST /api/inventory 落库 → 更新 BOOT.state.inventory 并收起预览
+      const applySave=$("#ocrApplySave");
+      if(applySave) applySave.onclick=async()=>{
+        const hits=fillChecked();   // 勾选行填充
+        const inventory={};
+        document.querySelectorAll("[data-inv]").forEach(inp=>{const v=+inp.value||0; if(v>0)inventory[inp.dataset.inv]=v;});
+        applySave.disabled=true;
+        try{
+          const r=await api("/api/inventory",{inventory});
+          BOOT.state.inventory=r.inventory||inventory;  // 与「保存库存」同口径回填
+          toast(hits?`已预填 ${hits} 项（黄色边框）并保存库存`:"库存已保存");
+          prev.style.display="none";
+        }catch(e){ alertErr(e); applySave.disabled=false; }  // 保存失败不收起预览，可修正后重试
+      };
+      const dismiss=$("#ocrDismiss");
+      // 放弃：尽力叫停后端遍历（此时请求多已自然结束，调用是无副作用的兜底）
+      if(dismiss) dismiss.onclick=()=>{ ocrFireCancel(); prev.style.display="none"; };
+      // 未识别材料 → 手动映射：POST /api/ocr/map-unknown（15s 走通用 api()）落别名；
+      // 成功后该行搬进命中表（黄框预填，数量与已有命中取最大——同款 merge 口径），
+      // 由既有「应用预填」按钮统一写进库存输入框
+      prev.querySelectorAll("[data-unk-map]").forEach(btn=>btn.onclick=async()=>{
+        const i=+btn.dataset.unkMap, row=prev.querySelector(`[data-unk="${i}"]`), u=unknownItems[i];
+        if(!row||!u) return;
+        const matId=row.querySelector(`[data-unk-sel="${i}"]`)?.value;
+        const cnt=+row.querySelector(`[data-unk-cnt="${i}"]`)?.value||0;
+        if(!matId){ toast("请先选择要映射到的目标材料","err"); return; }
+        // 名字以输入框当前值为准（不再用原 chip 文本）：OCR 原文里几个明显错字
+        // 可先改正再提交，系统学到的就是改正后的名字
+        const nameText=(row.querySelector(`[data-unk-name="${i}"]`)?.value||"").trim()||u.name_text;
+        btn.disabled=true;
+        try{
+          await api("/api/ocr/map-unknown",{name_text:nameText, mat_id:matId});
+          let inp=prev.querySelector(`[data-ocr="${matId}"]`);
+          if(inp){ inp.value=Math.max(+inp.value||0,cnt); }
+          else{
+            const grid=$("#ocrHitGrid");
+            grid.querySelector(".muted")?.remove();   // 清掉「暂无命中」占位
+            grid.insertAdjacentHTML("beforeend",
+              `<div class="row" style="gap:6px"><input type="checkbox" data-hit checked title="勾选=参与应用/保存；取消勾选=跳过该行（识别错的材料可排除）">
+              <span class="chip acc" style="max-width:260px">${esc(matAllName(matId))}</span>
+              <input type="number" min="0" data-ocr="${esc(matId)}" value="${cnt}" style="width:90px"> <span class="muted">个</span></div>`);
+            inp=grid.querySelector(`[data-ocr="${matId}"]`);
+          }
+          if(inp) inp.style.borderColor="var(--warn)";  // 黄框=预填待核对，与其它 OCR 预填一致
+          row.remove();
+          const box=$("#ocrUnknownBox");
+          if(box&&!box.querySelector("[data-unk]")) box.style.display="none";  // 全部映射完收起分区
+          toast("已学会该道具，下次识别自动命中");
+        }catch(e){ alertErr(e); btn.disabled=false; }
+      });
+      if(!ids.length&&!unknownItems.length) toast("OCR 未识别到已知材料名（经验书等无实名材料不在识别范围）","err");
+    }catch(e){
+      if(e&&e.name==="AbortError"){
+        // 叫停后端逐格点击（评审项）：ocrFireCancel() 发后即忘——/api/ocr/cancel 置
+        // _OCR_CANCEL，页间生效（当前页的 PS 点击序列已在子进程里跑完不可中断，
+        // 之后不再发起下一页/翻页）；请求失败（旧后端 404 等）静默忽略
+        ocrFireCancel();
+        if(OCR_RUN&&OCR_RUN.timedOut) toast(`识别超时（等待上限 ${Math.round(toMs/1000)}s）——已请求后端停止：当前页会点完，不再翻页，请留意游戏窗口`,"err");
+        else toast("已取消等待——已请求后端停止：当前页的逐格点击会点完，之后的页不再继续","err");
+      }
+      else alertErr(e);
+    }
+    finally{ clearTimeout(to); OCR_RUN=null; btn.textContent=old; }
   };
+  $("#btnOcrWin").onclick=()=>ocrPickWindow().catch(alertErr);
+  $("#btnOcrCal").onclick=()=>ocrCalibrate().catch(alertErr);
+  // 后台探测：当前绑定 / 游戏是否在运行 / 已存布局（端点未就绪时静默跳过，不打扰页面）
+  updateOcrBindInfo();
+  api("/api/ocr/windows", undefined, 45000).then(r=>{  // 后台探测：后端枚举上限 30s，别让 15s 白断
+    OCR_CURRENT=r.current||null; updateOcrBindInfo();
+    const hint=document.getElementById("ocrGameHint");
+    if(hint) hint.style.display=r.game_running===false?"":"none";  // 仅在明确未运行时提示
+  }).catch(()=>{});
+  api("/api/ocr/layout").then(r=>{
+    OCR_LAYOUT=r.layout||null;
+    const s=ocrLayoutSummary(r.layout), el=document.getElementById("ocrLayoutInfo");
+    if(el&&s) el.textContent="已存布局："+s;
+  }).catch(()=>{});
   $("#saveInv").onclick=async()=>{
     const inventory={};
     document.querySelectorAll("[data-inv]").forEach(inp=>{const v=+inp.value||0; if(v>0)inventory[inp.dataset.inv]=v;});
@@ -1652,6 +2122,12 @@ function renderSettings(){
       ${setRow("默认追猎目标",`<select id="s_htgt">${(BOOT.tables.materials.hunter_bosses||[]).map(b=>
         `<option ${s.anomaly_hunter_target===b.name?"selected":""}>${esc(b.name)}</option>`).join("")}</select>`,"也可在总览页追猎计划卡临时选择")}
     </div>
+    <div class="card"><h3>背包 OCR（实验·v3）<span class="h-sub">自动绑定 HTGame.exe 窗口 → 逐格点击 → 右侧详情识别 → 可选自动翻页</span></h3>
+      ${setRow("游戏窗口关键词",`<input id="s_gwkw" value="${esc(s.game_window_keywords||"异环,Neverness")}" style="flex:1;min-width:220px">`,
+        "逗号分隔；标题兜底匹配（主绑定靠进程名，用库存页「选择窗口」写入）。背包 OCR 找不到游戏窗口直接报错、不再回退全屏；角色等级 OCR 仍会回退")}
+      ${setRow("自动翻页页数上限",`<input type="number" id="s_opages" value="${s.ocr_max_pages??5}" min="1" max="20">`,
+        "识别一页后自动向游戏窗口发滚轮翻下一页，识别文本与上一页相同即提前停止；背包识别的前端等待上限会随页数自动放大")}
+    </div>
     <div class="card"><h3>体力恢复模型<span class="h-sub">用于估计与未来预览，不影响执行逻辑</span></h3>
       ${setRow("体力上限",`<input type="number" id="s_cap" value="${s.stamina_cap??320}" min="1" max="999">`,
         "游戏内体力上限：基础 240，家具「织梦结」等可扩容")}
@@ -1679,6 +2155,7 @@ function renderSettings(){
       continuous_mode:$("#s_cont").checked, busy_retry_seconds:numVal("s_retry"),
       anomaly_hunter_stamina:numVal("s_hsta"), anomaly_hunter_target:$("#s_htgt").value,
       stamina_cap:numVal("s_cap"), stamina_regen_per_hour:numVal("s_regen"),
+      game_window_keywords:$("#s_gwkw").value, ocr_max_pages:numVal("s_opages"),
       stamina_now:snowRaw===""?null:+snowRaw});
       toast("设置已保存"); await boot(); renderSettings();}catch(e){alertErr(e);}
   };

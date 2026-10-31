@@ -340,18 +340,29 @@ def verify_dist(py):
 
 
 def _ensure_pyi_deps(py, packages):
-    """把额外依赖装进隔离目录 tools/_build/pyi（绝不碰 ok-nte 的 Python）。返回是否成功。"""
+    """把额外依赖装进隔离目录 tools/_build/pyi（绝不碰 ok-nte 的 Python）。返回是否成功。
+
+    镜像优先（腾讯云），失败回退默认 PyPI——2026-11-03 镜像抖动导致
+    "Could not find a version" 假性缺依赖、单文件档静默跳过（真机反馈）。"""
     os.makedirs(PYI_DEPS, exist_ok=True)
     r = subprocess.run(
         [py, "-m", "pip", "install", "--quiet", "--target", PYI_DEPS,
          "--index-url", "https://mirrors.cloud.tencent.com/pypi/simple/",
          *packages],
         capture_output=True, text=True, timeout=900)
-    if r.returncode != 0:
-        print(f"依赖安装失败（不阻断，运行时将自动降级）:\n"
-              f"{r.stdout[-400:]}\n{r.stderr[-400:]}")
-        return False
-    return True
+    if r.returncode == 0:
+        return True
+    print("依赖源 mirrors.cloud.tencent.com 安装失败，尝试默认 PyPI…")
+    r = subprocess.run(
+        [py, "-m", "pip", "install", "--quiet", "--target", PYI_DEPS,
+         "--index-url", "https://pypi.org/simple/",
+         *packages],
+        capture_output=True, text=True, timeout=900)
+    if r.returncode == 0:
+        return True
+    print(f"依赖安装失败（不阻断，运行时将自动降级）:\n"
+          f"{r.stdout[-400:]}\n{r.stderr[-400:]}")
+    return False
 
 
 def try_pyinstaller_single(py):

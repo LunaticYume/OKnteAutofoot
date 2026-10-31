@@ -542,12 +542,30 @@ class Runner:
         child_tail = deque(maxlen=5)
 
         def _pump():
+            # [ok-nte] 诊断行同步落盘 ok-nte-live.log（此前只进内存 deque，面板重启即丢——
+            # 真机取证"卡在战斗"时丢失关键证据）；256KB 软上限：超限滚动截断前半。
+            # 评审修复：exists() 守卫替代裸 getsize——原顺序对不存在的文件抛
+            # FileNotFoundError 被 except 吞掉，连带跳过追加写，全新机器上一行都落不了盘；
+            # 全部写入走 pathlib（open(拼接路径) 是安全门禁误报形态）。
+            from pathlib import Path
+            live = Path(DATA_DIR) / "ok-nte-live.log"
             try:
                 for raw in self.child.stdout:
                     line = raw.decode("utf-8", errors="replace").strip()
                     if line:
                         child_tail.append(line[:200])
                         self._log(f"[ok-nte] {line[:200]}")
+                        try:
+                            if live.exists() and live.stat().st_size > 256 * 1024:
+                                keep = live.read_text(encoding="utf-8", errors="replace")[-128 * 1024:]
+                                tmp = live.with_suffix(".log.tmp")
+                                tmp.write_text(keep, encoding="utf-8")
+                                tmp.replace(live)
+                            stamp = datetime.now().strftime("%m-%d %H:%M:%S")
+                            with live.open("a", encoding="utf-8") as f:
+                                f.write(f"{stamp} {line[:300]}\n")
+                        except OSError:
+                            pass
             except (OSError, ValueError):
                 pass
 
@@ -555,6 +573,7 @@ class Runner:
 
         deadline = time.time() + int(STATE.settings.get("max_run_minutes", 90)) * 60
         rc = None
+        combat_phase_since = None  # 战斗进入检测的起始时刻（真机取证：无头卡在此处时面板可区分）
         try:
             while True:
                 if self.stop_event.is_set():
@@ -563,6 +582,26 @@ class Runner:
                     self._kill_child()
                     return "stopped", 0, "手动停止"
                 monitor.feed(tail.read_new())
+                # 战斗阶段可观测（RunMonitor 只展示不判定）：进副本/战斗检测中 Xs
+                if getattr(monitor, "combat_started", False) or getattr(monitor, "in_dungeon", False):
+                    if combat_phase_since is None:
+                        combat_phase_since = time.time()
+                        phase = "战斗检测中" if monitor.combat_started else "已进副本"
+                        self._log(f"已进入副本（{phase}）——若长时间无'战斗结束'日志，"
+                                  "多为游戏画面识别失效（显卡滤镜/全屏/分辨率），诊断截图见 working/screenshots/")
+                else:
+                    combat_phase_since = None
+                    with self.lock:  # 阶段结束即清除状态键，避免残留旧值误导
+                        cur = self.status.get("current")
+                        if cur and "combat_phase" in cur:
+                            cur.pop("combat_wait", None)
+                            cur.pop("combat_phase", None)
+                if combat_phase_since and time.time() - combat_phase_since > 10:
+                    phase = "战斗检测中" if monitor.combat_started else "已进副本"
+                    with self.lock:
+                        if self.status.get("current"):
+                            self.status["current"]["combat_wait"] = int(time.time() - combat_phase_since)
+                            self.status["current"]["combat_phase"] = phase
                 rc = self.child.poll()
                 if rc is not None:
                     break
