@@ -2669,6 +2669,69 @@ def test_planner_growth_integration_no_double_count():
         assert managed == {"mob_whisper_c", "wk_test", "boss_test"}, managed
 
 
+# ---------- 材料分档等价折算（同族跨档，wiki 官方系数） ----------
+
+@case
+def test_equivalent_inventory():
+    """折算视图：枚数族 1:3:9、经验族按每本点数；基键与分档键相加无双算；未声明键透传。"""
+    inv = {
+        "ability_2": 10, "ability_2_b": 4, "ability_2_p": 2,   # 10+12+18=40 白当量
+        "mob_whisper_c": 5, "mob_whisper_b": 1, "mob_whisper_a": 1,  # 5+3+9=17
+        "exp_char": 3000, "exp_char_p": 2,                      # 3000+40000=43000 点
+        "coin": 7, "boss_flower_seed": 3,                        # 未声明族：透传
+        "console_4": 2,
+    }
+    eq = planner.equivalent_inventory(inv)
+    assert eq["ability_2"] == 40, eq
+    assert eq["mob_whisper_c"] == 17, eq
+    assert eq["exp_char"] == 3000 + 2 * 20000, eq
+    assert eq["coin"] == 7 and eq["boss_flower_seed"] == 3 and eq["console_4"] == 2
+    assert "ability_2_b" not in eq and "ability_2_p" not in eq and "mob_whisper_a" not in eq
+    # 纯函数：入参不被修改
+    assert inv["ability_2_b"] == 4 and len(inv) == 11
+    # 空库存/None 安全
+    assert planner.equivalent_inventory(None) == {}
+    assert planner.equivalent_inventory({}) == {}
+
+
+@case
+def test_snapshot_tiered_inventory_reduces_runs():
+    """分档库存抵扣缺口：紫/蓝档折算后 runs 下降（减少体力本重复计算）。"""
+    with _StateGuard():
+        STATE.data["settings"] = dict(DEFAULT_SETTINGS)
+        STATE.data["today"] = {"date": DAY, "used_stamina": 0, "planner_spent": 0,
+                               "hunter_spent": 0, "blacklist": [], "entries": []}
+        STATE.data["inventory"] = {}
+        char = {
+            "id": "t1", "name": "折算角色", "enabled": True,
+            "mats": {"ability": 1, "arc": 1, "console": 1},
+            "tracks": {"char_level": {"cur": 1, "tgt": 1}, "arc_level": {"cur": 1, "tgt": 1}},
+            "skills": {k: {"cur": 1, "tgt": 10} for k in
+                       ("normal", "variable", "orbit", "assist")},  # 书 736 白当量
+            "talent_unlocks": [False, False], "awakening": 0,
+            "extra_needs": {"mob_whisper_c": 100},
+        }
+        orig_entry = planner.catalog_entry
+        # 目录条目不带族群：技能书小怪项不产生 mob 需求，mob_whisper_c 缺口只来自 extra 100
+        planner.catalog_entry = lambda c: {"weekly_material": {"mat_id": "wk_test"},
+                                           "boss_material": {"mat_id": "boss_test"}}
+        try:
+            STATE.data["characters"] = [char]
+            planner.YIELDS["per_run"]["ability_1"] = 18
+            rows0 = {r["mat_id"]: r for c in planner.snapshot()["characters"] for r in c["rows"]}
+            assert rows0["ability_1"]["need"] == 736 and rows0["ability_1"]["runs"] == 41
+            assert rows0["mob_whisper_c"]["gap"] == 100
+            # 录入 紫书×10（=90 当量）+ 小怪紫档×6（=54）：缺口同步下降
+            STATE.data["inventory"] = {"ability_1_p": 10, "mob_whisper_a": 6}
+            rows1 = {r["mat_id"]: r for c in planner.snapshot()["characters"] for r in c["rows"]}
+            assert rows1["ability_1"]["need"] == 736 and rows1["ability_1"]["have"] == 90 \
+                and rows1["ability_1"]["gap"] == 646, rows1["ability_1"]
+            assert rows1["ability_1"]["runs"] == 36, "ceil(646/18)=36 < 41"
+            assert rows1["mob_whisper_c"]["gap"] == 100 - 54, rows1["mob_whisper_c"]
+        finally:
+            planner.catalog_entry = orig_entry
+
+
 # ---------- 汇总 ----------
 
 def main():

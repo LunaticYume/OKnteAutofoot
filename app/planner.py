@@ -63,6 +63,27 @@ def display_name(mat_id):
     return entry.get("display_name") or entry.get("name") or mat_id
 
 
+def equivalent_inventory(raw_inv):
+    """分档库存 → 等价折算视图（纯函数；materials.json `tiers` 为唯一真相）。
+
+    同族跨档等价折算（用户确认口径；系数取自 mysqil 养成计算器 DetailedCalc.js）：
+    枚数族 白:蓝:紫=1:3:9（技能书/小怪/罐头），经验族按每本点数（角色经验
+    20000/5000/1000、弧盘经验 10000/2500/500）。基键=白档/当量/点数口径（执行掉落
+    即落基键），分档键=原始个数——基键与分档键直接相加无双算；未声明键原样透传。
+    不同族之间不互换。
+    """
+    inv = {k: v for k, v in (raw_inv or {}).items()}
+    for base, spec in (MATERIALS.get("tiers") or {}).items():
+        folded = 0
+        for tier in spec.get("tiers", []):
+            v = inv.pop(tier["id"], None)
+            if v:
+                folded += int(v) * int(tier.get("f", 1))
+        if folded:
+            inv[base] = int(inv.get(base, 0) or 0) + folded
+    return inv
+
+
 def hunter_yield_of(boss):
     """追猎每局（60体力）BOSS 掉落目标材料的数量（可校准，默认8）。"""
     return float(YIELDS.get("hunter_yield", {}).get(boss, 8) or 0)
@@ -182,7 +203,7 @@ def character_needs(character):
 
 def snapshot():
     """当前所有角色的需求/缺口快照，按角色优先级顺序。"""
-    inventory = STATE.inventory
+    inventory = equivalent_inventory(STATE.inventory)  # 分档库存折算为等价持有
     characters = []
     total_needs = {}
     for character in STATE.characters:
@@ -480,7 +501,7 @@ def projected_stamina(now=None):
     if base < 0:
         return None
     rate = max(0.0, float(settings.get("stamina_regen_per_hour") or 0))
-    cap = max(1.0, float(settings.get("stamina_cap") or 240))
+    cap = max(1.0, float(settings.get("stamina_cap") or 320))
     now = now or datetime.now()
     hours = max(0.0, (now - at).total_seconds() / 3600)
     return round(min(cap, base + rate * hours), 1)
@@ -502,7 +523,7 @@ def preview_days(days=3, now=None):
     settings = STATE.settings
     limit = max(0, int(settings.get("daily_stamina_limit", 180) or 0))
     rate = max(0.0, float(settings.get("stamina_regen_per_hour") or 0))
-    cap = max(1.0, float(settings.get("stamina_cap") or 240))
+    cap = max(1.0, float(settings.get("stamina_cap") or 320))
     if rate > 0 and rate * 24 < limit:
         warnings.append(
             f"体力恢复速率({rate}/小时)×24={rate * 24:g} 低于每日限额 {limit}，"
@@ -516,7 +537,7 @@ def preview_days(days=3, now=None):
     used = (int(today.get("used_stamina", 0) or 0)
             + int(today.get("hunter_spent", 0) or 0))
     # 与 make_plan 同口径：ok-nte 日志扫描值只在执行器落账，预演用本地记录（确定性）
-    virtual = {k: int(v or 0) for k, v in STATE.inventory.items()}
+    virtual = {k: int(v or 0) for k, v in equivalent_inventory(STATE.inventory).items()}
     snap = snapshot()
     per_day = []
     complete_on = None
@@ -642,7 +663,7 @@ def make_hunter_plan(oknte=None, now=None, boss=None, fixed_runs=0):
         warnings.append(f"{boss}：每局掉落产量未校准（为0），请在『数据表→BOSS掉落产量』填写")
         return _result("invalid_material_config", [], budget)
 
-    have = int(STATE.inventory.get(mat_id, 0) or 0)
+    have = int(equivalent_inventory(STATE.inventory).get(mat_id, 0) or 0)
     need = 0
     for character in STATE.characters:
         if not character.get("enabled"):
