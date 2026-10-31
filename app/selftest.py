@@ -1986,8 +1986,12 @@ def test_game_data_requirements_linkage():
 
     技能材料口径（异能=技能 改造后）：四技能各自 1→10 逐级（wiki skillUpgrade，
     单技能 1→10 = 书184/小怪184/硬币43.7万/周本8）+ 天赋解锁两档（书15/硬币7万/周本3）
+<<<<<<< HEAD
     + 角色等级 1→80 跨越门槛 30/40/50/60/70 的突破材料（BOSS 86/小怪 201，wiki charBreak；
     门槛硬币已含在等级梯，不重复计）。
+=======
+    + 觉醒 0→6 逐档突破（BOSS 86/小怪 206/硬币 52.5 万，wiki charBreak）。
+>>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
     """
     import app.main as main_mod
     with _StateGuard():
@@ -2004,6 +2008,11 @@ def test_game_data_requirements_linkage():
         char["skills"] = {k: {"cur": 1, "tgt": 10}
                           for k in ("normal", "variable", "orbit", "assist")}
         char["talent_unlocks"] = [True, True]
+<<<<<<< HEAD
+=======
+        char["awakening"] = 0
+        char["awakening_tgt"] = 6
+>>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
         STATE.data["characters"] = [char]
         # mysqil 鉴别7 口径（生产默认）：coin 12万/局、经验 22.5万/12.5万/局、书·罐头 18/局
         planner.YIELDS["per_run"]["coin"] = 120000
@@ -2021,7 +2030,11 @@ def test_game_data_requirements_linkage():
         assert by_id["arc_2"]["need"] == 230, by_id["arc_2"]
         assert by_id["exp_char"]["need"] == 6496000
         assert by_id["boss_pick_watermoon"]["need"] == 86 and not by_id["boss_pick_watermoon"]["farmable"]
+<<<<<<< HEAD
         # 小怪 = 四技能逐级 184×4=736 + 六门槛(31/41/51/61/71/满级80) 5+12+18+36+54+81=206
+=======
+        # 小怪 = 四技能逐级 184×4=736 + 突破 6 档 206 = 942；旧 extra 总量 390 不再叠加
+>>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
         assert by_id["mob_silhouette_c"]["need"] == 942 and not by_id["mob_silhouette_c"]["farmable"]
         wk_rows = [r for r in by_id.values() if r["mat_id"].startswith("wk_")]
         assert wk_rows and wk_rows[0]["need"] == 35, "周本 = 四技能 8×4 + 天赋 3"
@@ -2034,10 +2047,18 @@ def test_game_data_requirements_linkage():
         assert (by["arc_2"]["runs"], by["arc_2"]["gain"]) == (13, 234), by["arc_2"]
         assert by["exp_char"]["runs"] == 29, "6496000/225000=28.87→29 局"
         assert by["exp_arc"]["runs"] == 30, "3727000/125000=29.8→30 局"
+<<<<<<< HEAD
         # coin 需求 = 角色轨道 2148212（已含门槛硬币）+ 弧盘轨道 1512099 + 技能 437000×4+70000
         coin_need = by_id["coin"]["need"]
         assert coin_need == 5478311, coin_need
         assert by["coin"]["runs"] == -(-coin_need // 120000) == 46, by["coin"]["runs"]
+=======
+        # coin 需求 = 角色轨道 2148212 + 弧盘轨道 1512099 + 技能 437000×4+70000
+        #             + 突破 525000（逐段精确合计）
+        coin_need = by_id["coin"]["need"]
+        assert coin_need == 6003311, coin_need
+        assert by["coin"]["runs"] == -(-coin_need // 120000) == 51, by["coin"]["runs"]
+>>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
         assert not any(s["mat_id"].startswith(("boss_", "mob_", "wk_")) for s in plan["steps"]), \
             "外部来源材料绝不能进体力本计划"
         planner.UPSTREAM_DAILY_CAP = 180  # 恢复上游上限（其他用例依赖默认值）
@@ -2541,6 +2562,7 @@ def test_growth_skill_ladder_and_breakthrough():
     # 天赋解锁两档：书 15 / 硬币 70000 / 周本 3
     t = g.talent_cost([1, 2])
     assert (t["skill_book"], t["coins"], t["weekly"]) == (15, 70000, 3), t
+<<<<<<< HEAD
     # 突破门槛（用户实机口径 + wiki 角色页对位）：Lv X 突破 = charBreak[X-10]；
     # 五档 31/41/51/61/71 + 满级 80 最终突破；六档 BOSS 合计恰为 86、小怪 206
     assert g.breakthrough_gate_cost(30) == [0, 5, 25000], g.breakthrough_gate_cost(30)
@@ -2555,21 +2577,38 @@ def test_growth_skill_ladder_and_breakthrough():
     assert g.crossed_gates(30, 31) == [30] and g.crossed_gates(1, 30) == []
     assert g.crossed_gates(80, 80) == [] and g.crossed_gates(31, 40) == []
     assert g.crossed_gates(1, 79) == [30, 40, 50, 60, 70] and g.crossed_gates(79, 80) == [80]
+=======
+    # 突破逐档：第 1 档 [0,5,25000]、第 6 档 [36,81,150000]；六档合计 86/206/525000
+    assert g.breakthrough_stage_cost(1) == [0, 5, 25000]
+    assert g.breakthrough_stage_cost(6) == [36, 81, 150000]
+    total = [sum(g.breakthrough_stage_cost(s)[i] for s in range(1, 7)) for i in range(3)]
+    assert total == [86, 206, 525000], total
+    assert g.breakthrough_stage_cost(0) is None and g.breakthrough_stage_cost(7) is None
+>>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
 
 
 @case
 def test_character_growth_needs_mapping():
     """成长材料映射：书→所选系、小怪→族群基础档、周本/BOSS→目录归属、硬币通用；
+<<<<<<< HEAD
     突破材料由角色等级门槛推导（与觉醒档位无关）；目录缺失时只算可映射部分。"""
     from app import growth as g
     char = {"mats": {"ability": 2},
             "tracks": {"char_level": {"cur": 25, "tgt": 45}},
             "skills": {k: {"cur": 1, "tgt": 10} for k in g.SKILL_KEYS},
             "talent_unlocks": [True, False], "awakening": 2}
+=======
+    目标低于当前不产生负需求；目录缺失时只算可映射部分。"""
+    from app import growth as g
+    char = {"mats": {"ability": 2},
+            "skills": {k: {"cur": 1, "tgt": 10} for k in g.SKILL_KEYS},
+            "talent_unlocks": [True, False], "awakening": 2, "awakening_tgt": 4}
+>>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
     entry = {"mob_family": "絮语", "weekly_material": {"mat_id": "wk_test"},
              "boss_material": {"mat_id": "boss_test"}}
     needs = g.character_growth_needs(char, entry)
     assert needs["ability_2"] == 184 * 4 + 6, needs          # 四技能书 736 + 天赋1 6
+<<<<<<< HEAD
     # 小怪 = 技能 736 + 门槛30→31(5) + 门槛40→41(12)【LvX 突破 = charBreak[X-10]】
     assert needs["mob_whisper_c"] == 736 + 5 + 12, needs
     assert needs["boss_test"] == 2, needs                    # 门槛 30 无 BOSS；40→41 需 2
@@ -2579,10 +2618,21 @@ def test_character_growth_needs_mapping():
     same_level = dict(char, tracks={"char_level": {"cur": 1, "tgt": 1}}, awakening=6)
     needs_low = g.character_growth_needs(same_level, entry)
     assert "boss_test" not in needs_low and needs_low["ability_2"] == needs["ability_2"]
+=======
+    assert needs["mob_whisper_c"] == 736 + 18 + 36, needs    # 技能小怪 736 + 第3/4档 18+36
+    assert needs["boss_test"] == 8 + 16, needs               # 第3/4档 BOSS
+    assert needs["wk_test"] == 8 * 4 + 1, needs              # 技能周本 32 + 天赋1 1
+    assert needs["coin"] == 437000 * 4 + 30000 + 75000 + 100000, needs
+    # 目标低于当前：不倒退、无负需求
+    lower = dict(char, awakening=4, awakening_tgt=2)
+    needs_low = g.character_growth_needs(lower, entry)
+    assert "boss_test" not in needs_low
+>>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
     # 目录未收录：书/硬币仍算，族群/周本/BOSS 归属缺失不编造
     bare = g.character_growth_needs(char, None)
     assert bare["ability_2"] == 736 + 6 and "mob_whisper_c" not in bare \
         and "wk_test" not in bare and "boss_test" not in bare
+<<<<<<< HEAD
     # 门槛视图：等级 25→45 → 两道门槛（30→31、40→41），持有可抵扣缺少
     rows = g.character_breakthrough_rows(char, entry, inventory={"boss_test": 5})
     assert [r["gate"] for r in rows] == [30, 40], rows
@@ -2633,12 +2683,19 @@ def test_wiki_city_talents_extraction_and_prefill():
         assert not raw3.get("city_talents")
     finally:
         wf.city_talents_by_name = orig
+=======
+>>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
 
 
 @case
 def test_planner_growth_integration_no_double_count():
+<<<<<<< HEAD
     """planner 接入成长模型：ability_level 旧轨不再计算；托管键（BOSS/周本/小怪旧
     自动总量）不计入；其余自定义键叠加累计（改了即同步）。"""
+=======
+    """planner 接入成长模型：ability_level 旧轨不再计算；extra 与模型重合的键不叠加、
+    自定义键照常累计。"""
+>>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
     with _StateGuard():
         STATE.data["settings"] = dict(DEFAULT_SETTINGS)
         STATE.data["today"] = _empty_today()
@@ -2650,7 +2707,11 @@ def test_planner_growth_integration_no_double_count():
                        "arc_level": {"cur": 1, "tgt": 1}},
             "skills": {k: {"cur": 1, "tgt": 10} for k in
                        ("normal", "variable", "orbit", "assist")},
+<<<<<<< HEAD
             "talent_unlocks": [False, False], "awakening": 0,
+=======
+            "talent_unlocks": [False, False], "awakening": 0, "awakening_tgt": 0,
+>>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
             "extra_needs": {"ability_1": 500, "mob_whisper_c": 999, "exp_char": 777},
         }
         STATE.data["characters"] = [char]
@@ -2660,6 +2721,7 @@ def test_planner_growth_integration_no_double_count():
                                            "boss_material": {"mat_id": "boss_test"}}
         try:
             needs = planner.character_needs(char)
+<<<<<<< HEAD
             managed = planner.managed_material_ids(char)
         finally:
             planner.catalog_entry = orig_entry
@@ -2667,6 +2729,13 @@ def test_planner_growth_integration_no_double_count():
         assert needs["mob_whisper_c"] == 736, needs    # 托管键（族群=絮语）：extra 999 不计入
         assert needs["exp_char"] == 777, needs         # 自定义键照常累计
         assert managed == {"mob_whisper_c", "wk_test", "boss_test"}, managed
+=======
+        finally:
+            planner.catalog_entry = orig_entry
+        assert needs["ability_1"] == 736, needs      # 四技能 184×4；extra 500 不叠加
+        assert needs["mob_whisper_c"] == 736, needs  # extra 999 不叠加（族群=絮语）
+        assert needs["exp_char"] == 777, needs       # 自定义键照常累计
+>>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
 
 
 # ---------- 汇总 ----------

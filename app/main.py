@@ -118,8 +118,15 @@ def _sanitize_character(raw):
     # 属性/物态：弧盘适配过滤依赖（为空时弧盘页显示全部并提示）
     char["attribute"] = _text("attribute", 8)
     char["matter_state"] = _text("matter_state", 8)
+<<<<<<< HEAD
     # 觉醒档位 0-6：独立记录字段（用户实机口径：与突破材料无关，不参与计算）
     char["awakening"] = _clamp_int(raw.get("awakening"), 0, 6, 0)
+=======
+    # 觉醒档位 0-6（当前）+ 觉醒目标（材料计算用；缺省=当前档，不凭空制造缺口）
+    char["awakening"] = _clamp_int(raw.get("awakening"), 0, 6, 0)
+    char["awakening_tgt"] = _clamp_int(raw.get("awakening_tgt"), 0, 6,
+                                       char["awakening"])
+>>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
     # 异能=技能：四技能（普攻/变轨/极轨/援护）cur/tgt，上限取 wiki skillUpgrade
     # 实际覆盖的最高级（growth.skill_max()，当前数据为 10），不再硬编码
     skill_top = growth.skill_max()
@@ -135,14 +142,21 @@ def _sanitize_character(raw):
     unlocks = raw_unlocks if isinstance(raw_unlocks, list) else []
     char["talent_unlocks"] = [bool(unlocks[i]) if i < len(unlocks) else False
                               for i in range(2)]
+<<<<<<< HEAD
     # 都市特技（1-2 个，名字+等级；开放槽位数 1|2，由实机数据/用户开关决定）
+=======
+    # 都市特技（1-2 个，名字+等级）
+>>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
     talents = raw.get("city_talents") if isinstance(raw.get("city_talents"), list) else []
     char["city_talents"] = []
     for t in talents[:2]:
         if isinstance(t, dict) and str(t.get("name", "")).strip():
             char["city_talents"].append({"name": str(t["name"]).strip()[:32],
                                          "lv": _clamp_int(t.get("lv"), 0, 5, 0)})
+<<<<<<< HEAD
     char["city_talent_slots"] = _clamp_int(raw.get("city_talent_slots"), 1, 2, 1)
+=======
+>>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
     # 空幕卡带（1 张/角色：套装+主属性）；空值必须是 None（不是字符串 "None"）
     cassette = raw.get("cassette") if isinstance(raw.get("cassette"), dict) else {}
     char["cassette"] = {"set": _opt_text(cassette.get("set"), 48),
@@ -823,11 +837,16 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/yield-suggestions":
             self._send(200, planner.yield_suggestions())
         elif path == "/api/breakthrough-needs":
+<<<<<<< HEAD
             # 突破门槛视图（纯读）：等级 cur→tgt 跨越的每道门槛（30→31…）材料 + 持有/缺少，
+=======
+            # 突破逐档视图（纯读）：每角色 觉醒 cur→tgt 每档材料 + 持有/缺少，
+>>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
             # 数据全部来自 wiki charBreak 真实表与目录归属，无前端硬编码数字。
             rows = []
             for char in STATE.characters:
                 entry = planner.catalog_entry(char)
+<<<<<<< HEAD
                 tracks = char.get("tracks") or {}
                 levels = tracks.get("char_level") if isinstance(tracks.get("char_level"), dict) else {}
                 rows.append({
@@ -837,6 +856,14 @@ class Handler(BaseHTTPRequestHandler):
                     "awakening": char.get("awakening") or 0,
                     "in_catalog": entry is not None,
                     "gates": growth.character_breakthrough_rows(
+=======
+                rows.append({
+                    "id": char.get("id"), "name": char.get("name", ""),
+                    "awakening": char.get("awakening") or 0,
+                    "awakening_tgt": char.get("awakening_tgt") or 0,
+                    "in_catalog": entry is not None,
+                    "stages": growth.character_breakthrough_rows(
+>>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
                         char, entry, STATE.inventory),
                 })
             self._send(200, {"characters": rows,
@@ -1483,9 +1510,13 @@ def _run_edge_app_window(url):
 def _backfill_characters_from_catalog():
     """启动回填（schema v3 配套）：旧版 _sanitize_character 白名单缺陷曾把实机角色的
     attribute/matter_state 洗成 null，导致弧盘/空幕适配过滤失效。这里按角色名从
+<<<<<<< HEAD
     游戏目录找回——只补空值，绝不覆盖已有数据；幂等（目录未命中则不动）。
     另：wiki 都市特技快照已抓取时，为 city_talents 为空的目录命中角色预填特技名
     与槽位数（1 或 2 位，按实机数据决定；等级留 0）。"""
+=======
+    游戏目录找回——只补空值，绝不覆盖已有数据；幂等（目录未命中则不动）。"""
+>>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
     chars = STATE.characters
     if not chars:
         return
@@ -1493,11 +1524,14 @@ def _backfill_characters_from_catalog():
         data = game_data.load()
     except (OSError, ValueError):
         return
+<<<<<<< HEAD
     try:
         from .wiki_fetch import city_talents_by_name
         wiki_talents = city_talents_by_name()
     except Exception:  # noqa: BLE001 —— 快照缺失不阻塞回填
         wiki_talents = {}
+=======
+>>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
     by_name = {c.get("name"): c for c in data.get("characters", []) if isinstance(c, dict)}
     changed = False
     with STATE.lock:
@@ -1509,6 +1543,7 @@ def _backfill_characters_from_catalog():
                 if not char.get(key) and entry.get(key):
                     char[key] = entry[key]
                     changed = True
+<<<<<<< HEAD
             if wiki_talents and not char.get("city_talents"):
                 talents = wiki_talents.get(char.get("name")) or []
                 prefill = [{"name": str(t.get("name", ""))[:32], "lv": 0}
@@ -1521,6 +1556,11 @@ def _backfill_characters_from_catalog():
         STATE.save()
         print("启动回填：已按游戏目录/wiki 快照补回缺失的角色属性/物态/都市特技名"
               "（只补空值，不覆盖已有数据）")
+=======
+    if changed:
+        STATE.save()
+        print("启动回填：已按游戏目录补回缺失的角色属性/物态（只补空值，不覆盖已有数据）")
+>>>>>>> c2f0d0289c38830ee0413d71579dafb453dac8fe
 
 
 def _graceful_shutdown(server):
