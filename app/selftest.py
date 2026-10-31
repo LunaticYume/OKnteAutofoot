@@ -1631,7 +1631,14 @@ def test_export_import_and_rollback():
 @case
 def test_port_conflict_friendly_error():
     import socket
+    from app import main as main_mod
     from app.main import create_server
+    # 0) 候选序列：相邻段 + 跳段（2026-11-03 真机实证：Windows 排除区 8766~8865，
+    #    旧实现只试 +1..+20 整段 10013，面板"再也无法打开"）
+    cands = main_mod._port_candidates(8765, 20)
+    assert cands[:5] == [8765, 8766, 8767, 8768, 8769], cands
+    assert 8865 in cands and 8965 in cands, "应包含 +100/+200 跳段候选（跳出排除区）"
+    assert len(cands) == 3 * 21, len(cands)
     # 1) 被占端口自动避让：占用 P 后应绑到 (P, P+5] 内的可用端口
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
@@ -1645,7 +1652,7 @@ def test_port_conflict_friendly_error():
             server.server_close()
     finally:
         sock.close()
-    # 2) 整段耗尽：显式占住 P 与 P+1，range=1 → 抛可操作的中文错误
+    # 2) 全部候选耗尽：monkeypatch 候选为已知被占端口 → 抛可操作的中文错误
     for _attempt in range(5):  # 相邻端口可能偶发被占，重试几次
         s1 = socket.socket()
         s1.bind(("127.0.0.1", 0))
@@ -1662,12 +1669,40 @@ def test_port_conflict_friendly_error():
             continue
     else:
         raise AssertionError("无法获得相邻端口对")
+    orig_cands = main_mod._port_candidates
     try:
         try:
+            main_mod._port_candidates = lambda p, r: [base, base + 1]
             create_server(base, auto_range=1)
-            raise AssertionError("整段被占时应抛 RuntimeError")
+            raise AssertionError("全部候选被占时应抛 RuntimeError")
         except RuntimeError as e:
             assert "端口" in str(e) and "无法绑定" in str(e), f"报错应可操作: {e}"
+        # 10013 形态（Windows 排除区）：报错应包含 winnat 重启与排除区查看两个解法
+        class _DenyServer:
+            def __init__(self, *a, **k):
+                pass
+
+            def server_close(self):
+                pass
+
+        orig_http = main_mod.ThreadingHTTPServer
+
+        def _deny(addr, handler):
+            err = OSError("access denied")
+            err.winerror = 10013
+            raise err
+
+        main_mod.ThreadingHTTPServer = _deny
+        try:
+            main_mod._port_candidates = lambda p, r: [8766]
+            try:
+                create_server(8766, auto_range=20)
+                raise AssertionError("全部 10013 时应抛 RuntimeError")
+            except RuntimeError as e:
+                assert "winnat" in str(e) and "排除" in str(e), f"10013 报错应带排除区解法: {e}"
+        finally:
+            main_mod.ThreadingHTTPServer = orig_http
+            main_mod._port_candidates = orig_cands
     finally:
         s1.close()
         s2.close()
@@ -2730,6 +2765,863 @@ def test_snapshot_tiered_inventory_reduces_runs():
             assert rows1["mob_whisper_c"]["gap"] == 100 - 54, rows1["mob_whisper_c"]
         finally:
             planner.catalog_entry = orig_entry
+
+
+# ---------- 背包 OCR v2：道具实名匹配（纯函数） ----------
+
+@case
+def test_ocr_match_inventory_text():
+    """OCR 文本→库存命中表：实名/异体字/「」变体、行内数量、跨行不串位、同名取最大。"""
+    import app.main as main_mod
+    text = "\n".join([
+        "异环",                                   # 界面噪音：无数字 → 忽略
+        "雏鸟的希冀 ×12",                          # 白档书实名（「」变体也命中）
+        "「橄榄枝」 3",                            # 紫档书带书名号
+        "茫眛絮语 7",                              # 蓝档小怪（异体字：数据源两种写法）
+        "失落絮语 21",                             # 白档小怪
+        "海之泪 4",                                # BOSS 材料
+        "甲硬币 9527",
+        "背包容量 120",                            # 无候选行：不计入
+        "雏鸟的希冀 5",                            # 同道具再现（翻页重叠）→ 取最大 12
+    ])
+    r = main_mod.match_inventory_text(text)
+    m = r["matches"]
+    assert m.get("ability_2") == 12, m            # 白档书（同名取最大）
+    assert m.get("ability_2_p") == 3, m           # 紫档书（去「」命中）
+    assert m.get("mob_whisper_b") == 7, m         # 异体字归一（眛→昧）
+    assert m.get("mob_whisper_c") == 21, m
+    assert m.get("boss_sea_tear") == 4, m
+    assert m.get("coin") == 9527, m
+    assert "ability_2_b" not in m, "未出现的档位不得被臆造"
+    assert any("背包容量" in ln for ln in r["unmatched_lines"])
+    assert r["unmatched_lines"] and "异环" in "".join(r["unmatched_lines"])
+    # 数量必须出现在名称同一行：跨行串位防线
+    r2 = main_mod.match_inventory_text("雏鸟的希冀\n123")
+    assert r2["matches"] == {}, "名称与数量跨行时不得错配"
+    # 空文本安全
+    assert main_mod.match_inventory_text("") == {"matches": {}, "unmatched_lines": []}
+
+
+@case
+def test_ocr_item_names_dictionary():
+    """item_names 实名字典：57 件覆盖、经验书缺失如实（无实名不编造）、异体字变体在位。"""
+    import app.main as main_mod
+    names = planner.MATERIALS.get("item_names") or {}
+    expect = ([f"ability_{n}" for n in range(1, 6)]
+              + [f"ability_{n}_{s}" for n in range(1, 6) for s in ("b", "p")]
+              + [f"arc_{n}" for n in range(1, 6)]
+              + [f"arc_{n}_{s}" for n in range(1, 6) for s in ("b", "p")]
+              + [f"mob_{f}_{t}" for f in ("whisper", "silhouette", "numeral", "delusion")
+                 for t in ("c", "b", "a")]
+              + ["boss_flower_seed", "boss_spark_plug", "boss_page_delusion",
+                 "boss_pick_watermoon", "boss_nest_fragment", "boss_ticket_stub",
+                 "boss_sea_tear", "wk_stamp", "wk_skirt", "wk_memory", "coin",
+                 "city_ability_up", "fons"])
+    missing = [k for k in expect if not names.get(k)]
+    assert not missing, f"实名缺失：{missing}"
+    assert not any(k.startswith("exp_") for k in names), "经验书无实名，不得编造"
+    assert "茫昧絮语" in names["mob_whisper_b"] and "茫眛絮语" in names["mob_whisper_b"], \
+        "异体字两种写法都要有"
+    assert "橄榄枝" in names["ability_2_p"], "书名号变体应在位"
+
+
+# ---------- 等级 OCR（角色列表：每行=名字+等级+异能等级） ----------
+
+@case
+def test_ocr_match_character_text():
+    """角色列表 OCR：名字→等级+异能等级；未知名字跳过；跨行不串位；同名取首行。"""
+    import app.main as main_mod
+    with _StateGuard():
+        STATE.data["settings"] = dict(DEFAULT_SETTINGS)
+        STATE.data["characters"] = [main_mod._sanitize_character({"id": "a", "name": "浔"}),
+                                    main_mod._sanitize_character({"id": "b", "name": "卡厄斯"})]
+        text = "\n".join([
+            "角色列表",                 # 噪音行：无数字
+            "浔 80 10",                 # 标准：名字+等级+异能
+            "卡厄斯 70",                # 只有等级：ability=None
+            "不存在的角色 55 5",        # 未知名字 → 跳过
+            "全角数字：浔６０ ８",      # 归一化后命中（同名取首行，此行忽略）
+        ])
+        r = main_mod.match_character_text(text)
+        chars = {x["name"]: x for x in r["characters"]}
+        assert chars["浔"]["level"] == 80 and chars["浔"]["ability"] == 10, chars
+        assert chars["卡厄斯"]["level"] == 70 and chars["卡厄斯"]["ability"] is None, chars
+        assert "不存在的角色" not in chars
+        assert any("角色列表" in ln or "全角数字" in ln for ln in r["unmatched_lines"]) or \
+            r["unmatched_lines"], "噪音/未命中行应进 unmatched"
+        # 等级越界（>999 三位截断范围内不会出现；1-999 合法）与空文本
+        assert main_mod.match_character_text("")["characters"] == []
+        r3 = main_mod.match_character_text("浔")
+        assert r3["characters"] == [] or r3["characters"][0]["level"] is None
+
+
+# ---------- 背包 OCR v3：数量解析 / 网格坐标 / 窗口枚举与绑定 ----------
+
+@case
+def test_ocr_parse_count_cn():
+    """parse_count_cn：千分位/小数/量级词（万亿千 K M b、×x* 前缀）；失败返回 None。"""
+    import app.main as main_mod
+    f = main_mod.parse_count_cn
+    assert f("1.2万") == 12000, f("1.2万")
+    assert f("9527") == 9527
+    assert f("1,234") == 1234
+    assert f("1,234,567") == 1234567
+    assert f("3K") == 3000
+    assert f("3k") == 3000
+    assert f("2.5亿") == 250000000
+    assert f("1.2千") == 1200
+    assert f("×12") == 12
+    assert f("x12") == 12
+    assert f("1.2 万") == 12000          # OCR 在数字与量级词间插空格
+    assert f("0") == 0
+    assert f("1.5") == 1                 # 无量级词的小数：截断不放大
+    # 非法/空：None
+    assert f("亿") is None               # 量级词没有数字
+    assert f("abc") is None
+    assert f("") is None
+    assert f(None) is None
+    assert f("-5") is None
+    assert f("1.2.3") is None
+
+
+@case
+def test_ocr_cell_points_grid():
+    """网格坐标计算：first/step 比例 × 窗口宽高 → row-major 第 n 格窗口绝对坐标。"""
+    import app.main as main_mod
+    layout = main_mod._sanitize_ocr_layout(dict(main_mod._OCR_LAYOUT_DEFAULT))
+    assert layout["first_cell"] == {"x": 0.1026, "y": 0.225}, layout["first_cell"]
+    assert (layout["cols"], layout["rows"]) == (7, 4), layout
+    pts = main_mod._ocr_cell_points(layout, 1920, 1080)
+    assert len(pts) == 28, len(pts)
+    # 独立换算的期望值：x=round((0.1026+0.0854*col)*1920), y=round((0.225+0.1843*row)*1080)
+    # （2026-11-03 用户游戏截图实测：列中心 197/365/…/1181，行中心 243/451/655/840）
+    assert pts[0] == (197, 243), pts[0]       # 第 0 格（col=0,row=0）
+    assert pts[1] == (361, 243), pts[1]       # 第 1 格（col=1,row=0）
+    assert pts[6] == (1181, 243), pts[6]      # 第 6 格（col=6,row=0）
+    assert pts[7] == (197, 442), pts[7]       # 第 7 格（col=0,row=1）——先行后列
+    assert pts[27] == (1181, 840), pts[27]    # 第 27 格（col=6,row=3）
+    # 比例钳位：越界比例按 0-1 截断，非法回落默认
+    bad = main_mod._sanitize_ocr_layout({"cols": 2.7, "rows": 0, "page_wait_ms": 5,
+                                         "first_cell": {"x": 1.7, "y": -3},
+                                         "step": {"dx": "abc", "dy": 0.5}})
+    assert (bad["cols"], bad["rows"]) == (2, 1), bad          # int 字段钳位 1-20
+    assert bad["page_wait_ms"] == 100, bad["page_wait_ms"]
+    assert bad["first_cell"] == {"x": 1.0, "y": 0.0}, bad["first_cell"]
+    # 网格收拢：first.x 钳位到 1.0 后，last=first+dx×(cols-1) ≤ 1 → dx 收拢为 0
+    # （遍历点击是全局鼠标事件，越界点会点到其他应用上）
+    assert bad["step"]["dx"] == 0.0, bad["step"]
+    overflow = main_mod._sanitize_ocr_layout({"first_cell": {"x": 0.8, "y": 0.2},
+                                              "cols": 5, "rows": 4,
+                                              "step": {"dx": 0.1, "dy": 0.3}})
+    assert overflow["step"] == {"dx": 0.05, "dy": 0.2666}, overflow["step"]
+    assert 0.8 + 0.05 * 4 <= 1.0 and 0.2 + 0.2666 * 3 <= 1.0, overflow["step"]
+    # 合法布局不受收拢影响
+    ok_lay = main_mod._sanitize_ocr_layout({"first_cell": {"x": 0.1, "y": 0.1},
+                                            "cols": 3, "rows": 3,
+                                            "step": {"dx": 0.2, "dy": 0.2}})
+    assert ok_lay["step"] == {"dx": 0.2, "dy": 0.2}, ok_lay["step"]
+    # 窗口尺寸缩放：同一布局在小窗口按比例收缩
+    small = main_mod._ocr_cell_points(layout, 960, 540)
+    assert small[0] == (98, 122), small[0]
+    with _StateGuard():
+        # data/ocr_layout.json 读取（缺键回落默认；项目内默认文件可解析）
+        layout2 = main_mod._ocr_layout()
+        assert isinstance(layout2, dict) and layout2["cols"] >= 1, layout2
+        # POST 校验：非对象 → ValueError
+        try:
+            main_mod._sanitize_ocr_layout("bad")
+            raise AssertionError("非对象 layout 应 raise ValueError")
+        except ValueError:
+            pass
+
+
+@case
+def test_ocr_windows_parse():
+    """窗口清单 JSON 解析：__OCR_WINDOWS__ 单对象/数组两种形态、坏行忽略。"""
+    import app.main as main_mod
+    lines = [
+        '__OCR_WINDOWS__:{"hwnd":111,"class":"UnrealWindow","title":"异环  ",'
+        '"pid":42,"process":"HTGame","exe_path":"Y:\\\\Game\\\\HTGame.exe",'
+        '"w":1920,"h":1080}',
+        '__OCR_WINDOWS__:[{"hwnd":222,"class":"Chrome_WidgetWin_1","title":"浏览器",'
+        '"pid":43,"process":"chrome","exe_path":"","w":800,"h":600},'
+        '{"hwnd":333,"class":"UnrealWindow","title":"异环","pid":44,'
+        '"process":"HTGame","exe_path":"","w":1280,"h":720}]',
+        "noise line",
+        "__OCR_WINDOWS__:not-json{{{",
+        "__OCR_WINDOWS__:",
+    ]
+    ws = main_mod._parse_ocr_windows("\n".join(lines))
+    assert len(ws) == 3, ws
+    assert ws[0]["hwnd"] == 111 and ws[0]["class"] == "UnrealWindow", ws[0]
+    assert ws[0]["title"] == "异环  " and ws[0]["process"] == "HTGame", ws[0]
+    assert ws[1]["hwnd"] == 222 and ws[2]["hwnd"] == 333, ws
+    assert main_mod._parse_ocr_windows("") == []
+    assert main_mod._parse_ocr_windows("garbage") == []
+    # 进程名匹配：devices.json 存文件名（HTGame.exe），枚举给 ProcessName（HTGame），
+    # exe 路径文件名兜底——三种写法等价
+    m = main_mod._window_matches_process
+    assert m(ws[0], "HTGame.exe") and m(ws[0], "htgame") and m(ws[0], "HTGame.EXE")
+    assert not m(ws[1], "HTGame.exe")
+
+
+@case
+def test_ocr_bind_priority():
+    """绑定优先级（fixture 注入，无 PS）：①进程名+UnrealWindow 面积择优
+    ②标题关键词兜底 ③无命中；devices.json 默认进程名（只读/损坏降级）。"""
+    import app.main as main_mod
+    wins = [
+        {"hwnd": 1, "class": "Notepad", "title": "记事本", "pid": 10,
+         "process": "notepad", "exe_path": "", "w": 500, "h": 400},
+        {"hwnd": 2, "class": "UnrealWindow", "title": "异环  ", "pid": 11,
+         "process": "HTGame", "exe_path": "Y:\\Game\\HTGame.exe", "w": 800, "h": 600},
+        {"hwnd": 3, "class": "UnrealWindow", "title": "HTGame", "pid": 11,
+         "process": "HTGame", "exe_path": "", "w": 100, "h": 100},
+        {"hwnd": 4, "class": "UnrealWindow", "title": "别的游戏", "pid": 12,
+         "process": "Other", "exe_path": "", "w": 4000, "h": 2000},
+    ]
+    with _StateGuard():
+        STATE.data["settings"] = dict(DEFAULT_SETTINGS)
+        settings = STATE.settings
+        # ① 进程名命中（.exe 后缀等价）+ UE 多顶层窗口取面积最大（hwnd=2 > hwnd=3）
+        settings["game_process_name"] = "HTGame.exe"
+        hwnd, meta, allw = main_mod._bind_game_window(list(wins))
+        assert hwnd == 2 and meta["w"] == 800, (hwnd, meta)
+        assert len(allw) == 4, "全量清单应原样返回"
+        # ① exe 路径文件名兜底（ProcessName 不含 .exe 时仍可命中）
+        settings["game_process_name"] = "htgame"
+        hwnd, _meta, _allw = main_mod._bind_game_window(list(wins))
+        assert hwnd == 2, hwnd
+        # ② 标题关键词兜底：进程不匹配时按 game_window_keywords 子串匹配
+        settings["game_process_name"] = "Nope.exe"
+        settings["game_window_keywords"] = "异环"
+        hwnd, meta, _allw = main_mod._bind_game_window(list(wins))
+        assert hwnd == 2, hwnd
+        # ② 多关键词任一命中；非游戏类窗口（面积最大原则仍适用）
+        settings["game_window_keywords"] = "不存在词,记事本"
+        hwnd, meta, _allw = main_mod._bind_game_window(list(wins))
+        assert hwnd == 1, hwnd
+        # ③ 无命中 → (None, None, 清单)
+        settings["game_window_keywords"] = "怎么都匹配不上"
+        hwnd, meta, allw = main_mod._bind_game_window(list(wins))
+        assert hwnd is None and meta is None and len(allw) == 4, (hwnd, meta)
+        assert main_mod._bind_game_window([]) == (None, None, []), "空清单不绑定"
+        # devices.json 默认进程名：设置留空时从 oknte_root 读 selected_exe[0]
+        tmp = tempfile.mkdtemp(prefix="oknte_devices_")
+        cfg = _safe_path(tmp, "data", "apps", "ok-nte", "working", "configs")
+        os.makedirs(cfg, exist_ok=True)
+        settings["oknte_root"] = tmp
+        settings["game_process_name"] = ""
+        dev = _safe_path(cfg, "devices.json")
+        Path(dev).write_text(json.dumps({"selected_exe": ["FakeGame.exe"]},
+                                        ensure_ascii=False), encoding="utf-8")
+        assert main_mod._default_game_process() == "FakeGame.exe"
+        # 损坏/缺失 → 降级 HTGame.exe（实测游戏进程名），绝不抛异常
+        Path(dev).write_text("{broken json", encoding="utf-8")
+        assert main_mod._default_game_process() == "HTGame.exe"
+        Path(dev).unlink()
+        assert main_mod._default_game_process() == "HTGame.exe"
+
+
+@case
+def test_ocr_magnitude_in_inventory():
+    """量级词进库存匹配：「雏鸟的希冀 ×1.2万」→12000；单格详情解析（含跨行数量）。"""
+    import app.main as main_mod
+    r = main_mod.match_inventory_text("雏鸟的希冀 ×1.2万")
+    assert r["matches"].get("ability_2") == 12000, r
+    r2 = main_mod.match_inventory_text("甲硬币 1,234")
+    assert r2["matches"].get("coin") == 1234, r2
+    # 既有语义不回归：无量级词照旧、跨行不错配
+    r3 = main_mod.match_inventory_text("雏鸟的希冀 ×12\n雏鸟的希冀 5")
+    assert r3["matches"].get("ability_2") == 12, r3
+    assert main_mod.match_inventory_text("雏鸟的希冀\n123")["matches"] == {}, \
+        "整页模式跨行防线必须保留"
+    # 同线多道具不串位：数量必须紧邻名称（只隔分隔符），前一名不许抢后一名的数字
+    r4 = main_mod.match_inventory_text("雏鸟的希冀 海之泪 3")
+    assert r4["matches"] == {"boss_sea_tear": 3}, r4["matches"]
+    # OCR 空格噪声容忍（_ocr_norm 默认去空白——回归：keep_space 三元两支相同
+    # 的 bug 使默认路径只折叠空格，名字内插空格即失配、命中退化为 unmatched）
+    assert main_mod._ocr_norm("雏鸟 的希冀") == "雏鸟的希冀", \
+        main_mod._ocr_norm("雏鸟 的希冀")
+    r5 = main_mod.match_inventory_text("妄想彼 端的一页 ×42")
+    assert r5["matches"].get("boss_page_delusion") == 42, r5["matches"]
+    # 紧邻分隔符形态全部仍可取数
+    for line, mat, want in (("雏鸟的希冀 ×12", "ability_2", 12),
+                            ("雏鸟的希冀 : 7", "ability_2", 7),
+                            ("雏鸟的希冀 - 9", "ability_2", 9),
+                            ("雏鸟的希冀 1.2万", "ability_2", 12000)):
+        assert main_mod.match_inventory_text(line)["matches"] == {mat: want}, line
+    # 单格详情：同行「名×数」
+    cands = main_mod._inventory_candidates()
+    mat, count = main_mod._parse_cell_item("雏鸟的希冀\n×1.2万", cands)
+    assert mat == "ability_2" and count == 12000, (mat, count)
+    # 空格噪声同样不破坏单格解析（去空白归一 + 徽标计数）
+    mat, count = main_mod._parse_cell_item("妄想彼 端的一页 ×42", cands)
+    assert mat == "boss_page_delusion" and count == 42, (mat, count)
+    # 单格详情：数量在名称下一行（真实 UI：×42 短行；2026-11-04 截图取证）
+    mat, count = main_mod._parse_cell_item("海之泪\n×42\n从海囚获取的一滴红色水滴。", cands)
+    assert mat == "boss_sea_tear" and count == 42, (mat, count)
+    # 数量行被 OCR 误读成形近字（χ）也能命中
+    mat, count = main_mod._parse_cell_item("海之泪\nχ42", cands)
+    assert mat == "boss_sea_tear" and count == 42, (mat, count)
+    # 数量行缺失（描述句带数字）：不许从描述行误取数量
+    mat, count = main_mod._parse_cell_item("橄榄枝\n从海囚获取的一滴红色水滴，用作突破材料 42 个。\n可在商店兑换", cands)
+    assert mat is None and count is None, (mat, count)
+    # 数量行撞到其他道具名：不许抢数字
+    mat, count = main_mod._parse_cell_item("橄榄枝\n海之泪 4", cands)
+    assert mat is None and count is None, (mat, count)
+    # 未命中/空文本
+    assert main_mod._parse_cell_item("完全无关的文本", cands) == (None, None)
+    assert main_mod._parse_cell_item("", cands) == (None, None)
+
+
+@case
+def test_ocr_traverse_overlap_regression():
+    """翻页重叠格不得计入 dead_streak（评审回归）：3 行网格滚 1 行后，下一页开头
+    2 行与之前页重复——按旧的全局重复判据会连续 3 格提前终止，新行永远扫不到。"""
+    import app.main as main_mod
+    with _StateGuard():
+        STATE.data["settings"] = dict(DEFAULT_SETTINGS)
+        STATE.settings["game_process_name"] = "HTGame.exe"
+        STATE.settings["game_window_keywords"] = "异环"
+        meta = {"hwnd": 1, "class": "UnrealWindow", "title": "异环  ", "pid": 1,
+                "process": "HTGame", "exe_path": "", "w": 1920, "h": 1080}
+        rows = [["雏鸟的希冀 ×%d" % i for i in range(1, 6)],      # r0：ability_2 max 5
+                ["橄榄枝 ×%d" % i for i in range(6, 11)],         # r1：ability_2_p max 10
+                ["茫昧絮语 ×%d" % i for i in range(11, 16)],      # r2：mob_whisper_b max 15
+                ["海之泪 ×%d" % i for i in range(16, 21)]]        # r3：boss_sea_tear max 20
+        page1 = rows[0] + rows[1] + rows[2]
+        page2 = rows[1] + rows[2] + rows[3]   # 滚 1 行：开头 2 行（10 格）与之前页重复
+        seq = {"n": 0}
+
+        def fake_traverse(hwnd, layout, win_size):
+            seq["n"] += 1
+            return page1 if seq["n"] == 1 else list(page2)  # 之后每页都与 page2 相同
+
+        orig = (main_mod._bind_game_window, main_mod._ocr_traverse_page,
+                main_mod._ocr_scroll, main_mod._ocr_layout)
+        main_mod._bind_game_window = lambda *a, **k: (1, meta, [meta])
+        main_mod._ocr_traverse_page = fake_traverse
+        main_mod._ocr_scroll = lambda *a, **k: None
+        main_mod._ocr_layout = lambda: main_mod._sanitize_ocr_layout(
+            dict(main_mod._OCR_LAYOUT_DEFAULT))
+        try:
+            r = main_mod._run_backpack_ocr()
+        finally:
+            (main_mod._bind_game_window, main_mod._ocr_traverse_page,
+             main_mod._ocr_scroll, main_mod._ocr_layout) = orig
+        assert r["matches"].get("boss_sea_tear") == 20, r["matches"]  # 新行必须扫到
+        assert r["matches"].get("ability_2") == 5, r["matches"]       # 同名跨格取最大
+        assert r["pages"] >= 2 and r["cells_scanned"] >= 30, (r["pages"], r["cells_scanned"])
+        assert not any("连续 3 格无新信息" in w for w in r["warnings"]), r["warnings"]
+
+
+@case
+def test_ocr_unknown_cells_keep_traversing():
+    """未收录格不得判停（2026-11-04 用户实测回归 + 评审页级回归）：
+    格级——未收录/known-0 既不计空白也不算重复，unknown_items 按首行去重收集、
+    ×N 徽标计数；
+    页级——仅含未收录道具的页也必须继续翻页（page_new 认新 unknown 首行），
+    第 3 页新 unknown 必须进 unknown_items（旧逻辑 page_new 只认实名命中，
+    整页未收录即「本页未发现新道具」提前终止，多页未知背包每轮只能推进一页）；
+    空白判停与 PS 对齐——_OCR_PS_TRAVERSE 3 连空即 break，返回 cells 最多尾部
+    3 连空，Python 端连续 3 格空白即停（旧阈值 5 永不可达，短背包白扫一整页）。
+    注：谕石实名已补录，干净「谕石」文本会命中 oracle_stone——用「谕石 0」形态
+    （0=角标噪声，计数无效 → unknown）覆盖 known-0 不写库存且字面含「谕石」。"""
+    import app.main as main_mod
+    with _StateGuard():
+        STATE.data["settings"] = dict(DEFAULT_SETTINGS)
+        STATE.settings["game_process_name"] = "HTGame.exe"
+        STATE.settings["game_window_keywords"] = "异环"
+        meta = {"hwnd": 1, "class": "UnrealWindow", "title": "异环  ", "pid": 1,
+                "process": "HTGame", "exe_path": "", "w": 1920, "h": 1080}
+        page_known = ["海之泪 ×16"]
+        page_unknown = [
+            # 用户实测样例（原样复刻）——谕石被 OCR 误读成「前石/输石」，未收录
+            "145 1269 道具 前石 重要道具收集足够的输石，可前往魔女之家兑换对应的奖励",
+            # known-0（角标噪声）→ 计数无效 → 不写 0 进库存、进 unknown
+            "谕石 0 收集进度 145/1269",
+            # 未收录 + × 996 数量徽标（与名称分离、中间夹 OCR 空格）
+            "道具 失络焦子 × 996 可于[焦子商店]中兑换所需物品",
+            "",  # 空白（点出网格范围；PS 端 3 连空即断，单格空不触发判停）
+        ]
+        page_unknown2 = ["未登记素材叁 ×9", "未登记素材肆 ×3", ""]
+        seq = {"n": 0}
+        scrolls = {"n": 0}
+
+        def fake_traverse(hwnd, layout, win_size):
+            seq["n"] += 1
+            if seq["n"] == 1:
+                return list(page_known)
+            if seq["n"] == 2:
+                return list(page_unknown)
+            return list(page_unknown2)  # 第 3 页起内容相同（模拟翻页到底）
+
+        orig = (main_mod._bind_game_window, main_mod._ocr_traverse_page,
+                main_mod._ocr_scroll, main_mod._ocr_layout)
+        main_mod._bind_game_window = lambda *a, **k: (1, meta, [meta])
+        main_mod._ocr_traverse_page = fake_traverse
+        main_mod._ocr_scroll = lambda *a, **k: scrolls.__setitem__("n", scrolls["n"] + 1)
+        main_mod._ocr_layout = lambda: main_mod._sanitize_ocr_layout(
+            dict(main_mod._OCR_LAYOUT_DEFAULT))
+        try:
+            r = main_mod._run_backpack_ocr()
+            # 短背包（真实 PS 形态：尾部 3 连空）→ 空白判停，不得白扫下一页
+            seq["n"] = 0
+            scrolls["n"] = 0
+            main_mod._ocr_traverse_page = lambda *a, **k: ["海之泪 ×16", "", "", ""]
+            r2 = main_mod._run_backpack_ocr()
+        finally:
+            (main_mod._bind_game_window, main_mod._ocr_traverse_page,
+             main_mod._ocr_scroll, main_mod._ocr_layout) = orig
+        # 页级回归：known 页 → unknown 页 → unknown2 页逐页收集，
+        # 第 3 页与第 4 页内容相同才停（pages=4：3 页有效 + 1 页复扫判停）
+        assert r["pages"] == 4, (r["pages"], r["warnings"])
+        assert r["cells_scanned"] == 1 + 4 + 3 + 3, r["cells_scanned"]
+        assert r["matches"] == {"boss_sea_tear": 16}, r["matches"]
+        assert [it["count"] for it in r["unknown_items"]] == \
+            [None, None, 996, 9, 3], r["unknown_items"]
+        texts = " | ".join(it["name_text"] for it in r["unknown_items"])
+        assert "前石" in texts and "谕石" in texts and "失络焦子" in texts \
+            and "未登记素材叁" in texts, texts
+        assert not any("无新信息" in w for w in r["warnings"]), \
+            r["warnings"]                                  # 旧格级判据必须已删
+        # 空白判停（与 PS 3 连空 break 对齐）：第 3 格空白即停，不得再翻页滚动
+        assert r2["pages"] == 1 and r2["cells_scanned"] == 4, \
+            (r2["pages"], r2["cells_scanned"])
+        assert scrolls["n"] == 0, "空白判停后不得发起翻页滚动"
+        assert any("连续 3 格空白" in w for w in r2["warnings"]), r2["warnings"]
+
+
+@case
+def test_ocr_traverse_cancel():
+    """/api/ocr/cancel 语义（代数令牌，评审 2026-11-05）：取消经 _ocr_cancel_active()
+    定向到登记时的当前代数，只对同代遍历生效——当前页 PS 点击序列不可中断，但其
+    返回的格在格间逐格检查取消，取消点之后的格不再解析（已完成部分保留），页首/
+    页末不再发起下一页点击与翻页，warning 含「用户取消」；对旧代的取消在新一轮
+    （代数 +1）不命中——旧轮取消绝不泄漏进新一轮（取代旧的入口 clear 方案，根除
+    「新一轮吞掉旧轮取消」竞态）；端点与「运行中放行」白名单在 do_POST 源内成对
+    登记（无法起真服务，静态源校验兜底）。"""
+    import app.main as main_mod
+    import inspect
+    with _StateGuard():
+        STATE.data["settings"] = dict(DEFAULT_SETTINGS)
+        STATE.settings["game_process_name"] = "HTGame.exe"
+        STATE.settings["game_window_keywords"] = "异环"
+        meta = {"hwnd": 1, "class": "UnrealWindow", "title": "异环  ", "pid": 1,
+                "process": "HTGame", "exe_path": "", "w": 1920, "h": 1080}
+        page1 = ["海之泪 ×16"] * 3
+        page2 = ["海之泪 ×17"] * 3
+        seq = {"n": 0}
+
+        def fake_traverse(hwnd, layout, win_size):
+            seq["n"] += 1
+            if seq["n"] == 2:
+                main_mod._ocr_cancel_active()  # 模拟第 2 页点击期间用户取消（定向当前代）
+            return list(page1 if seq["n"] == 1 else page2)
+
+        orig = (main_mod._bind_game_window, main_mod._ocr_traverse_page,
+                main_mod._ocr_scroll, main_mod._ocr_layout)
+        main_mod._bind_game_window = lambda *a, **k: (1, meta, [meta])
+        main_mod._ocr_traverse_page = fake_traverse
+        main_mod._ocr_scroll = lambda *a, **k: None
+        main_mod._ocr_layout = lambda: main_mod._sanitize_ocr_layout(
+            dict(main_mod._OCR_LAYOUT_DEFAULT))
+        try:
+            r = main_mod._run_backpack_ocr()
+            main_mod._ocr_cancel_active()  # 上轮结束后用户又按了一次取消（定向旧代）
+            seq["n"] = 0
+            main_mod._ocr_traverse_page = lambda *a, **k: list(page1)
+            r2 = main_mod._run_backpack_ocr()  # 新一轮（代数+1）：旧代取消不得命中
+        finally:
+            (main_mod._bind_game_window, main_mod._ocr_traverse_page,
+             main_mod._ocr_scroll, main_mod._ocr_layout) = orig
+            main_mod._OCR_CANCEL.clear()  # 用例收尾卫生复位，不影响其它用例
+        # 第 2 页解析即停：取消在第 2 页点击期间置位 → 第 2 页的格不再解析
+        # （cells_scanned 只含第 1 页 3 格），第 1 页已解析的 matches 原样保留，
+        # 不再有第 3 页（旧实现会点满 max_pages 页）
+        assert r["pages"] == 2 and r["cells_scanned"] == 3, \
+            (r["pages"], r["cells_scanned"], r["warnings"])
+        assert r["matches"] == {"boss_sea_tear": 16}, r["matches"]
+        assert any("用户取消" in w for w in r["warnings"]), r["warnings"]
+        # 代数令牌：旧代的取消不命中新一轮（正常跑到「翻页后内容相同」为止）
+        assert not any("用户取消" in w for w in r2["warnings"]), r2["warnings"]
+        assert r2["pages"] == 2 and r2["matches"] == {"boss_sea_tear": 16}, \
+            (r2["pages"], r2["matches"], r2["warnings"])
+        # 端点分支 + 运行中白名单成对登记（do_POST 源内出现 ≥2 次）
+        src = inspect.getsource(main_mod.Handler.do_POST)
+        assert src.count('"/api/ocr/cancel"') >= 2, \
+            "取消端点必须在白名单与分支中成对出现"
+
+
+@case
+def test_ocr_cell_cancel_and_token_isolation():
+    """格间取消 + 代数令牌隔离（2026-11-05 用户实测：无取消路径时后端盲目点击数
+    分钟，前端只能超时断开；评审：入口 clear 有吞掉旧轮取消的竞态）：
+    - 格间取消——取消在第 1 页点击期间（第 2 格起）定向当前代 → 遍历提前返回，
+      第 1 格已解析的 matches 原样保留（只含 boss_sea_tear），取消点之后的格
+      （橄榄枝）不再解析（不进 matches/unknown/unmatched），warning 含「用户取消」，
+      不再发起翻页滚动；
+    - 代数令牌——对旧代的取消在新一轮（代数 +1）不命中：新一轮正常跑完（旧轮取消
+      绝不泄漏）；无活跃遍历时的取消指向最近一代=等效无操作；
+    - 角色遍历——入口登记新代数、哨兵路径按代区分（旧轮残留对新轮不可见），
+      无游戏窗口先抛 _OcrWindowNotFound（全程不触碰 subprocess/PS）；
+    - PS 契约——角色脚本每头像循环头 Test-Path 探测 __CANCEL_FILE__ 哨兵、
+      _run_chars_ocr 注入哨兵路径并配 timeout=240（300→240s 收紧）、渲染等待
+      400ms→300ms；取消端点必须定向代数 + 落哨兵（背包 Event + 角色 PS 哨兵双媒介）；
+    - OCR 单飞锁——两个遍历端点必须非阻塞抢占 + finally 释放（端点级 409 行为由
+      test_ocr_single_flight_409 真服务验证）。"""
+    import app.main as main_mod
+    import inspect
+    with _StateGuard():
+        STATE.data["settings"] = dict(DEFAULT_SETTINGS)
+        STATE.settings["game_process_name"] = "HTGame.exe"
+        STATE.settings["game_window_keywords"] = "异环"
+        meta = {"hwnd": 1, "class": "UnrealWindow", "title": "异环  ", "pid": 1,
+                "process": "HTGame", "exe_path": "", "w": 1920, "h": 1080}
+        page = ["海之泪 ×16", "橄榄枝 ×8", "橄榄枝 ×9"]
+        scrolls = {"n": 0}
+
+        class _CancelAtSecondCell(list):
+            # 第 2 格 yield 瞬间取消当前代（模拟用户恰在第 2 格点击期间按取消）——
+            # 第 1 格必须先解析完，matches 保留第 1 格
+            def __iter__(self):
+                for i, item in enumerate(list.__iter__(self)):
+                    if i == 1:
+                        main_mod._ocr_cancel_active()
+                    yield item
+
+        def fake_traverse(hwnd, layout, win_size):
+            return _CancelAtSecondCell(page)
+
+        orig = (main_mod._bind_game_window, main_mod._ocr_traverse_page,
+                main_mod._ocr_scroll, main_mod._ocr_layout)
+        main_mod._bind_game_window = lambda *a, **k: (1, meta, [meta])
+        main_mod._ocr_traverse_page = fake_traverse
+        main_mod._ocr_scroll = lambda *a, **k: scrolls.__setitem__(
+            "n", scrolls["n"] + 1)
+        main_mod._ocr_layout = lambda: main_mod._sanitize_ocr_layout(
+            dict(main_mod._OCR_LAYOUT_DEFAULT))
+        try:
+            r = main_mod._run_backpack_ocr()
+            assert r["pages"] == 1 and r["cells_scanned"] == 1, \
+                (r["pages"], r["cells_scanned"], r["warnings"])
+            assert r["matches"] == {"boss_sea_tear": 16}, r["matches"]
+            assert r["unknown_items"] == [] and r["unmatched_lines"] == [], \
+                (r["unknown_items"], r["unmatched_lines"])
+            assert any("用户取消" in w for w in r["warnings"]), r["warnings"]
+            assert scrolls["n"] == 0, "取消后不得发起翻页滚动"
+            # 代数令牌隔离：对旧代（r 所在代）的取消在新一轮（代数+1）不命中
+            g0 = main_mod._OCR_GEN
+            main_mod._ocr_traverse_page = lambda *a, **k: list(page)
+            main_mod._ocr_cancel_active()  # 模拟上一轮刚结束时用户又按了一次取消
+            assert main_mod._ocr_cancel_hit(g0), "取消必须定向登记时的当前代"
+            r2 = main_mod._run_backpack_ocr()
+            g1 = main_mod._OCR_GEN
+            assert g1 == g0 + 1, (g0, g1)
+            assert not main_mod._ocr_cancel_hit(g1), \
+                "旧代的取消不得命中新一轮（代数令牌）"
+            assert r2["pages"] == 2 and r2["matches"] == \
+                {"boss_sea_tear": 16, "ability_2_p": 9}, \
+                (r2["pages"], r2["matches"], r2["warnings"])
+            assert not any("用户取消" in w for w in r2["warnings"]), r2["warnings"]
+            # 角色遍历：入口登记新代数、哨兵路径按代区分（无窗口先抛，全程不触碰
+            # subprocess/PS）
+            g2 = main_mod._OCR_GEN
+            main_mod._bind_game_window = lambda *a, **k: (0, {}, [])
+            raised = False
+            try:
+                main_mod._run_chars_ocr()
+            except main_mod._OcrWindowNotFound:
+                raised = True
+            assert raised, "无游戏窗口时 _run_chars_ocr 必须抛 _OcrWindowNotFound"
+            assert main_mod._OCR_GEN == g2 + 1, "角色遍历入口必须登记新代数"
+            assert main_mod._ocr_cancel_file(g2) != main_mod._ocr_cancel_file(g2 + 1), \
+                "取消哨兵路径必须按代数区分（旧轮残留对新轮不可见）"
+            # 哨兵写/清 helper 往返（按代）
+            main_mod._ocr_cancel_file_write(g2)
+            assert os.path.isfile(main_mod._ocr_cancel_file(g2))
+            main_mod._ocr_cancel_file_clear(g2)
+            assert not os.path.isfile(main_mod._ocr_cancel_file(g2))
+            # PS 契约：每头像循环头探测哨兵 + Python 注入路径 + 耗时收紧
+            char_src = main_mod._OCR_PS_TRAVERSE_CHAR
+            assert "Test-Path -LiteralPath '__CANCEL_FILE__'" in char_src, \
+                "角色脚本必须在每头像循环头探测取消哨兵"
+            run_src = inspect.getsource(main_mod._run_chars_ocr)
+            assert '"__CANCEL_FILE__"' in run_src and \
+                "_ocr_cancel_file(gen)" in run_src and "timeout=240" in run_src, \
+                "角色遍历必须注入按代哨兵路径并配 240s 子进程超时"
+            assert "Start-Sleep -Milliseconds 400" not in char_src, \
+                "角色遍历渲染等待必须从 400ms 收紧到 300ms"
+            assert char_src.count("Start-Sleep -Milliseconds 300") == 2, \
+                "信息页/异能页两处渲染等待均为 300ms"
+            # 端点布线：取消=定向代数+落哨兵；两个遍历端点=单飞锁非阻塞抢占+释放
+            post_src = inspect.getsource(main_mod.Handler.do_POST)
+            assert "_ocr_cancel_active()" in post_src and \
+                "_ocr_cancel_file_write(" in post_src, \
+                "取消端点必须定向代数并写哨兵文件（角色 PS 循环的取消媒介）"
+            assert post_src.count("_OCR_RUN_LOCK.acquire(blocking=False)") >= 2 and \
+                post_src.count("_OCR_RUN_LOCK.release()") >= 2, \
+                "两个遍历端点必须持 OCR 单飞锁（非阻塞抢占 + finally 释放）"
+        finally:
+            (main_mod._bind_game_window, main_mod._ocr_traverse_page,
+             main_mod._ocr_scroll, main_mod._ocr_layout) = orig
+            main_mod._OCR_CANCEL.clear()  # 用例收尾卫生复位，不影响其它用例
+            main_mod._ocr_cancel_file_clear(main_mod._OCR_GEN)  # 同上：哨兵残留清掉
+
+
+@case
+def test_char_ocr_layout_missing_file_self_heal():
+    """角色 OCR 布局缺失必须自愈（回归 2026-11-06 真机必崩）：char_ocr_layout.json
+    缺失时 _char_ocr_layout() 必须落盘默认布局并返回默认值。历史缺陷恰在此行：
+    裸调 save_json_atomic（本模块只以别名 _save_json_atomic 导入）→ 每次点击必抛
+    NameError；旧自测只在无窗口 mock 下验证 _run_chars_ocr（提前 raise，到不了
+    布局函数）故漏检——本用例直接调布局函数补上该缺口。布局文件指向临时目录，
+    不写仓库 data/。"""
+    import app.main as main_mod
+    import inspect
+    with tempfile.TemporaryDirectory(prefix="oknte_selftest_") as tmp:
+        layout_file = os.path.join(tmp, "char_ocr_layout.json")
+        orig_file = main_mod._CHAR_OCR_FILE
+        main_mod._CHAR_OCR_FILE = layout_file
+        try:
+            assert not os.path.isfile(layout_file), "用例前提：布局文件必须缺失"
+            layout = main_mod._char_ocr_layout()  # 旧代码在此抛 NameError
+            assert layout == main_mod._sanitize_char_ocr_layout(
+                dict(main_mod._CHAR_OCR_DEFAULT)), layout
+            with open(layout_file, encoding="utf-8") as f:
+                assert json.load(f) == layout, "缺失时必须把默认布局落盘（自愈）"
+        finally:
+            main_mod._CHAR_OCR_FILE = orig_file
+        # 端点兜底：characters/ocr 必须有 except Exception → 500 分支，任何漏网
+        # 异常都要回 HTTP，不能让前端只看到无响应的 Failed to fetch
+        post_src = inspect.getsource(main_mod.Handler.do_POST)
+        assert "except Exception as e:" in post_src and "内部错误" in post_src, \
+            "characters/ocr 端点必须有 except Exception 兜底（漏网异常回 500）"
+
+
+@case
+def test_ocr_single_flight_409():
+    """OCR 单飞锁端点级验证（评审 2026-11-05：两遍历端点可并发执行）：上一轮遍历
+    未结束（单飞锁被持）时，真起面板服务打回环请求——/api/inventory/ocr 与
+    /api/characters/ocr 必须立即 409（error=已有遍历进行中），而非并发进遍历
+    （双遍历共用全局鼠标点击会互相污染）；确认非「规划器运行中」那条 409。"""
+    import http.client
+    import threading
+    from app import main as main_mod
+    from app.main import create_server
+    with _StateGuard():
+        # 规划器必须空闲：否则 409 来自「运行中白名单」而非单飞锁，测试失去意义
+        deadline = time.time() + 10
+        while time.time() < deadline and runner_mod.RUNNER.snapshot()["state"] \
+                in ("running", "waiting", "stopping"):
+            runner_mod.RUNNER.stop()
+            time.sleep(0.2)
+        assert runner_mod.RUNNER.snapshot()["state"] not in \
+            ("running", "waiting", "stopping"), "规划器必须空闲后才能验证单飞锁"
+        assert main_mod._OCR_RUN_LOCK.acquire(blocking=False), "测试前提：锁未被占用"
+        try:
+            server, _port = create_server(0, auto_range=1)  # 端口 0 → 系统分配
+            port = server.server_address[1]
+            threading.Thread(target=server.serve_forever, daemon=True,
+                             name="selftest-ocr-409").start()
+            try:
+                for path in ("/api/inventory/ocr", "/api/characters/ocr"):
+                    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+                    conn.request("POST", path, json.dumps({"mode": "traverse"}), {
+                        "Content-Type": "application/json",
+                        "Origin": "http://127.0.0.1:%d" % port})  # 回环 Origin 过防线
+                    resp = conn.getresponse()
+                    payload = json.loads(resp.read().decode("utf-8"))
+                    conn.close()
+                    assert resp.status == 409, (path, resp.status, payload)
+                    assert "OCR 遍历进行中" in str(payload.get("error") or ""), \
+                        (path, payload)  # 必须是单飞锁的 409，而非运行中白名单的
+            finally:
+                server.shutdown()
+                server.server_close()
+        finally:
+            main_mod._OCR_RUN_LOCK.release()
+
+
+@case
+def test_ocr_badge_count_priority():
+    """×N 徽标优先（2026-11-04 实测：详情面板徽标与名称分两处）：全文首个独立
+    ×N token 即数量（描述句里的数字不作数）；无徽标回退名称右侧/下一行短行；
+    计数 0 一律无效（角标/数值噪声），有名无有效数量 → (None, None) 不写库存。"""
+    import app.main as main_mod
+    f = main_mod._ocr_badge_count
+    assert f("海之泪\n×42\n从海囚获取的一滴红色水滴。") == 42
+    assert f("道具 失络焦子 × 996 可于[焦子商店]中兑换所需物品") == 996  # × 与数字夹空格
+    assert f("焦子×996") == 996                        # 中文紧邻放行
+    assert f("×1.2万") == 12000 and f("×1,234") == 1234
+    assert f("x42") == 42                              # 行首 x 是独立 token
+    assert f("χ42") == 42 and f("✕42") == 42 and f("＊42") == 42
+    assert f("box42") is None                          # x 前是字母：非独立 token
+    assert f("4x2") is None                            # x 前是数字
+    assert f("max 42") is None
+    assert f("记忆的永恒 0 霍材的 145") is None          # 无徽标：0 角标噪声不作数
+    assert f("") is None and f(None) is None and f("abc") is None
+    cands = main_mod._inventory_candidates()
+    # 徽标优先于「名称右侧数字/描述数字」：详情文本含描述数字时以 ×N 为准
+    mat, count = main_mod._parse_cell_item("海之泪 ×3\n收集进度 145/1269", cands)
+    assert mat == "boss_sea_tear" and count == 3, (mat, count)
+    mat, count = main_mod._parse_cell_item("海之泪\n×1.2万\n描述 42 个", cands)
+    assert mat == "boss_sea_tear" and count == 12000, (mat, count)
+    # 无 ×N 徽标 + 名称右侧 0（图标角标噪声）→ (None, None)：不写 0 进库存
+    assert main_mod._parse_cell_item("记忆的永恒 0 霍材的 145", cands) == (None, None)
+    assert main_mod._parse_cell_item("雏鸟的希冀 0", cands) == (None, None)
+    assert main_mod._parse_cell_item("海之泪\n×0", cands) == (None, None)  # ×0 同样无效
+    # 既有语义不回归：名称下一行 ×42 / χ42 短行照旧命中
+    mat, count = main_mod._parse_cell_item("海之泪\n×42\n从海囚获取的一滴红色水滴。", cands)
+    assert mat == "boss_sea_tear" and count == 42, (mat, count)
+
+
+@case
+def test_ocr_map_unknown():
+    """POST /api/ocr/map-unknown 后端语义（_ocr_map_unknown）：合法映射追加
+    item_names 别名并热生效（映射后同名格下次识别自动命中）、重复映射幂等去重、
+    非法 mat_id/越界 name_text 拒绝（端点转 400）；谕石实名补录在位且不覆盖
+    既有别名。夹具按 test_codex_custom_material 口径用 tempfile 重定向 DATA_DIR，
+    不触碰生产 data/materials.json。"""
+    import app.main as main_mod
+    # 任务 3：谕石实名补录在位（生产表只读校验 + 单格可命中）
+    assert "谕石" in (planner.MATERIALS.get("item_names") or {}).get("oracle_stone", []), \
+        planner.MATERIALS.get("item_names", {}).get("oracle_stone")
+    mat, count = main_mod._parse_cell_item("谕石\n×7", main_mod._inventory_candidates())
+    assert mat == "oracle_stone" and count == 7, (mat, count)
+    tmp = tempfile.mkdtemp(prefix="oknte_ocr_map_")
+    orig_main_datadir = main_mod.DATA_DIR
+    orig_planner_datadir = planner.DATA_DIR
+    main_mod.DATA_DIR = tmp
+    planner.DATA_DIR = tmp
+    # 预置三张表副本（_ocr_map_unknown 内部的 reload_tables 需要同目录三表齐全）
+    for name in ("materials.json", "yields.json", "requirements.json"):
+        shutil.copy(os.path.join(orig_planner_datadir, name), os.path.join(tmp, name))
+    try:
+        # 合法映射：把用户实测的 OCR 误读形态「前石」挂到 oracle_stone
+        names = main_mod._ocr_map_unknown("前石", "oracle_stone")
+        assert "前石" in names["oracle_stone"], names["oracle_stone"]
+        assert "谕石" in names["oracle_stone"], "既有别名不得被覆盖"
+        saved = json.load(open(os.path.join(tmp, "materials.json"), encoding="utf-8"))
+        assert "前石" in saved["item_names"]["oracle_stone"], "映射必须落盘 materials.json"
+        # 映射后热生效：同名格（含 ×N 徽标）下次识别自动命中
+        mat, count = main_mod._parse_cell_item(
+            "145 1269 道具 前石 ×12 重要道具", main_mod._inventory_candidates())
+        assert mat == "oracle_stone" and count == 12, (mat, count)
+        # 重复映射（归一化同形）：幂等去重，不追加第二条
+        names2 = main_mod._ocr_map_unknown(" 前 石 ", "oracle_stone")
+        assert names2["oracle_stone"].count("前石") == 1, names2["oracle_stone"]
+        assert len(names2["oracle_stone"]) == len(names["oracle_stone"])
+        # 跨材料同名别名：拒绝（候选最长优先会静默遮蔽后登记的映射——评审回归）
+        try:
+            main_mod._ocr_map_unknown("前石", "coin")
+        except ValueError as e:
+            assert "oracle_stone" in str(e), e
+        else:
+            raise AssertionError("跨材料同名映射必须拒绝")
+        # 写盘失败：内存零污染（评审回归：旧实现先改内存后写盘，OSError 后重试
+        # 误命中幂等分支假成功、重启丢别名），重试真实重写
+        calls = {"n": 0}
+        orig_save = main_mod._save_json_atomic
+
+        def _boom(path, data):
+            calls["n"] += 1
+            raise OSError("disk full (模拟)")
+
+        main_mod._save_json_atomic = _boom
+        try:
+            main_mod._ocr_map_unknown("写盘失败甲", "fons")
+        except OSError as e:
+            assert "disk full" in str(e), e
+        else:
+            raise AssertionError("写盘失败必须抛 OSError")
+        finally:
+            main_mod._save_json_atomic = orig_save
+        assert "写盘失败甲" not in (planner.MATERIALS.get("item_names") or {}) \
+            .get("fons", []), "写盘失败后内存不得留半截别名"
+        saved = json.load(open(os.path.join(tmp, "materials.json"), encoding="utf-8"))
+        assert "写盘失败甲" not in saved["item_names"].get("fons", []), \
+            "写盘失败不得落盘"
+        names3 = main_mod._ocr_map_unknown("写盘失败甲", "fons")  # 重试：真实写盘
+        assert "写盘失败甲" in names3.get("fons", []), names3.get("fons")
+        assert calls["n"] == 1, calls  # 失败尝试恰好一次；重试走恢复后的真实写盘
+        # 原文消毒：控制字符→空格、空白折叠、64 字截断（norm 2-24 管语义）
+        raw = "甲\x01 乙" + "  " * 200  # norm=甲乙 合法；原文必须被折叠截断
+        names4 = main_mod._ocr_map_unknown(raw, "fons")
+        assert "甲 乙" in names4["fons"], names4["fons"]
+        assert all("\x01" not in a and len(a) <= 64 for a in names4["fons"]), \
+            names4["fons"]
+        # 非法 mat_id → ValueError（端点转 400）
+        for bad in (("某某道具", "no_such_mat"), ("某某道具", ""), (None, None)):
+            try:
+                main_mod._ocr_map_unknown(bad[0], bad[1])
+            except ValueError as e:
+                assert "未知材料 id" in str(e), str(e)
+            else:
+                raise AssertionError(f"非法 mat_id 必须拒绝: {bad}")
+        # name_text 越界（归一化后 >24 字 / 单字 / 空白）→ ValueError
+        for bad_name in ("这是一个非常非常长的未收录道具名称文本必须被映射接口拒绝",
+                         "石", "   ", ""):
+            try:
+                main_mod._ocr_map_unknown(bad_name, "fons")
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(f"越界 name_text 必须拒绝: {bad_name}")
+    finally:
+        main_mod.DATA_DIR = orig_main_datadir
+        planner.DATA_DIR = orig_planner_datadir
+        planner.reload_tables()  # 恢复生产三表内存态（清除测试期内存映射）
+
+
+@case
+def test_ocr_scroll_keyword_injection_safe():
+    """滚动脚本关键词注入防线：__KEYWORDS__ 必须在单引号 PS 字符串内（不插值），
+    Python 端按单引号语义转义；恶意关键词 $(...) 不得执行。"""
+    import app.main as main_mod
+    # 静态：双引号插值上下文必须不存在（双引号内 $( )/反撇号即任意代码执行）
+    assert "'__KEYWORDS__'" in main_mod._OCR_PS_SCROLL, "关键词必须是单引号字面量"
+    assert '"__KEYWORDS__"' not in main_mod._OCR_PS_SCROLL
+    # 转义语义匹配：Python 端 ' → ''（单引号字符串的转义规则）
+    payload = "$(Write-Output INJECTED_MARKER)"
+    safe_kw = payload.replace("'", "''")
+    ps = (main_mod._OCR_PS_SCROLL.replace("__HWND__", "0")
+          .replace("__KEYWORDS__", safe_kw))
+    # 实跑（hwnd=0 走关键词回退分支）：payload 只能当字面量参与 -like 匹配，不执行
+    out, err, code = main_mod._ocr_run_ps(ps, {}, timeout=60)
+    assert "INJECTED_MARKER" not in out, (out[:200], err[:200])
+
+
+# ---------- 角色等级 OCR v2（真实 UI 遍历解析） ----------
+
+@case
+def test_ocr_char_page_parsers():
+    """角色信息页/异能页解析：名字+Lv（丢弃上限）、四技能锚定 N/10、都市特技按分母分档。"""
+    import app.main as main_mod
+    with _StateGuard():
+        STATE.data["settings"] = dict(DEFAULT_SETTINGS)
+        STATE.data["characters"] = [main_mod._sanitize_character({"id": "a", "name": "安魂曲"})]
+        # 信息页（2026-11-03 截图口径）：名字在右上，Lv.70/70；正文含属性数值噪音
+        info = ("\u203b 信息 养成指南 安魂曲 暗 液态 输出 Lv.70/70 "
+                "属性 效果 生命值 15195 攻击力 618 防御力 798")
+        info_r = main_mod._parse_char_info_text(info)
+        assert info_r == {"name": "安魂曲", "level": 70}, info_r
+        # "Lv.70/70" 的上限段 70 不得被当成等级（等级=斜杠前的当前值）
+        # 异能页：四技能锚定 N/10 + 都市特技两档 N/5、N/2（分母区分槽位）
+        abil = ("异能 都市特技 普通攻击 2/10 变轨技能 4/10 极轨终结 4/10 "
+                "援护技 2/10 角色特性 0/5 0/2")
+        abil_r = main_mod._parse_char_ability_text(abil)
+        assert abil_r["normal"] == 2 and abil_r["variable"] == 4 \
+            and abil_r["orbit"] == 4 and abil_r["assist"] == 2, abil_r
+        assert abil_r["talent1"] == 0 and abil_r["talent2"] == 0, abil_r
+        # 技能名缺失 → None 不编造；未知文本不产生档位
+        empty = main_mod._parse_char_ability_text("完全无关的界面文本 3/7")
+        assert all(empty[k] is None for k in ("normal", "variable", "orbit", "assist")), empty
+        assert empty["talent1"] is None and empty["talent2"] is None
+        # 名字未收录 → name=None（前端标注不可应用）
+        unk = main_mod._parse_char_info_text("陌生角色 Lv.55/70")
+        assert unk == {"name": None, "level": 55}, unk
 
 
 # ---------- 汇总 ----------

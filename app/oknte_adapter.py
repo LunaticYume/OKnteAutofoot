@@ -618,13 +618,18 @@ class RunMonitor:
     """汇总一次 run_task 执行期间的日志事件。"""
 
     RE_STARTED = re.compile(r"开始任务: (.+)")
-    RE_IDX = re.compile(r"选择项目序号: 第 (\d+) 个项目")
+    RE_IDX = re.compile(r"选择项目序号: (?:第 )?(\d+)")
     RE_UNITS = re.compile(r"双倍次数: (\d+), 单倍次数: (\d+)")
     RE_STAMINA_TARGET = re.compile(r"info_set 体力消耗目标 (\d+)")
     RE_USED = re.compile(r"ocr found used stamina (\d+)")
     RE_HUNTER_TOTAL = re.compile(r"共计消耗体力[:：]?\s*(\d+)")
     RE_FAIL_TASK = re.compile(r"任务运行失败: (.+)|任务失败: (.+)")
     FAIL_MARKS = ("未找到副本按钮", "DailyRoutineTask error", "未成功领取奖励")
+    # v1.4.22 实测日志标记（真机取证：无头任务卡在战斗进入检测时，面板此前无法区分
+    # "卡在战斗"只会傻等超时）——只做展示，不参与 outcome 判定
+    MARK_IN_DUNGEON = "进入副本并等待"
+    MARK_COMBAT_START = "开始执行战斗流程"
+    MARK_COMBAT_END = "战斗结束，正在前往领取奖励"
 
     def __init__(self):
         self.started = []
@@ -637,6 +642,8 @@ class RunMonitor:
         self.skipped = False
         self.stamina_short = False
         self.failures = []
+        self.in_dungeon = False   # 已进入副本
+        self.combat_started = False  # 已打出"开始执行战斗流程"
 
     def feed(self, lines):
         for line in lines:
@@ -656,6 +663,13 @@ class RunMonitor:
             elif (m := self.RE_HUNTER_TOTAL.search(line)):
                 # 追猎结束汇总（AnomalyHunter）：成功/失败后输出"共计消耗体力: N"
                 self.hunter_total = int(m.group(1))
+            elif self.MARK_IN_DUNGEON in line:
+                self.in_dungeon = True
+            elif self.MARK_COMBAT_START in line:
+                self.in_dungeon = False
+                self.combat_started = True
+            elif self.MARK_COMBAT_END in line:
+                self.combat_started = False
             elif "任务执行完毕" in line:
                 self.completed = True
             elif "跳过每日体力任务" in line:

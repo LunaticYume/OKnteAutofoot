@@ -628,6 +628,20 @@
       "category": "经验与甲硬币",
       "source": "等价折算录入（非刷取掉落；白:蓝:紫=1:3:9，经验按点数）",
       "obtain": "external"
+    },
+    {
+      "id": "city_ability_up",
+      "display_name": "无梦果核（都市特技升级材料）",
+      "category": "都市特技与家具",
+      "source": "都市特技升级消耗（mysqil upgrades.json 实证）",
+      "obtain": "external"
+    },
+    {
+      "id": "fons",
+      "display_name": "方斯（家具/都市消耗货币）",
+      "category": "都市特技与家具",
+      "source": "家具与都市特技消耗（mysqil upgrades.json 实证）",
+      "obtain": "external"
     }
   ],
   "tiers": {
@@ -887,5 +901,181 @@
         }
       ]
     }
+  },
+  "item_names": {
+    "mob_numeral_c": [
+      "模糊数符"
+    ],
+    "coin": [
+      "甲硬币"
+    ],
+    "boss_pick_watermoon": [
+      "水月色拨片"
+    ],
+    "mob_numeral_b": [
+      "未解数符"
+    ],
+    "mob_numeral_a": [
+      "扭曲数符"
+    ],
+    "ability_3": [
+      "初次的期许"
+    ],
+    "ability_3_b": [
+      "已知的倦怠"
+    ],
+    "wk_skirt": [
+      "名为炫耀的裙袂"
+    ],
+    "ability_3_p": [
+      "「黑帽子」",
+      "黑帽子"
+    ],
+    "mob_whisper_c": [
+      "失落絮语"
+    ],
+    "boss_flower_seed": [
+      "倾诉花种"
+    ],
+    "mob_whisper_b": [
+      "茫昧絮语",
+      "茫眛絮语"
+    ],
+    "mob_whisper_a": [
+      "悖谬絮语"
+    ],
+    "ability_5": [
+      "水波的迟疑"
+    ],
+    "ability_5_b": [
+      "倒悬的轻响"
+    ],
+    "ability_5_p": [
+      "「第二人」",
+      "第二人"
+    ],
+    "boss_nest_fragment": [
+      "护巢残片"
+    ],
+    "wk_stamp": [
+      "好狗狗印章"
+    ],
+    "mob_silhouette_c": [
+      "褪色掠影"
+    ],
+    "boss_page_delusion": [
+      "妄想彼端的一页"
+    ],
+    "mob_silhouette_b": [
+      "失焦掠影"
+    ],
+    "mob_silhouette_a": [
+      "晦暗掠影"
+    ],
+    "ability_1": [
+      "新兵的怯懦"
+    ],
+    "ability_1_b": [
+      "尉官的谨慎"
+    ],
+    "ability_1_p": [
+      "「白蔷薇」",
+      "白蔷薇"
+    ],
+    "wk_memory": [
+      "记忆的永恒"
+    ],
+    "mob_delusion_c": [
+      "悬想幻妄"
+    ],
+    "boss_spark_plug": [
+      "上膛骑士火花塞"
+    ],
+    "mob_delusion_b": [
+      "渴念幻妄"
+    ],
+    "mob_delusion_a": [
+      "超验幻妄"
+    ],
+    "boss_ticket_stub": [
+      "斑斓的票根"
+    ],
+    "ability_2": [
+      "雏鸟的希冀"
+    ],
+    "ability_2_b": [
+      "白鸽的振翅"
+    ],
+    "ability_2_p": [
+      "「橄榄枝」",
+      "橄榄枝"
+    ],
+    "ability_4": [
+      "思维的同频"
+    ],
+    "ability_4_b": [
+      "信仰的共鸣"
+    ],
+    "ability_4_p": [
+      "「心跳夜」",
+      "心跳夜"
+    ],
+    "boss_sea_tear": [
+      "海之泪"
+    ],
+    "arc_1": [
+      "入门级戏剧芯"
+    ],
+    "arc_1_b": [
+      "大师级戏剧芯"
+    ],
+    "arc_1_p": [
+      "典藏级戏剧芯"
+    ],
+    "arc_5": [
+      "无味冷点心"
+    ],
+    "arc_5_b": [
+      "原味冷点心"
+    ],
+    "arc_5_p": [
+      "特制冷点心"
+    ],
+    "arc_2": [
+      "液态梦试用装"
+    ],
+    "arc_2_b": [
+      "液态梦旅行装"
+    ],
+    "arc_2_p": [
+      "罐装液态梦"
+    ],
+    "arc_4": [
+      "螺旋乐碎屑"
+    ],
+    "arc_4_b": [
+      "螺旋乐小节"
+    ],
+    "arc_4_p": [
+      "螺旋乐齐奏"
+    ],
+    "arc_3": [
+      "铁制苹果核"
+    ],
+    "arc_3_b": [
+      "银质苹果核"
+    ],
+    "arc_3_p": [
+      "金色苹果核"
+    ],
+    "city_ability_up": [
+      "无梦果核"
+    ],
+    "fons": [
+      "方斯"
+    ],
+    "oracle_stone": [
+      "谕石"
+    ]
   }
 }

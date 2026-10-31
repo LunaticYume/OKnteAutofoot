@@ -74,6 +74,11 @@ DEFAULT_SETTINGS = {
     "stamina_regen_per_hour": 10,
     "stamina_now": None,
     "stamina_now_at": "",
+    # 背包 OCR v2：游戏窗口标题关键词（逗号分隔，任一命中即绑定）与自动翻页页数上限
+    "game_window_keywords": "异环,Neverness",
+    "ocr_max_pages": 5,
+    # 背包 OCR v3：游戏进程名（空=从 ok-nte devices.json 自动读取；/api/ocr/select 后落盘）
+    "game_process_name": "",
 }
 
 TRACK_KEYS = ["char_level", "ability_level", "arc_level", "console_level"]
