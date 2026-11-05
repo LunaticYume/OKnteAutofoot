@@ -1750,14 +1750,16 @@ foreach ($pt in $Points) {
 Write-Output ("__OCR_META__" + "`t" + $meta.window + "`t" + "window")
 '''
 
-# ---- 角色等级 OCR v2：真实 UI 遍历（2026-11-04 用户截图取证）----
-# 右侧竖排头像列（点头像→信息页 名字+Lv.70/70；左导航"异能"→四技能 N/10+都市特技 N/5、N/2）
+# ---- 角色等级 OCR v2：真实 UI 遍历（2026-11-04 用户截图取证；2026-11-06 实机重定标，
+#      新增"弧盘"导航与弧盘页 ROI：左导航竖排 信息/弧盘/异能/觉醒）----
 _CHAR_OCR_FILE = os.path.join(DATA_DIR, "char_ocr_layout.json")
 _CHAR_OCR_DEFAULT = {
-    "avatars": {"x": 0.9609, "y": 0.2361, "dy": 0.125, "count": 7},
-    "ability_nav": {"x": 0.0599, "y": 0.5991},
-    "info_roi": {"x": 0.6552, "y": 0.1398, "w": 0.29, "h": 0.24},
-    "ability_roi": {"x": 0.2401, "y": 0.2704, "w": 0.5599, "h": 0.6194},
+    "avatars": {"x": 0.9572, "y": 0.182, "dy": 0.1468, "count": 5},
+    "ability_nav": {"x": 0.058, "y": 0.57},
+    "arc_nav": {"x": 0.058, "y": 0.322},
+    "info_roi": {"x": 0.655, "y": 0.14, "w": 0.17, "h": 0.24},
+    "arc_roi": {"x": 0.63, "y": 0.13, "w": 0.17, "h": 0.125},
+    "ability_roi": {"x": 0.24, "y": 0.315, "w": 0.56, "h": 0.545},
 }
 
 
@@ -1768,7 +1770,9 @@ def _sanitize_char_ocr_layout(raw):
     d = _CHAR_OCR_DEFAULT
     av = raw.get("avatars") if isinstance(raw.get("avatars"), dict) else {}
     nav = raw.get("ability_nav") if isinstance(raw.get("ability_nav"), dict) else {}
+    an = raw.get("arc_nav") if isinstance(raw.get("arc_nav"), dict) else {}
     ir = raw.get("info_roi") if isinstance(raw.get("info_roi"), dict) else {}
+    ac = raw.get("arc_roi") if isinstance(raw.get("arc_roi"), dict) else {}
     ar = raw.get("ability_roi") if isinstance(raw.get("ability_roi"), dict) else {}
 
     def _r(value, default):
@@ -1784,10 +1788,16 @@ def _sanitize_char_ocr_layout(raw):
                     "count": _clamp_int(av.get("count"), 1, 10, d["avatars"]["count"])},
         "ability_nav": {"x": _r(nav.get("x"), d["ability_nav"]["x"]),
                         "y": _r(nav.get("y"), d["ability_nav"]["y"])},
+        "arc_nav": {"x": _r(an.get("x"), d["arc_nav"]["x"]),
+                    "y": _r(an.get("y"), d["arc_nav"]["y"])},
         "info_roi": {"x": _r(ir.get("x"), d["info_roi"]["x"]),
                      "y": _r(ir.get("y"), d["info_roi"]["y"]),
                      "w": _r(ir.get("w"), d["info_roi"]["w"]),
                      "h": _r(ir.get("h"), d["info_roi"]["h"])},
+        "arc_roi": {"x": _r(ac.get("x"), d["arc_roi"]["x"]),
+                    "y": _r(ac.get("y"), d["arc_roi"]["y"]),
+                    "w": _r(ac.get("w"), d["arc_roi"]["w"]),
+                    "h": _r(ac.get("h"), d["arc_roi"]["h"])},
         "ability_roi": {"x": _r(ar.get("x"), d["ability_roi"]["x"]),
                         "y": _r(ar.get("y"), d["ability_roi"]["y"]),
                         "w": _r(ar.get("w"), d["ability_roi"]["w"]),
@@ -1814,11 +1824,12 @@ _CHAR_SKILL_ANCHORS = (("普通攻击", "normal"), ("变轨技能", "variable"),
 
 
 def _parse_char_info_text(text):
-    """角色信息页 OCR → {name, level}（纯函数，selftest 覆盖）。
+    """角色信息页 OCR → {name, level, level_cap}（纯函数，selftest 覆盖）。
 
     名字 = 已知角色名（本系统角色 + 游戏目录，归一化后最长优先）在文本中出现；
-    等级 = "Lv.70/70" 或 "70/70" 的当前值（斜杠后的上限段丢弃）。
-    名字识别失败时 name=None（前端标注"未识别"，不可应用）。"""
+    等级 = "Lv.70/70" 或 "70/70" 的当前值（斜杠前）；level_cap = 斜杠后的上限段
+    （仅识别展示，不参与应用）。名字识别失败时 name=None（前端标注"未识别"，
+    不可应用）。"""
     norm_ns = _ocr_norm(text)                       # 去空白：名字子串匹配用
     norm_sp = _ocr_norm(text, keep_space=True)      # 保留空格：Lv 数字提取用
     names = {}
@@ -1838,13 +1849,20 @@ def _parse_char_info_text(text):
             name = value
             break
     level = None
-    m = (re.search(r"Lv\.?\s*(\d{1,3})", norm_sp)
-         or re.search(r"\b(\d{1,3})/\d{1,3}\b", norm_sp))
+    level_cap = None
+    # 斜杠对优先（当前值/上限值都取）；仅 "Lv.70" 无斜杠时退回单数（不编造上限）
+    m = (re.search(r"Lv\.?\s*(\d{1,3})\s*/\s*(\d{1,3})", norm_sp)
+         or re.search(r"\b(\d{1,3})/(\d{1,3})\b", norm_sp)
+         or re.search(r"Lv\.?\s*(\d{1,3})", norm_sp))
     if m:
         value = int(m.group(1))
         if 1 <= value <= 999:
             level = value
-    return {"name": name, "level": level}
+        if m.lastindex and m.lastindex >= 2:
+            cap = int(m.group(2))
+            if 1 <= cap <= 999:
+                level_cap = cap
+    return {"name": name, "level": level, "level_cap": level_cap}
 
 
 def _parse_char_ability_text(text):
@@ -1872,9 +1890,52 @@ def _parse_char_ability_text(text):
     return out
 
 
+def _parse_char_arc_text(text):
+    """弧盘页 OCR → {arc_name, arc_level, arc_level_cap}（纯函数，selftest 覆盖）。
+
+    弧盘实名 = 已知弧盘名（游戏目录 weapons + 本系统角色已绑 weapon，归一化后
+    最长优先）在文本中出现（2026-11-06 截图口径："漆黑青春妄想 Lv: 60/60"）；
+    arc_level = "Lv: 60/60" 斜杠前当前值（clamp 0-999），arc_level_cap = 斜杠后
+    上限值（缺失 None）。实名未收录时 arc_name=None（前端用 data-arcmap 下拉
+    手动指定，不可直接应用）。"""
+    norm_ns = _ocr_norm(text)                       # 去空白：实名子串匹配用
+    norm_sp = _ocr_norm(text, keep_space=True)      # 保留空格：Lv 数字提取用
+    weapons = {}
+    try:
+        data = game_data.load()
+    except (OSError, ValueError):
+        data = {}
+    for entry in data.get("weapons", []):
+        if isinstance(entry, dict) and entry.get("name"):
+            weapons.setdefault(_ocr_norm(entry["name"]), entry["name"])
+    for c in STATE.characters:
+        w = c.get("weapon")
+        if isinstance(w, str) and w.strip():
+            weapons.setdefault(_ocr_norm(w), w.strip())
+    arc_name = None
+    for key, value in sorted(weapons.items(), key=lambda x: -len(x[0])):
+        if len(key) >= 1 and key in norm_ns:
+            arc_name = value
+            break
+    arc_level = None
+    arc_level_cap = None
+    m = (re.search(r"Lv[:.．]?\s*(\d{1,3})\s*/\s*(\d{1,3})", norm_sp)
+         or re.search(r"\b(\d{1,3})/(\d{1,3})\b", norm_sp))
+    if m:
+        value = int(m.group(1))
+        if 0 <= value <= 999:  # 弧盘等级允许 0（未升级），上限与角色等级一致
+            arc_level = value
+        cap = int(m.group(2))
+        if 1 <= cap <= 999:
+            arc_level_cap = cap
+    return {"arc_name": arc_name, "arc_level": arc_level,
+            "arc_level_cap": arc_level_cap}
+
+
 def _run_chars_ocr():
-    """角色等级遍历（实验）：逐个点头像 → 信息 ROI（名字+Lv）→ "异能"导航 →
-    异能 ROI（四技能/都市特技）→ 解析。系统组件零第三方依赖。
+    """角色等级遍历（实验）：逐个点头像 → 信息 ROI（名字+Lv）→ "弧盘"导航 →
+    弧盘 ROI（实名+等级）→ "异能"导航 → 异能 ROI（四技能/都市特技）→ 解析。
+    系统组件零第三方依赖。
 
     返回 {characters, window, warnings}；
     失败 raise OSError/TimeoutExpired/ValueError/_OcrWindowNotFound。"""
@@ -1889,15 +1950,22 @@ def _run_chars_ocr():
     win_h = _clamp_int(meta.get("h"), 1, 100000, 1)
     layout = _char_ocr_layout()
     av, nav = layout["avatars"], layout["ability_nav"]
+    arc_nav = layout["arc_nav"]
     safe_kw = keywords.replace("'", "''")
     points = [[int(round(av["x"] * win_w)),
                int(round((av["y"] + av["dy"] * i) * win_h))]
               for i in range(int(av["count"]))]
     nav_px = [int(round(nav["x"] * win_w)), int(round(nav["y"] * win_h))]
+    arc_nav_px = [int(round(arc_nav["x"] * win_w)),
+                  int(round(arc_nav["y"] * win_h))]
     info_px = [int(round(layout["info_roi"]["x"] * win_w)),
                int(round(layout["info_roi"]["y"] * win_h)),
                int(round(layout["info_roi"]["w"] * win_w)),
                int(round(layout["info_roi"]["h"] * win_h))]
+    arc_px = [int(round(layout["arc_roi"]["x"] * win_w)),
+              int(round(layout["arc_roi"]["y"] * win_h)),
+              int(round(layout["arc_roi"]["w"] * win_w)),
+              int(round(layout["arc_roi"]["h"] * win_h))]
     abil_px = [int(round(layout["ability_roi"]["x"] * win_w)),
                int(round(layout["ability_roi"]["y"] * win_h)),
                int(round(layout["ability_roi"]["w"] * win_w)),
@@ -1907,7 +1975,9 @@ def _run_chars_ocr():
         "__KEYWORDS__", safe_kw).replace(
         "__POINTS__", json.dumps(points)).replace(
         "__NAV__", json.dumps(nav_px)).replace(
+        "__NAV_ARC__", json.dumps(arc_nav_px)).replace(
         "__ROI_INFO_PX__", ",".join(str(v) for v in info_px)).replace(
+        "__ROI_ARC_PX__", ",".join(str(v) for v in arc_px)).replace(
         "__ROI_ABIL_PX__", ",".join(str(v) for v in abil_px)).replace(
         # 哨兵路径注入 PS：/api/ocr/cancel 落盘 → 每头像循环头 Test-Path 提前收尾
         # （PS 字符串单引号转义，防路径含单引号时脚本崩坏）
@@ -1941,7 +2011,8 @@ def _run_chars_ocr():
             continue
         info = _parse_char_info_text(payload.get("info") or "")
         abil = _parse_char_ability_text(payload.get("ability") or "")
-        characters.append({"index": len(characters), **info, **abil})
+        arc = _parse_char_arc_text(payload.get("arc") or "")
+        characters.append({"index": len(characters), **info, **abil, **arc})
     if not characters:
         warnings.append("未识别到任何角色（确认游戏停留在角色信息页，且窗口未被遮挡）")
     if _ocr_cancel_hit(gen):  # PS 内每头像循环头探测哨兵提前收尾：已识别的角色保留
@@ -1951,8 +2022,9 @@ def _run_chars_ocr():
 
 
 _OCR_PS_TRAVERSE_CHAR = r'''
-# ---- 角色等级遍历：逐个点击右侧头像 → 信息 ROI（名字+Lv）→ 点"异能"导航 →
-#      异能 ROI（四技能 N/10 + 都市特技 N/5、N/2）→ 输出 __OCR_CHAR__:<i>:<json> ----
+# ---- 角色等级遍历：逐个点击右侧头像 → 信息 ROI（名字+Lv）→ 点"弧盘"导航 →
+#      弧盘 ROI（实名+Lv: 60/60）→ 点"异能"导航 → 异能 ROI（四技能 N/10 +
+#      都市特技 N/5、N/2）→ 输出 __OCR_CHAR__:<i>:<json{info,ability,arc}> ----
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 if ($meta.fallback) {
   Write-Output "__OCR_NOWIN__"
@@ -1972,12 +2044,19 @@ try {
   $nv = ConvertFrom-Json '__NAV__'
   if ($nv) { $NavP = @($nv) }
 } catch {}
+$NavArc = @()
+try {
+  $na = ConvertFrom-Json '__NAV_ARC__'
+  if ($na) { $NavArc = @($na) }
+} catch {}
 $engine = New-OcrEngine
 $null = [Win32OCR]::SetForegroundWindow($Hwnd)
 Start-Sleep -Milliseconds 200
 $rpI = @(); foreach ($p in ('__ROI_INFO_PX__' -split ',')) { $rpI += [int]$p }
+$rpC = @(); foreach ($p in ('__ROI_ARC_PX__' -split ',')) { $rpC += [int]$p }
 $rpA = @(); foreach ($p in ('__ROI_ABIL_PX__' -split ',')) { $rpA += [int]$p }
 $regionInfo = New-Object System.Drawing.Rectangle($win.x + $rpI[0], $win.y + $rpI[1], $rpI[2], $rpI[3])
+$regionArc = New-Object System.Drawing.Rectangle($win.x + $rpC[0], $win.y + $rpC[1], $rpC[2], $rpC[3])
 $regionAbil = New-Object System.Drawing.Rectangle($win.x + $rpA[0], $win.y + $rpA[1], $rpA[2], $rpA[3])
 $idx = 0
 $emptyStreak = 0
@@ -1992,6 +2071,13 @@ foreach ($pt in $Points) {
   [Win32OCR]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)   # LEFTUP
   Start-Sleep -Milliseconds 300                                # 信息页渲染等待
   $infoText = Invoke-Ocr $regionInfo $engine
+  $null = [Win32OCR]::SetCursorPos($win.x + $NavArc[0], $win.y + $NavArc[1])
+  Start-Sleep -Milliseconds 100
+  [Win32OCR]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 60
+  [Win32OCR]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 300                                # 弧盘页渲染等待
+  $arcText = Invoke-Ocr $regionArc $engine
   $null = [Win32OCR]::SetCursorPos($win.x + $NavP[0], $win.y + $NavP[1])
   Start-Sleep -Milliseconds 100
   [Win32OCR]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
@@ -1999,11 +2085,11 @@ foreach ($pt in $Points) {
   [Win32OCR]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
   Start-Sleep -Milliseconds 300                                # 异能页渲染等待
   $abilText = Invoke-Ocr $regionAbil $engine
-  Write-Output ("__OCR_CHAR__:" + $idx + ":" + (@{info = $infoText; ability = $abilText} | ConvertTo-Json -Compress))
+  Write-Output ("__OCR_CHAR__:" + $idx + ":" + (@{info = $infoText; ability = $abilText; arc = $arcText} | ConvertTo-Json -Compress))
   $idx++
-  if ([string]::IsNullOrWhiteSpace($infoText) -and [string]::IsNullOrWhiteSpace($abilText)) {
+  if ([string]::IsNullOrWhiteSpace($infoText) -and [string]::IsNullOrWhiteSpace($arcText) -and [string]::IsNullOrWhiteSpace($abilText)) {
     $emptyStreak++
-    if ($emptyStreak -ge 2) { break }   # 连续 2 点全空：头像列表已到底
+    if ($emptyStreak -ge 2) { break }   # 连续 2 头像三页全空：头像列表已到底
   } else {
     $emptyStreak = 0
   }
@@ -2559,8 +2645,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send(200, {"ok": True, "item_names": item_names})
         elif path == "/api/characters/ocr":
-            # 实验性 v2（2026-11-04 真实 UI 遍历）：逐个点头像 → 信息页（名字+Lv）→
-            # "异能"页（四技能 N/10 + 都市特技 N/5、N/2）；不直接写角色。
+            # 实验性 v2（2026-11-04 真实 UI 遍历；2026-11-06 增弧盘页）：逐个点头像 →
+            # 信息页（名字+Lv）→ "弧盘"页（实名+等级）→ "异能"页（四技能+都市特技）；
+            # 不直接写角色。
             # OCR 单飞锁：与背包遍历互斥（共用全局鼠标点击），抢不到即 409。
             if not _OCR_RUN_LOCK.acquire(blocking=False):
                 self._send(409, {"ok": False,

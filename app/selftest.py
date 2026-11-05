@@ -3353,8 +3353,10 @@ def test_ocr_cell_cancel_and_token_isolation():
                 "角色遍历必须注入按代哨兵路径并配 240s 子进程超时"
             assert "Start-Sleep -Milliseconds 400" not in char_src, \
                 "角色遍历渲染等待必须从 400ms 收紧到 300ms"
-            assert char_src.count("Start-Sleep -Milliseconds 300") == 2, \
-                "信息页/异能页两处渲染等待均为 300ms"
+            assert char_src.count("Start-Sleep -Milliseconds 300") == 3, \
+                "信息页/弧盘页/异能页三处渲染等待均为 300ms"
+            assert '"__NAV_ARC__"' in run_src and '"__ROI_ARC_PX__"' in run_src, \
+                "角色遍历必须注入弧盘导航坐标与弧盘页 ROI 像素占位符"
             # 端点布线：取消=定向代数+落哨兵；两个遍历端点=单飞锁非阻塞抢占+释放
             post_src = inspect.getsource(main_mod.Handler.do_POST)
             assert "_ocr_cancel_active()" in post_src and \
@@ -3597,7 +3599,8 @@ def test_ocr_scroll_keyword_injection_safe():
 
 @case
 def test_ocr_char_page_parsers():
-    """角色信息页/异能页解析：名字+Lv（丢弃上限）、四技能锚定 N/10、都市特技按分母分档。"""
+    """角色信息页/异能页/弧盘页解析：名字+Lv+上限、四技能锚定 N/10、都市特技按
+    分母分档、弧盘实名（目录+已绑 weapon）+ Lv: 60/60。"""
     import app.main as main_mod
     with _StateGuard():
         STATE.data["settings"] = dict(DEFAULT_SETTINGS)
@@ -3606,8 +3609,8 @@ def test_ocr_char_page_parsers():
         info = ("\u203b 信息 养成指南 安魂曲 暗 液态 输出 Lv.70/70 "
                 "属性 效果 生命值 15195 攻击力 618 防御力 798")
         info_r = main_mod._parse_char_info_text(info)
-        assert info_r == {"name": "安魂曲", "level": 70}, info_r
-        # "Lv.70/70" 的上限段 70 不得被当成等级（等级=斜杠前的当前值）
+        assert info_r == {"name": "安魂曲", "level": 70, "level_cap": 70}, info_r
+        # 等级=斜杠前的当前值；上限段进 level_cap（仅展示，不参与应用）
         # 异能页：四技能锚定 N/10 + 都市特技两档 N/5、N/2（分母区分槽位）
         abil = ("异能 都市特技 普通攻击 2/10 变轨技能 4/10 极轨终结 4/10 "
                 "援护技 2/10 角色特性 0/5 0/2")
@@ -3621,7 +3624,29 @@ def test_ocr_char_page_parsers():
         assert empty["talent1"] is None and empty["talent2"] is None
         # 名字未收录 → name=None（前端标注不可应用）
         unk = main_mod._parse_char_info_text("陌生角色 Lv.55/70")
-        assert unk == {"name": None, "level": 55}, unk
+        assert unk == {"name": None, "level": 55, "level_cap": 70}, unk
+        # 无斜杠的 "Lv.70"：只给等级，不编造上限
+        nos = main_mod._parse_char_info_text("安魂曲 Lv.70")
+        assert nos == {"name": "安魂曲", "level": 70, "level_cap": None}, nos
+        # 弧盘页（2026-11-06 截图口径）："漆黑青春妄想 Lv: 60/60"——实名从
+        # data/game_data.json weapons 目录取真名（子串匹配，容 "…" 等 OCR 噪声）
+        arc = main_mod._parse_char_arc_text("…漆黑青春妄想 Lv: 60/60…")
+        assert arc == {"arc_name": "漆黑青春妄想", "arc_level": 60,
+                       "arc_level_cap": 60}, arc
+        # 弧盘等级 clamp 0-999：0（未升级）合法
+        arc0 = main_mod._parse_char_arc_text("休息日 Lv: 0/60")
+        assert arc0["arc_name"] == "休息日" and arc0["arc_level"] == 0 \
+            and arc0["arc_level_cap"] == 60, arc0
+        # 本系统角色已绑 weapon 亦可作实名候选（目录未收录的绑定名兜底）
+        STATE.data["characters"] = [main_mod._sanitize_character(
+            {"id": "b", "name": "安魂曲", "weapon": "测试弧盘甲"})]
+        arc2 = main_mod._parse_char_arc_text("测试弧盘甲 Lv: 45/60")
+        assert arc2 == {"arc_name": "测试弧盘甲", "arc_level": 45,
+                        "arc_level_cap": 60}, arc2
+        # 实名未收录 → arc_name=None（前端 data-arcmap 下拉手动指定）
+        arc3 = main_mod._parse_char_arc_text("完全无关的界面 12/34")
+        assert arc3 == {"arc_name": None, "arc_level": 12,
+                        "arc_level_cap": 34}, arc3
 
 
 # ---------- 汇总 ----------
