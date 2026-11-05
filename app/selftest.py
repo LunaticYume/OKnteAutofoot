@@ -3351,10 +3351,16 @@ def test_ocr_cell_cancel_and_token_isolation():
             assert '"__CANCEL_FILE__"' in run_src and \
                 "_ocr_cancel_file(gen)" in run_src and "timeout=240" in run_src, \
                 "角色遍历必须注入按代哨兵路径并配 240s 子进程超时"
-            assert "Start-Sleep -Milliseconds 400" not in char_src, \
-                "角色遍历渲染等待必须从 400ms 收紧到 300ms"
-            assert char_src.count("Start-Sleep -Milliseconds 300") == 3, \
-                "信息页/弧盘页/异能页三处渲染等待均为 300ms"
+            assert char_src.count("Start-Sleep -Milliseconds $PageWait") == 4, \
+                "角色切换/信息页/弧盘页/异能页四处渲染等待均用可配置 $PageWait" \
+                "（2026-11-06 实机：300ms 截到过渡帧致全空+误判停）"
+            assert '"__PAGE_WAIT__"' in run_src and '"__NAV_INFO__"' in run_src \
+                and '"__SCROLL__"' in run_src, \
+                "角色遍历必须注入页面等待/信息页兜底导航/头像列滚动配置"
+            assert "0x0800" in char_src and "$seen" in char_src \
+                and "$stagPasses" in char_src, \
+                "角色遍历必须支持头像列滚轮下滚+信息页文本去重+整列停滞自停" \
+                "（2026-11-06 用户要求：遍历右侧整列直到最底且自动停止）"
             assert '"__NAV_ARC__"' in run_src and '"__ROI_ARC_PX__"' in run_src, \
                 "角色遍历必须注入弧盘导航坐标与弧盘页 ROI 像素占位符"
             # 端点布线：取消=定向代数+落哨兵；两个遍历端点=单飞锁非阻塞抢占+释放
@@ -3647,6 +3653,20 @@ def test_ocr_char_page_parsers():
         arc3 = main_mod._parse_char_arc_text("完全无关的界面 12/34")
         assert arc3 == {"arc_name": None, "arc_level": 12,
                         "arc_level_cap": 34}, arc3
+        # 2026-11-06 实机 WinRT OCR 真实形态：字符间带空格、斜杠两侧带空格、
+        # "L"误读为"廴"（"廴 v ： 75 / 80"）——等级提取不依赖 Lv 前缀，锚点用
+        # 去空格文本，特技两档靠档位间空格分隔
+        spaced_info = "伊 洛 伊 养 成 指 南 液 态 ． 生 存 廴 v ： 75 / 80 属 性 效 果"
+        spaced_info_r = main_mod._parse_char_info_text(spaced_info)
+        assert spaced_info_r["level"] == 75 and spaced_info_r["level_cap"] == 80, spaced_info_r
+        spaced_abil = ("异 能 都 市 特 技 普 通 攻 击 6 / 10 变 轨 技 能 6 / 10 "
+                       "极 轨 终 结 6 / 10 援 护 技 6 / 10 角 色 特 性 2 / 5 0 / 2")
+        spaced_abil_r = main_mod._parse_char_ability_text(spaced_abil)
+        assert spaced_abil_r["normal"] == 6 and spaced_abil_r["variable"] == 6 \
+            and spaced_abil_r["orbit"] == 6 and spaced_abil_r["assist"] == 6, spaced_abil_r
+        assert spaced_abil_r["talent1"] == 2 and spaced_abil_r["talent2"] == 0, spaced_abil_r
+        spaced_arc = main_mod._parse_char_arc_text("漆 黑 青 春 妄 想 廴 v ： 60 / 60")
+        assert spaced_arc["arc_level"] == 60 and spaced_arc["arc_level_cap"] == 60, spaced_arc
 
 
 # ---------- 汇总 ----------

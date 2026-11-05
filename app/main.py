@@ -1751,29 +1751,37 @@ Write-Output ("__OCR_META__" + "`t" + $meta.window + "`t" + "window")
 '''
 
 # ---- 角色等级 OCR v2：真实 UI 遍历（2026-11-04 用户截图取证；2026-11-06 实机重定标，
-#      新增"弧盘"导航与弧盘页 ROI：左导航竖排 信息/弧盘/异能/觉醒）----
+#      新增"弧盘"导航与弧盘页 ROI：左导航竖排 信息/弧盘/异能/觉醒；2026-11-06 实机
+#      反馈二轮：300ms 等待截到过渡帧致全空+误判停 → 等待可配置 800ms；点头像后显式
+#      点"信息"导航兜底；头像列滚轮下滚遍历整列，按信息页文本去重、整列无新角色 2 轮自停）----
 _CHAR_OCR_FILE = os.path.join(DATA_DIR, "char_ocr_layout.json")
 _CHAR_OCR_DEFAULT = {
     "avatars": {"x": 0.9572, "y": 0.182, "dy": 0.1468, "count": 5},
+    "info_nav": {"x": 0.058, "y": 0.229},
     "ability_nav": {"x": 0.058, "y": 0.57},
     "arc_nav": {"x": 0.058, "y": 0.322},
     "info_roi": {"x": 0.655, "y": 0.14, "w": 0.17, "h": 0.24},
     "arc_roi": {"x": 0.63, "y": 0.13, "w": 0.17, "h": 0.125},
     "ability_roi": {"x": 0.24, "y": 0.315, "w": 0.56, "h": 0.545},
+    "page_wait_ms": 800,
+    "scroll": {"x": 0.9572, "y": 0.5, "notches": 3},
 }
 
 
 def _sanitize_char_ocr_layout(raw):
-    """角色等级 OCR 布局消毒：比例钳位 0-1、头像数 1-10；缺失/非法回落默认。"""
+    """角色等级 OCR 布局消毒：比例钳位 0-1、头像数 1-10、页等待 200-2000ms；
+    缺失/非法回落默认。"""
     if not isinstance(raw, dict):
         raise ValueError("char layout 必须是对象")
     d = _CHAR_OCR_DEFAULT
     av = raw.get("avatars") if isinstance(raw.get("avatars"), dict) else {}
+    inn = raw.get("info_nav") if isinstance(raw.get("info_nav"), dict) else {}
     nav = raw.get("ability_nav") if isinstance(raw.get("ability_nav"), dict) else {}
     an = raw.get("arc_nav") if isinstance(raw.get("arc_nav"), dict) else {}
     ir = raw.get("info_roi") if isinstance(raw.get("info_roi"), dict) else {}
     ac = raw.get("arc_roi") if isinstance(raw.get("arc_roi"), dict) else {}
     ar = raw.get("ability_roi") if isinstance(raw.get("ability_roi"), dict) else {}
+    sc = raw.get("scroll") if isinstance(raw.get("scroll"), dict) else {}
 
     def _r(value, default):
         try:
@@ -1786,6 +1794,8 @@ def _sanitize_char_ocr_layout(raw):
                     "y": _r(av.get("y"), d["avatars"]["y"]),
                     "dy": _r(av.get("dy"), d["avatars"]["dy"]),
                     "count": _clamp_int(av.get("count"), 1, 10, d["avatars"]["count"])},
+        "info_nav": {"x": _r(inn.get("x"), d["info_nav"]["x"]),
+                     "y": _r(inn.get("y"), d["info_nav"]["y"])},
         "ability_nav": {"x": _r(nav.get("x"), d["ability_nav"]["x"]),
                         "y": _r(nav.get("y"), d["ability_nav"]["y"])},
         "arc_nav": {"x": _r(an.get("x"), d["arc_nav"]["x"]),
@@ -1802,6 +1812,12 @@ def _sanitize_char_ocr_layout(raw):
                         "y": _r(ar.get("y"), d["ability_roi"]["y"]),
                         "w": _r(ar.get("w"), d["ability_roi"]["w"]),
                         "h": _r(ar.get("h"), d["ability_roi"]["h"])},
+        "page_wait_ms": _clamp_int(raw.get("page_wait_ms"), 200, 2000,
+                                   d["page_wait_ms"]),
+        "scroll": {"x": _r(sc.get("x"), d["scroll"]["x"]),
+                   "y": _r(sc.get("y"), d["scroll"]["y"]),
+                   "notches": _clamp_int(sc.get("notches"), 1, 10,
+                                         d["scroll"]["notches"])},
     }
 
 
@@ -1850,10 +1866,12 @@ def _parse_char_info_text(text):
             break
     level = None
     level_cap = None
-    # 斜杠对优先（当前值/上限值都取）；仅 "Lv.70" 无斜杠时退回单数（不编造上限）
-    m = (re.search(r"Lv\.?\s*(\d{1,3})\s*/\s*(\d{1,3})", norm_sp)
-         or re.search(r"\b(\d{1,3})/(\d{1,3})\b", norm_sp)
-         or re.search(r"Lv\.?\s*(\d{1,3})", norm_sp))
+    # 斜杠对优先（当前值/上限值都取）；仅 "Lv.70" 无斜杠时退回单数（不编造上限）。
+    # 2026-11-06 实机 OCR：字符间带空格（"L v ： 75 / 80"，L 还会误读成"廴"）——
+    # 故 l\s*v 容忍 L/v 分离，斜杠两侧容忍空格，且回退对不依赖 Lv 前缀。
+    m = (re.search(r"l\s*v[.:．]?\s*(\d{1,3})\s*/\s*(\d{1,3})", norm_sp, re.I)
+         or re.search(r"(\d{1,3})\s*/\s*(\d{1,3})", norm_sp)
+         or re.search(r"l\s*v[.:．]?\s*(\d{1,3})", norm_sp, re.I))
     if m:
         value = int(m.group(1))
         if 1 <= value <= 999:
@@ -1871,18 +1889,22 @@ def _parse_char_ability_text(text):
     锚定技能实名（普通攻击/变轨技能/极轨终结/援护技）后取首个 N/10 的分子；
     都市特技两档按分母区分：N/5 → talent1、N/2 → talent2（2026-11-03 截图实证
     安魂曲为 0/5 与 0/2）。锚点缺失的键保持 None（不编造）。
-    本解析依赖空格分词（"0/5 0/2" 两档不能并成 "0/50/2"），必须 keep_space。"""
+    2026-11-06 实机 OCR 字符间带空格（"普 通 攻 击 6 / 10"）→ 锚点匹配与技能数字
+    用去空格文本；档位间空格是 "0/5 0/2" 两档的唯一分隔（并成 "0/50/2" 无法分档），
+    故斜杠紧凑化（"6 / 10"→"6/10"）但保留其余空格，特技在紧凑文本上提取。"""
     norm = _ocr_norm(text, keep_space=True)
+    compact = re.sub(r"\s*[/／]\s*", "/", norm)
+    stripped = compact.replace(" ", "")
     out = {"normal": None, "variable": None, "orbit": None, "assist": None,
            "talent1": None, "talent2": None}
     for anchor, key in _CHAR_SKILL_ANCHORS:
-        pos = norm.find(anchor)
+        pos = stripped.find(anchor)
         if pos < 0:
             continue
-        m = re.search(r"(\d{1,2})/\d{1,2}", norm[pos + len(anchor):])
+        m = re.search(r"(\d{1,2})/\d{1,2}", stripped[pos + len(anchor):])
         if m and 0 <= int(m.group(1)) <= 99:
             out[key] = int(m.group(1))
-    for m in re.finditer(r"(\d{1,2})/([52])(?!\d)", norm):
+    for m in re.finditer(r"(\d{1,2})/([52])(?!\d)", compact):
         num, den = int(m.group(1)), int(m.group(2))
         key = "talent1" if den == 5 else "talent2"
         if out[key] is None and 0 <= num <= 5:
@@ -1919,8 +1941,10 @@ def _parse_char_arc_text(text):
             break
     arc_level = None
     arc_level_cap = None
-    m = (re.search(r"Lv[:.．]?\s*(\d{1,3})\s*/\s*(\d{1,3})", norm_sp)
-         or re.search(r"\b(\d{1,3})/(\d{1,3})\b", norm_sp))
+    # 2026-11-06 实机 OCR 空格形态（同 _parse_char_info_text）：l\s*v 容忍分离、
+    # 斜杠两侧容忍空格、回退对不依赖 Lv 前缀
+    m = (re.search(r"l\s*v[:.．]?\s*(\d{1,3})\s*/\s*(\d{1,3})", norm_sp, re.I)
+         or re.search(r"(\d{1,3})\s*/\s*(\d{1,3})", norm_sp))
     if m:
         value = int(m.group(1))
         if 0 <= value <= 999:  # 弧盘等级允许 0（未升级），上限与角色等级一致
@@ -1951,6 +1975,8 @@ def _run_chars_ocr():
     layout = _char_ocr_layout()
     av, nav = layout["avatars"], layout["ability_nav"]
     arc_nav = layout["arc_nav"]
+    info_nav = layout["info_nav"]
+    scroll_cfg = layout["scroll"]
     safe_kw = keywords.replace("'", "''")
     points = [[int(round(av["x"] * win_w)),
                int(round((av["y"] + av["dy"] * i) * win_h))]
@@ -1958,6 +1984,12 @@ def _run_chars_ocr():
     nav_px = [int(round(nav["x"] * win_w)), int(round(nav["y"] * win_h))]
     arc_nav_px = [int(round(arc_nav["x"] * win_w)),
                   int(round(arc_nav["y"] * win_h))]
+    info_nav_px = [int(round(info_nav["x"] * win_w)),
+                   int(round(info_nav["y"] * win_h))]
+    scroll_px = {"x": int(round(scroll_cfg["x"] * win_w)),
+                 "y": int(round(scroll_cfg["y"] * win_h)),
+                 "notches": int(scroll_cfg["notches"])}
+    page_wait = int(layout["page_wait_ms"])
     info_px = [int(round(layout["info_roi"]["x"] * win_w)),
                int(round(layout["info_roi"]["y"] * win_h)),
                int(round(layout["info_roi"]["w"] * win_w)),
@@ -1976,6 +2008,9 @@ def _run_chars_ocr():
         "__POINTS__", json.dumps(points)).replace(
         "__NAV__", json.dumps(nav_px)).replace(
         "__NAV_ARC__", json.dumps(arc_nav_px)).replace(
+        "__NAV_INFO__", json.dumps(info_nav_px)).replace(
+        "__PAGE_WAIT__", str(page_wait)).replace(
+        "__SCROLL__", json.dumps(scroll_px)).replace(
         "__ROI_INFO_PX__", ",".join(str(v) for v in info_px)).replace(
         "__ROI_ARC_PX__", ",".join(str(v) for v in arc_px)).replace(
         "__ROI_ABIL_PX__", ",".join(str(v) for v in abil_px)).replace(
@@ -2022,9 +2057,17 @@ def _run_chars_ocr():
 
 
 _OCR_PS_TRAVERSE_CHAR = r'''
-# ---- 角色等级遍历：逐个点击右侧头像 → 信息 ROI（名字+Lv）→ 点"弧盘"导航 →
-#      弧盘 ROI（实名+Lv: 60/60）→ 点"异能"导航 → 异能 ROI（四技能 N/10 +
-#      都市特技 N/5、N/2）→ 输出 __OCR_CHAR__:<i>:<json{info,ability,arc}> ----
+# ---- 角色等级遍历：逐个点击右侧头像列（滚轮下滚遍历整列直到停滞自停）→
+#      点"信息"导航兜底 → 信息 ROI（名字+Lv）→ 点"弧盘"导航 → 弧盘 ROI（实名+
+#      Lv: 60/60）→ 点"异能"导航 → 异能 ROI（四技能 N/10 + 都市特技 N/5、N/2）
+#      → 输出 __OCR_CHAR__:<i>:<json{info,ability,arc}>。
+#      去重：信息页 OCR 文本去全部空白为键（WinRT OCR 字符间插空格）；点头像未
+#      切换时读到的是上一角色 → 命中已见键自动跳过；无效读（过渡帧/点击落空，
+#      无数字）不记不输出，下轮整列重扫再试。自停：整列无新角色连续 2 轮 → 列表
+#      到底（或滚动无效）。
+#      2026-11-06 实机反馈：300ms 渲染等待截到过渡帧 → 三页全空且"双空判停"误
+#      触发（只跑 2 个头像全未识别）→ 等待改可配置 $PageWait（默认 800ms），
+#      并在点头像后显式点"信息"导航兜底（点头像不保证回到信息页签）。----
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 if ($meta.fallback) {
   Write-Output "__OCR_NOWIN__"
@@ -2049,6 +2092,17 @@ try {
   $na = ConvertFrom-Json '__NAV_ARC__'
   if ($na) { $NavArc = @($na) }
 } catch {}
+$NavInfo = @()
+try {
+  $ni = ConvertFrom-Json '__NAV_INFO__'
+  if ($ni) { $NavInfo = @($ni) }
+} catch {}
+$ScrollCfg = $null
+try {
+  $sc = ConvertFrom-Json '__SCROLL__'
+  if ($sc) { $ScrollCfg = $sc }
+} catch {}
+$PageWait = __PAGE_WAIT__
 $engine = New-OcrEngine
 $null = [Win32OCR]::SetForegroundWindow($Hwnd)
 Start-Sleep -Milliseconds 200
@@ -2058,40 +2112,60 @@ $rpA = @(); foreach ($p in ('__ROI_ABIL_PX__' -split ',')) { $rpA += [int]$p }
 $regionInfo = New-Object System.Drawing.Rectangle($win.x + $rpI[0], $win.y + $rpI[1], $rpI[2], $rpI[3])
 $regionArc = New-Object System.Drawing.Rectangle($win.x + $rpC[0], $win.y + $rpC[1], $rpC[2], $rpC[3])
 $regionAbil = New-Object System.Drawing.Rectangle($win.x + $rpA[0], $win.y + $rpA[1], $rpA[2], $rpA[3])
-$idx = 0
-$emptyStreak = 0
-foreach ($pt in $Points) {
-  if (Test-Path -LiteralPath '__CANCEL_FILE__') { break }   # 取消哨兵（2026-11-05
-  # 用户实测：无取消路径时后端在远程会话下盲目点数分钟）——每头像循环头探测，
-  # 用户请求取消即停止点击下一个头像；已识别头像的输出行保留
-  $null = [Win32OCR]::SetCursorPos($win.x + [int]$pt[0], $win.y + [int]$pt[1])
-  Start-Sleep -Milliseconds 120
+function Invoke-ClickAt([int]$cx, [int]$cy) {
+  $null = [Win32OCR]::SetCursorPos($cx, $cy)
+  Start-Sleep -Milliseconds 100
   [Win32OCR]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)   # LEFTDOWN
   Start-Sleep -Milliseconds 60
   [Win32OCR]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)   # LEFTUP
-  Start-Sleep -Milliseconds 300                                # 信息页渲染等待
-  $infoText = Invoke-Ocr $regionInfo $engine
-  $null = [Win32OCR]::SetCursorPos($win.x + $NavArc[0], $win.y + $NavArc[1])
-  Start-Sleep -Milliseconds 100
-  [Win32OCR]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
-  Start-Sleep -Milliseconds 60
-  [Win32OCR]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
-  Start-Sleep -Milliseconds 300                                # 弧盘页渲染等待
-  $arcText = Invoke-Ocr $regionArc $engine
-  $null = [Win32OCR]::SetCursorPos($win.x + $NavP[0], $win.y + $NavP[1])
-  Start-Sleep -Milliseconds 100
-  [Win32OCR]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
-  Start-Sleep -Milliseconds 60
-  [Win32OCR]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
-  Start-Sleep -Milliseconds 300                                # 异能页渲染等待
-  $abilText = Invoke-Ocr $regionAbil $engine
-  Write-Output ("__OCR_CHAR__:" + $idx + ":" + (@{info = $infoText; ability = $abilText; arc = $arcText} | ConvertTo-Json -Compress))
-  $idx++
-  if ([string]::IsNullOrWhiteSpace($infoText) -and [string]::IsNullOrWhiteSpace($arcText) -and [string]::IsNullOrWhiteSpace($abilText)) {
-    $emptyStreak++
-    if ($emptyStreak -ge 2) { break }   # 连续 2 头像三页全空：头像列表已到底
+}
+$idx = 0
+$seen = @{}
+$stagPasses = 0
+$maxPasses = 8   # 安全上限：滚动持续有效时最多 8 轮整列（×头像数 ≈ 40 角色）
+for ($pass = 1; $pass -le $maxPasses; $pass++) {
+  if (Test-Path -LiteralPath '__CANCEL_FILE__') { break }   # 取消哨兵：每轮循环头探测
+  $newThisPass = 0
+  foreach ($pt in $Points) {
+    if (Test-Path -LiteralPath '__CANCEL_FILE__') { break }   # 取消哨兵：每格循环头探测；
+    # 用户请求取消即停止点击下一个头像，已识别头像的输出行保留
+    Invoke-ClickAt ($win.x + [int]$pt[0]) ($win.y + [int]$pt[1])   # 点头像
+    Start-Sleep -Milliseconds $PageWait                            # 角色切换渲染等待
+    # 信息页兜底点击：点头像不保证回到"信息"页签，显式点一次（已在该页时幂等）
+    Invoke-ClickAt ($win.x + [int]$NavInfo[0]) ($win.y + [int]$NavInfo[1])
+    Start-Sleep -Milliseconds $PageWait                            # 信息页渲染等待
+    $infoText = Invoke-Ocr $regionInfo $engine
+    $key = ($infoText -replace '\s', '')       # 去重键：WinRT OCR 字符间插空格
+    if ($key.Length -lt 4 -or -not ($key -match '\d')) { continue }   # 无效读（过渡帧/
+    # 点击落空）→ 不记不输出，下轮整列重扫时再试
+    if ($seen.ContainsKey($key)) { continue }  # 已处理（含点头像未切换=仍显示上一角色）
+    $seen[$key] = 1
+    $newThisPass++
+    Invoke-ClickAt ($win.x + [int]$NavArc[0]) ($win.y + [int]$NavArc[1])   # 点"弧盘"
+    Start-Sleep -Milliseconds $PageWait                            # 弧盘页渲染等待
+    $arcText = Invoke-Ocr $regionArc $engine
+    Invoke-ClickAt ($win.x + [int]$NavP[0]) ($win.y + [int]$NavP[1])       # 点"异能"
+    Start-Sleep -Milliseconds $PageWait                            # 异能页渲染等待
+    $abilText = Invoke-Ocr $regionAbil $engine
+    Write-Output ("__OCR_CHAR__:" + $idx + ":" + (@{info = $infoText; ability = $abilText; arc = $arcText} | ConvertTo-Json -Compress))
+    $idx++
+  }
+  if (Test-Path -LiteralPath '__CANCEL_FILE__') { break }   # 取消：不再滚动
+  if ($newThisPass -eq 0) {
+    $stagPasses++
+    if ($stagPasses -ge 2) { break }   # 连续 2 整列无新角色：头像列表已到底（或滚动无效）→ 自停
   } else {
-    $emptyStreak = 0
+    $stagPasses = 0
+  }
+  # 头像列滚轮下滚：悬停列上滚 notches × 120（0x0800=MOUSEEVENTF_WHEEL，负值=向下）
+  if ($ScrollCfg) {
+    $null = [Win32OCR]::SetCursorPos($win.x + [int]$ScrollCfg.x, $win.y + [int]$ScrollCfg.y)
+    Start-Sleep -Milliseconds 150
+    for ($i = 0; $i -lt [int]$ScrollCfg.notches; $i++) {
+      [Win32OCR]::mouse_event(0x0800, 0, 0, -120, [UIntPtr]::Zero)
+      Start-Sleep -Milliseconds 80
+    }
+    Start-Sleep -Milliseconds 350      # 列表滚动动画
   }
 }
 Write-Output ("__OCR_META__" + "`t" + $meta.window + "`t" + "window")
