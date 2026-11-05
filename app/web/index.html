@@ -656,8 +656,9 @@ async function renderChars(){
     const chars=[];
     document.querySelectorAll(".char").forEach(el=>{
       const base=st.characters.find(ch=>ch.id===el.dataset.cid) || st.characters[+el.dataset.idx];
-      // 轨道合并而非整体重建：本页只渲染角色等级/异能等级两行，arc_level/console_level
-      // 由弧盘页/空幕页维护——此前整体覆盖把那两条轨道重置回 1→1（弧盘信息丢失根因）
+      // 轨道合并而非整体重建：本页渲染角色等级/异能等级两行 + 弧盘当前等级（chip 行，
+      // OCR「应用弧盘」预填落点）；弧盘目标/空幕 console_level 由弧盘页/空幕页维护——
+      // 此前整体覆盖把那些轨道重置回 1→1（弧盘信息丢失根因）
       const tracks={...(base.tracks||{})};
       el.querySelectorAll("[data-track]").forEach(inp=>{
         tracks[inp.dataset.track]={...(tracks[inp.dataset.track]||{}),[inp.dataset.tk]:+inp.value||0};});
@@ -720,7 +721,7 @@ async function renderChars(){
     // 真机 7 头像 × 每头像 2 次 OCR 在远程会话下超过 120s：等待上限放宽到 300s，
     // 并记录 AbortController（OCR_LVL_RUN）——超时/再次点击都会 abort，
     // catch 里 ocrFireCancel() 发后即忘叫停后端遍历
-    btn.textContent="识别中…（逐个点头像约 1-2 分钟，请勿操作游戏）";
+    btn.textContent="识别中…（逐个点头像约 2-3 分钟，请勿操作游戏）";
     const prev=$("#lvlPreview"); prev.innerHTML='<div class="muted">识别中…（再点上方按钮可取消）</div>';
     const ctl=new AbortController(); OCR_LVL_RUN={ctl,timedOut:false};
     const lvlTo=setTimeout(()=>{ if(OCR_LVL_RUN){ OCR_LVL_RUN.timedOut=true; ctl.abort(); } },300000);
@@ -733,29 +734,35 @@ async function renderChars(){
       const findCard=name=>[...document.querySelectorAll(".char")].find(e=>e.querySelector(".c-name")?.value===name);
       const SK=["normal","variable","orbit","assist"], SKN={normal:"普攻",variable:"变轨",orbit:"极轨",assist:"援护"};
       // 未识别/未导入行的手动映射下拉：本系统角色名单（.c-name 与 state.characters
-      // 同源，findCard 可命中）+（跳过）；选择后该行 name 替换为所选角色，三个应用按钮照常生效
+      // 同源，findCard 可命中）+（跳过）；选择后该行 name 替换为所选角色，四个应用按钮照常生效
       const charOpts=(BOOT.state.characters||[]).map(c=>`<option value="${esc(c.name)}">${esc(c.name)}</option>`).join("");
       prev.innerHTML=`<div class="card"><h3>等级识别结果<span class="h-sub">${esc(r.window||"")} · 识别 ${rows.length} 名角色${(r.warnings||[]).length?` · ${(r.warnings||[]).map(esc).join("；")}`:""}</span></h3>
-        ${rows.length?`<table><tr><th>角色名</th><th>等级</th><th>普攻</th><th>变轨</th><th>极轨</th><th>援护</th><th>特技①</th><th>特技②</th><th>本系统</th></tr>
+        ${rows.length?`<table><tr><th>角色名</th><th>等级</th><th>普攻</th><th>变轨</th><th>极轨</th><th>援护</th><th>特技①</th><th>特技②</th><th>弧盘</th><th>弧盘等级</th><th>本系统</th></tr>
         ${rows.map((x,ri)=>{const has=x.name&&!!findCard(x.name);
           return `<tr><td><b data-lname="${ri}">${esc(x.name||"（未识别）")}</b>${
-            has?"":`<div style="margin-top:4px"><select data-lmap="${ri}" style="max-width:140px" title="OCR 名字未匹配到本系统角色：手动指定后，本行的三个应用按钮按所选角色生效">
+            has?"":`<div style="margin-top:4px"><select data-lmap="${ri}" style="max-width:140px" title="OCR 名字未匹配到本系统角色：手动指定后，本行的四个应用按钮按所选角色生效">
               <option value="">（跳过）</option>${charOpts}</select></div>`}</td>
           <td class="num">${x.level??"—"}</td><td class="num">${x.normal??"—"}</td><td class="num">${x.variable??"—"}</td>
           <td class="num">${x.orbit??"—"}</td><td class="num">${x.assist??"—"}</td>
           <td class="num">${x.talent1??"—"}</td><td class="num">${x.talent2??"—"}</td>
+          <td><b data-arcaname="${ri}" ${x.arc_name?"":"class='muted'"}>${esc(x.arc_name||"（未识别）")}</b>${
+            x.arc_name?"":`<div style="margin-top:4px"><select data-arcmap="${ri}" style="max-width:170px" title="OCR 未识别到已知弧盘实名：手动指定后「应用弧盘」按所选弧盘生效">
+              <option value="">（跳过）</option>${Object.keys(weaponMeta).map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join("")}</select></div>`}</td>
+          <td class="num">${x.arc_level??"—"}</td>
           <td data-lstat="${ri}">${has?"<span class='tag ok'>已在列表</span>":`<span class='tag warn'>未识别/未导入</span>`}</td></tr>`;}).join("")}</table>
         <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:8px">
           <button class="btn" id="lvlApplyLv">应用等级 → 角色等级·当前</button>
           <button class="btn" id="lvlApplySk">应用四技能 → 各技能·当前</button>
           <button class="btn" id="lvlApplyTl">应用特技 → 都市特技等级</button>
+          <button class="btn" id="lvlApplyArc">应用弧盘 → 弧盘绑定+等级</button>
           <button class="btn sec" id="lvlDismiss">放弃</button>
-          <span class="muted">应用后仍需点「保存角色」落库；未识别名字的行先用下拉指定角色（或跳过）再应用</span></div>`
+          <span class="muted">应用后仍需点「保存角色」落库；未识别名字/弧盘的行先用下拉指定（或跳过）再应用</span></div>`
         :`<div class="muted">未识别到角色（确认游戏停留在角色「信息」页且头像列可见）${(r.unmatched_lines||[]).length?`：${(r.unmatched_lines||[]).slice(0,8).map(esc).join(" / ")}`:""}</div>`}
       </div>`;
-      const applyLv=$("#lvlApplyLv"), applySk=$("#lvlApplySk"), applyTl=$("#lvlApplyTl");
+      const applyLv=$("#lvlApplyLv"), applySk=$("#lvlApplySk"), applyTl=$("#lvlApplyTl"),
+            applyArc=$("#lvlApplyArc");
       // 手动映射：把该行 name 替换为所选角色（（跳过）= 置空，应用逻辑按 !x.name 天然跳过），
-      // 三个应用按钮沿用 findCard(x.name) 的现有逻辑，无需改动
+      // 四个应用按钮沿用 findCard(x.name) 的现有逻辑，无需改动
       prev.querySelectorAll("[data-lmap]").forEach(sel=>sel.onchange=()=>{
         const i=+sel.dataset.lmap, x=rows[i]; if(!x) return;
         const tr=sel.closest("tr"), orig=x.name;   // OCR 原文（可能误读），跳过时保留展示
@@ -764,6 +771,14 @@ async function renderChars(){
         if(b) b.textContent=x.name||(orig?`${orig}（已跳过）`:"（未识别）");
         const stat=tr.querySelector(`[data-lstat="${i}"]`);
         if(stat) stat.innerHTML=(x.name&&findCard(x.name))?"<span class='tag ok'>已在列表</span>":"<span class='tag warn'>未识别/未导入</span>";
+      });
+      // 弧盘手动映射：把该行 arc_weapon 替换为所选弧盘实名（（跳过）= 置空），
+      // 「应用弧盘」按 arc_weapon||arc_name 读取
+      prev.querySelectorAll("[data-arcmap]").forEach(sel=>sel.onchange=()=>{
+        const i=+sel.dataset.arcmap, x=rows[i]; if(!x) return;
+        x.arc_weapon=sel.value||null;
+        const b=sel.closest("tr").querySelector(`[data-arcaname="${i}"]`);
+        if(b){ b.textContent=x.arc_weapon||"（未识别）"; b.classList.toggle("muted", !x.arc_weapon); }
       });
       if(applyLv) applyLv.onclick=()=>{
         let hits=0;
@@ -794,6 +809,32 @@ async function renderChars(){
             if(inp && String(inp.value)!==String(capped)){ inp.value=capped; inp.style.borderColor="var(--warn)"; hits++; }});
         });
         toast(hits?`已预填 ${hits} 项都市特技等级（黄色边框），请核对后保存`:"数值无变化");
+      };
+      if(applyArc) applyArc.onclick=()=>{
+        let hits=0;
+        rows.forEach(x=>{
+          const arcName=x.arc_weapon||x.arc_name;   // 手动映射优先，OCR 实名兜底
+          if(!arcName||!x.name) return;
+          const card=findCard(x.name); if(!card) return;
+          const sel=card.querySelector(".c-weapon");
+          if(sel){
+            // 弧盘下拉按物态适配过滤，OCR 实名可能不在选项里：缺则补一项，防静默丢值
+            if(![...sel.options].some(o=>o.value===arcName)){
+              const o=document.createElement("option"); o.value=arcName;
+              o.textContent=arcName+"（OCR 指定·不在适配列）"; sel.appendChild(o);
+            }
+            if(sel.value!==arcName){ sel.value=arcName; hits++; }
+            // 程序赋值不触发 change：chip 手动同步（与 .c-weapon onchange 同口径）
+            const chip=card.querySelector(".arc-chip");
+            if(chip) chip.textContent="弧盘："+arcName;
+          }
+          if(x.arc_level!=null){
+            const inp=card.querySelector('[data-track="arc_level"][data-tk="cur"]');
+            if(inp && String(inp.value)!==String(x.arc_level)){
+              inp.value=x.arc_level; inp.style.borderColor="var(--warn)"; hits++; }
+          }
+        });
+        toast(hits?`已预填 ${hits} 项弧盘绑定/等级（黄色边框），请核对后保存`:"数值无变化");
       };
       const dis=$("#lvlDismiss");
       // 放弃：尽力叫停后端遍历（此时请求多已自然结束，调用是无副作用的兜底）
@@ -948,6 +989,8 @@ function charCard(c,i,tracks,rowsOf,weaponMeta,stateToCan){
       <div class="grid" style="margin-bottom:10px">${trackRows}</div>
       <div class="row" style="margin:6px 0;flex-wrap:wrap">
         <span class="chip acc arc-chip">弧盘：${esc(c.weapon||"未选择")}</span>
+        <span class="muted">等级</span>
+        <input type="number" data-track="arc_level" data-tk="cur" value="${c.tracks?.arc_level?.cur??1}" min="0" max="${tracks.arc_level?.max??80}" style="width:70px" title="弧盘当前等级（OCR「应用弧盘」预填落点；目标等级在「弧盘」页维护，保存时合并不互覆）">
         <span class="chip acc">空幕：${nmChip}（「空幕」页维护）</span>
       </div>
       <div style="font-size:13px;color:var(--acc);margin:6px 0">培养进度与材料缺口 <span class="muted">（四技能/天赋/角色等级实时计算；BOSS/小怪按等级门槛 31/41/51/61/71 突破自动计入）</span></div>
