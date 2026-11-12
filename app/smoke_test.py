@@ -33,12 +33,39 @@ except (AttributeError, ValueError):
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATE_FILE = os.path.join(ROOT, "data", "state.json")
+# SEC-05 面板令牌文件：源码态 DATA_DIR=仓库 data/（与子进程面板写入口径一致）
+PANEL_TOKEN_FILE = os.path.join(ROOT, "data", "panel_token.json")
 EMBEDDED_PY = r"D:\GamingAssistant\ok-nte\data\apps\ok-nte\python\python.exe"
 PY = EMBEDDED_PY if os.path.isfile(EMBEDDED_PY) else sys.executable
 PORT = 18765
 BASE = f"http://127.0.0.1:{PORT}"
 # 直连：系统代理/TUN 可能截获 127.0.0.1 请求导致假超时（与 build_exe 探针同口径）
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+# 错 token 场景用非真实长串字面量（非凭据；与真实 token 撞不上）
+WRONG_TOKEN = "x" * 64 + "-smoke-wrong-token-not-a-real-credential"
+
+_panel_token_cache = {"key": None, "token": None}
+
+
+def _panel_token():
+    """读面板令牌（PANEL_TOKEN_FILE）。按 (mtime,size) 缓存：面板重启重新生成
+    token 后 (mtime,size) 变化即自动跟进；文件缺失/损坏返回 None（调用方不带头
+    → 轮询期自然 401 重试）。返回值绝不 print/断言进消息（token 不落任何输出）。"""
+    try:
+        st = os.stat(PANEL_TOKEN_FILE)
+        key = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        _panel_token_cache.update(key=None, token=None)
+        return None
+    if _panel_token_cache["key"] != key:
+        try:
+            with open(PANEL_TOKEN_FILE, encoding="utf-8") as f:
+                token = json.load(f).get("token")
+        except (OSError, ValueError):
+            _panel_token_cache.update(key=None, token=None)
+            return None
+        _panel_token_cache.update(key=key, token=token)
+    return _panel_token_cache["token"]
 
 SAMPLE_CHARACTER = {
     "name": "冒烟测试角色",
@@ -50,13 +77,19 @@ SAMPLE_CHARACTER = {
 
 
 class _StateFileGuard:
-    """备份 data/state.json 与 data/yields.json，退出时恢复（原本不存在则删除）。"""
+    """备份 data/state.json 与 data/yields.json，退出时恢复（原本不存在则删除）。
+    panel_token.json 三件套同管（SEC-05：面板每次启动重写主文件，二次写会轮转出
+    .bak；原本不存在则测后删除，绝不把测试期令牌留在仓库 data/）。"""
 
     def __enter__(self):
         self._files = {}
+        data_dir = os.path.dirname(STATE_FILE)
         for path in (STATE_FILE,
-                     os.path.join(os.path.dirname(STATE_FILE), "yields.json"),
-                     os.path.join(os.path.dirname(STATE_FILE), "requirements.json")):
+                     os.path.join(data_dir, "yields.json"),
+                     os.path.join(data_dir, "requirements.json"),
+                     os.path.join(data_dir, "panel_token.json"),
+                     os.path.join(data_dir, "panel_token.json.bak"),
+                     os.path.join(data_dir, "panel_token.json.tmp")):
             existed = os.path.isfile(path)
             raw = None
             if existed:
@@ -75,19 +108,58 @@ class _StateFileGuard:
 
 
 def _request(path, payload=None, timeout=30):
-    """GET（payload=None）/ POST JSON，非 2xx 抛 HTTPError。返回解析后的 JSON。"""
+    """GET（payload=None）/ POST JSON，非 2xx 抛 HTTPError。返回解析后的 JSON。
+    统一附 X-Panel-Token 头（SEC-05）：token 文件未生成（面板未起）时不带——
+    轮询期自然 401 重试，文件出现后下一次请求即通过。"""
     url = BASE + path
     host = urllib.parse.urlsplit(url).hostname
     assert host == "127.0.0.1", f"冒烟测试只允许访问本机面板，拒绝: {url}"
+    token = _panel_token()
+    headers = {"X-Panel-Token": token} if token else {}
     if payload is None:
-        req = urllib.request.Request(url, method="GET")
+        req = urllib.request.Request(url, method="GET", headers=headers)
     else:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        req = urllib.request.Request(
-            url, data=body, method="POST",
-            headers={"Content-Type": "application/json; charset=utf-8"})
+        headers["Content-Type"] = "application/json; charset=utf-8"
+        req = urllib.request.Request(url, data=body, method="POST", headers=headers)
     with _OPENER.open(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
+
+
+def _raw_request(path, payload=None, token=None, host=None, origin=None, timeout=30):
+    """鉴权场景低层请求：返回 (status, body_bytes)，非 2xx 不抛（401/403 是被测
+    结果）。token=None 不带 X-Panel-Token；host/origin 用于伪造 DNS 重绑定形态
+    （连接仍是回环 URL，Host/Origin 头是攻击者域）。"""
+    url = BASE + path
+    assert urllib.parse.urlsplit(url).hostname == "127.0.0.1", f"只允许本机: {url}"
+    headers = {}
+    if token:
+        headers["X-Panel-Token"] = token
+    if host:
+        headers["Host"] = host
+    if origin:
+        headers["Origin"] = origin
+    if payload is None:
+        req = urllib.request.Request(url, method="GET", headers=headers)
+    else:
+        headers["Content-Type"] = "application/json; charset=utf-8"
+        req = urllib.request.Request(
+            url, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            method="POST", headers=headers)
+    try:
+        with _OPENER.open(req, timeout=timeout) as resp:
+            return resp.status, resp.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
+
+
+def _json_body(raw):
+    """鉴权场景 401/403 body → dict（非 JSON → {}），断言 panel_auth 字段用。"""
+    try:
+        data = json.loads(raw.decode("utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (ValueError, UnicodeDecodeError):
+        return {}
 
 
 def _wait_bootstrap(deadline_seconds=60):
@@ -221,7 +293,8 @@ def _step_common_costs():
 def _step_compat_report():
     url = BASE + "/api/compat-report"
     assert urllib.parse.urlsplit(url).hostname == "127.0.0.1", f"只允许本机: {url}"
-    req = urllib.request.Request(url)
+    token = _panel_token()
+    req = urllib.request.Request(url, headers={"X-Panel-Token": token} if token else {})
     with _OPENER.open(req, timeout=30) as resp:
         body = resp.read().decode("utf-8")
         assert resp.status == 200 and "兼容报告" in body and "首查清单" in body \
@@ -233,8 +306,161 @@ def _step_stop():
     assert "message" in data, f"/api/stop 响应异常: {data}"
 
 
+def _step_auth_gate():
+    """SEC-05 鉴权闸场景 A/B/C/E/F/G/H/I/J/K（D/L 重启场景在 main() 重启 harness）。
+
+    A 带 token GET /api/bootstrap→200；B 无 token POST /api/settings→401+panel_auth；
+    C 错 token→401+panel_auth；E evil Origin+合法 token→403（Host/Origin 闸）；
+    F 合法 token + 空 ok-nte 结构目录→400 且 error 含「缺少必需结构」，随后
+    bootstrap 断言 settings.oknte_root 未被污染（伪造载荷零执行：临时目录无
+    python.exe，compat_check 纯文件检查；全程绝不 POST /api/start）；
+    G 无 token GET→401；H 无 token POST /api/tajiduo/send-captcha 与 /api/tajiduo/
+    logout→401（闸层拒绝、零短信零删凭证）；I evil Host GET /→403（静态 Host 闸，
+    封 DNS 重绑定读注入 token 页）；J evil Host GET /avatars→403；K 回环 Host
+    GET /avatars/不存在白名单名→404 而非 403（avatar 免 token 口径回归）。"""
+    token = _panel_token()
+    assert token, "鉴权场景前置：panel_token.json 应已生成（bootstrap 步已过）"
+
+    # A: 带 token GET /api/bootstrap → 200
+    data = _request("/api/bootstrap")
+    assert isinstance(data.get("compat"), dict), "A: bootstrap 响应缺少 compat 字段"
+
+    # B: 无 token POST /api/settings → 401 且 body.panel_auth==true（登记册验证法）
+    status, raw = _raw_request("/api/settings", payload={})
+    assert status == 401, f"B: 无 token POST /api/settings 预期 401，实际 {status}"
+    assert _json_body(raw).get("panel_auth") is True, \
+        f"B: 401 body 应含 panel_auth=true: {_json_body(raw)}"
+
+    # C: 错 token（非真实长串）POST /api/settings → 401 + panel_auth
+    status, raw = _raw_request("/api/settings", payload={}, token=WRONG_TOKEN)
+    assert status == 401, f"C: 错 token 预期 401，实际 {status}"
+    assert _json_body(raw).get("panel_auth") is True, \
+        f"C: 401 body 应含 panel_auth=true: {_json_body(raw)}"
+
+    # E: evil Origin + 合法 token POST /api/settings → 403（Host/Origin 闸先于 token 闸）
+    status, raw = _raw_request("/api/settings", payload={}, token=token,
+                               origin="https://evil.example.com")
+    assert status == 403, f"E: evil Origin 预期 403（Host/Origin 闸），实际 {status}"
+
+    # F: 合法 token + 伪造 oknte_root（空临时目录，无任何 ok-nte 结构）→ 400
+    fake_roots = []
+    with tempfile.TemporaryDirectory(prefix="smoke_fake_root_") as fake_root:
+        fake_roots.append(fake_root)
+        status, raw = _raw_request("/api/settings", payload={"oknte_root": fake_root},
+                                   token=token)
+        body = _json_body(raw)
+        assert status == 400, f"F: 空 ok-nte 结构目录应 400，实际 {status}: {body}"
+        assert "缺少必需结构" in (body.get("error") or ""), \
+            f"F: 400 error 应含「缺少必需结构」: {body}"
+    boot = _request("/api/bootstrap")
+    assert boot["state"]["settings"]["oknte_root"] != fake_roots[0], \
+        "F: 400 后 settings.oknte_root 被污染（state 原值必须不动）"
+
+    # G: 无 token GET /api/bootstrap → 401（GET 闸覆盖）
+    status, raw = _raw_request("/api/bootstrap")
+    assert status == 401, f"G: 无 token GET /api/bootstrap 预期 401，实际 {status}"
+    assert _json_body(raw).get("panel_auth") is True, "G: 401 body 应含 panel_auth=true"
+
+    # H: 无 token POST /api/tajiduo/send-captcha 与 /api/tajiduo/logout → 401
+    # （闸层拒绝：不触短信网关、不动凭证文件）
+    for path in ("/api/tajiduo/send-captcha", "/api/tajiduo/logout"):
+        status, raw = _raw_request(path, payload={})
+        assert status == 401, f"H: {path} 无 token 预期 401，实际 {status}"
+        assert _json_body(raw).get("panel_auth") is True, \
+            f"H: {path} 401 body 应含 panel_auth=true"
+
+    # I: evil Host GET / → 403（静态 Host 闸，封 DNS 重绑定读注入 token 页）
+    status, raw = _raw_request("/", host="evil.example.com")
+    assert status == 403, f"I: evil Host GET / 预期 403，实际 {status}"
+
+    # J: evil Host GET /avatars/<白名单形文件名> → 403
+    status, raw = _raw_request("/avatars/smoke-not-a-real-avatar-file.webp",
+                               host="evil.example.com")
+    assert status == 403, f"J: evil Host GET /avatars 预期 403，实际 {status}"
+
+    # K: 回环 Host GET /avatars/不存在白名单名 → 404 而非 403（avatar 免 token 口径）
+    status, raw = _raw_request("/avatars/definitely-no-such-avatar-0000.webp")
+    assert status == 404, f"K: 回环 GET /avatars 不存在文件预期 404，实际 {status}"
+
+
+def _spawn_panel(env):
+    """拉起面板子进程（复用既有 Popen 形态：stdout 镜像进临时文件供失败回看）。"""
+    out = tempfile.TemporaryFile()
+    proc = subprocess.Popen(
+        [PY, "-m", "app.main"], cwd=ROOT, env=env,
+        stdout=out, stderr=subprocess.STDOUT,
+    )
+    return proc, out
+
+
+def _kill_panel(proc):
+    """杀干净面板子进程：taskkill /T /F 优先（连孙进程一起，重启场景旧面板
+    必须彻底退出），兜底 terminate→kill（非 Windows/已退出）。"""
+    if proc is not None and proc.poll() is None:
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                       capture_output=True, creationflags=0x08000000)
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=10)
+
+
+def _run_restart_scenarios(env):
+    """SEC-05 重启失效场景 D/L：
+    D 重启面板后旧 token GET /api/bootstrap→401 且 token 文件内容已变
+      （断言变化、绝不打印值）；L 新 token（重读文件）GET /api/bootstrap→200。
+    旧面板先 taskkill /T /F（main() 已 terminate 过第一代，这里对第二代收尾）；
+    以 token 文件 (mtime,size) 变化为新面板就绪信号——裸连接成功不可靠
+    （连接拒绝≠401，无法区分「未起」与「闸拒绝」）。"""
+    old_token = _panel_token()
+    assert old_token, "D/L 前置失败：panel_token.json 不存在（第一代面板未生成 token）"
+    try:
+        old_key = (os.stat(PANEL_TOKEN_FILE).st_mtime_ns,
+                   os.stat(PANEL_TOKEN_FILE).st_size)
+    except OSError:
+        old_key = None
+    proc, out = _spawn_panel(env)
+    try:
+        # 就绪信号：token 文件 (mtime,size) 变化（_ensure_panel_token 在 bind 前重写）
+        deadline = time.time() + 30
+        new_token = None
+        while time.time() < deadline and new_token is None:
+            try:
+                st = os.stat(PANEL_TOKEN_FILE)
+                key = (st.st_mtime_ns, st.st_size)
+            except OSError:
+                key = None
+            if key is not None and key != old_key:
+                new_token = _panel_token()
+            if new_token is None:
+                time.sleep(0.2)
+        assert new_token, "D/L: 重启后 token 文件未变化（新面板未生成新 token）"
+        assert new_token != old_token, "D/L: 重启后 token 内容应已变化（旧值绝不打印）"
+        # D: 旧 token → 401（轮询容忍端口绑定前的连接拒绝）
+        status = None
+        deadline = time.time() + 30
+        while status is None and time.time() < deadline:
+            try:
+                status, raw = _raw_request("/api/bootstrap", token=old_token)
+            except OSError:  # 端口未绑定：连接拒绝，继续等
+                time.sleep(0.3)
+        assert status == 401, f"D: 重启后旧 token GET /api/bootstrap 预期 401，实际 {status}"
+        # L: 新 token（重读文件）→ 200
+        status, raw = _raw_request("/api/bootstrap", token=new_token)
+        assert status == 200, f"L: 新 token GET /api/bootstrap 预期 200，实际 {status}"
+    finally:
+        _kill_panel(proc)
+        out.close()
+
+
 STEPS = [
     ("bootstrap 就绪且含 compat", _wait_bootstrap),
+    ("SEC-05 鉴权闸场景 A-K（401/403/静态闸/root 指纹闸）", _step_auth_gate),
     ("POST /api/characters 保存样例角色", _step_characters),
     ("POST /api/inventory 保存库存", _step_inventory),
     ("POST /api/plan 返回200且含 plan", _step_plan),
@@ -256,11 +482,7 @@ def main():
         env = dict(os.environ)
         env["OKNTE_PLANNER_PORT"] = str(PORT)
         env["OKNTE_PLANNER_NO_BROWSER"] = "1"
-        out = tempfile.TemporaryFile()
-        proc = subprocess.Popen(
-            [PY, "-m", "app.main"], cwd=ROOT, env=env,
-            stdout=out, stderr=subprocess.STDOUT,
-        )
+        proc, out = _spawn_panel(env)  # 复用既有 Popen 拉起形态
         try:
             passed = 0
             failed = 0
@@ -276,17 +498,22 @@ def main():
                     print(f"PASS {name}")
         finally:
             # 必须杀干净子进程
-            if proc.poll() is None:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait(timeout=10)
+            _kill_panel(proc)
             out.seek(0)
             server_log = out.read().decode("utf-8", errors="replace")
             out.close()
-        print(f"=== 冒烟测试结果: 通过 {passed}/{len(STEPS)}（面板退出码 {proc.returncode}）===")
+        # ---- SEC-05 重启失效场景 D/L（重启 harness：复用既有 Popen 拉起代码）----
+        try:
+            _run_restart_scenarios(env)
+        except Exception as e:  # noqa: BLE001
+            failed += 1
+            print(f"FAIL 鉴权重启场景 D/L: {type(e).__name__}: {e}")
+            traceback.print_exc()
+        else:
+            passed += 1
+            print("PASS 鉴权重启场景 D/L（旧 token 401 · token 文件已变 · 新 token 200）")
+        total = len(STEPS) + 1
+        print(f"=== 冒烟测试结果: 通过 {passed}/{total}（面板退出码 {proc.returncode}）===")
         if failed:
             print("--- 面板进程输出（末尾）---")
             print("\n".join(server_log.splitlines()[-15:]))

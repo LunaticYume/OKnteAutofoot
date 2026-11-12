@@ -24,7 +24,7 @@ from collections import deque
 from datetime import datetime, timedelta
 
 from . import planner
-from .oknte_adapter import LogTail, OkNte, OkNteError, RunMonitor
+from .oknte_adapter import LogTail, OkNte, OkNteError, RunMonitor, oknte_plan_target_ids
 from .state import DATA_DIR, STATE, load_json, save_json_atomic
 
 CREATE_NO_WINDOW = 0x08000000
@@ -127,6 +127,8 @@ class Runner:
             "finished_at": None,
             "waiting_reason": "",
             "next_retry_at": None,
+            "window_warning": "",  # 游戏窗口不可见警告（日志 visible:False），恢复即清除
+            "freeze_warning": "",  # 执行卡死警告（战斗流程日志静默超阈值），杀进程重启时置位
         }
         self.lines = deque(maxlen=300)
         self.pending = []  # 未决执行（needs_reconciliation）：阻塞 start，等用户手动对账
@@ -279,6 +281,8 @@ class Runner:
                 "state": "running", "mode": mode, "message": "准备中…", "current": None,
                 "plan": None, "started_at": datetime.now().strftime("%H:%M:%S"),
                 "finished_at": None, "waiting_reason": "", "next_retry_at": None,
+                "window_warning": "",
+                "freeze_warning": "",
             })
             self._write_runtime(state="running", execution=None)
         self.thread = threading.Thread(target=self._loop, args=(mode,), daemon=True)
@@ -365,7 +369,10 @@ class Runner:
             changed, scanned = _reconcile_used_stamina(oknte)
             if changed:
                 self._log(f"已按 ok-nte 日志校准今日已耗体力 → {scanned}")
-            plan = planner.make_plan(oknte, now=datetime.now())
+            # plan_targets 来自 data/oknte_plan.json 覆盖（POST /api/oknte/plan）：
+            # 无覆盖返回 []，make_plan 走现有行为；损坏时 loader 已告警不中断
+            plan = planner.make_plan(oknte, now=datetime.now(),
+                                     plan_targets=oknte_plan_target_ids())
             with self.lock:
                 self.status["plan"] = plan
             if not plan["steps"]:
@@ -574,6 +581,7 @@ class Runner:
         deadline = time.time() + int(STATE.settings.get("max_run_minutes", 90)) * 60
         rc = None
         combat_phase_since = None  # 战斗进入检测的起始时刻（真机取证：无头卡在此处时面板可区分）
+        window_warned = False  # 本轮已打过"游戏窗口不可见"警告（一次性，恢复 visible:True 清除）
         try:
             while True:
                 if self.stop_event.is_set():
@@ -582,13 +590,46 @@ class Runner:
                     self._kill_child()
                     return "stopped", 0, "手动停止"
                 monitor.feed(tail.read_new())
+                # 屏幕采集初始化失败（2026-11-10 真机取证，RunMonitor.CAPTURE_FAIL_MARK
+                # 注释）：执行器日志出现 "cant find a usable windows capture" 或
+                # LauncherTask "executor connect False" → 当轮任务直接失败返回（杀子
+                # 进程止血，不再陪 ok-nte 内部 15s LauncherTask 重排队循环空转到 90
+                # 分钟时限）；报错带日志原文与窗口检查提示，note 以「启动失败：」前缀
+                # 交还上层——_settle 不拉黑，_daily/_hunter_loop 走等待重试，
+                # _execute_step 的失败重试（≤2 次）天然接管重启
+                if monitor.capture_fail:
+                    self._log("警告：屏幕采集初始化失败，当轮任务立即失败——"
+                              f"{monitor.capture_fail}")
+                    with self.lock:
+                        self.status["freeze_warning"] = \
+                            "屏幕采集初始化失败：请检查游戏窗口是否被最小化/遮挡"
+                    self._kill_child()
+                    return "failed", 0, (f"启动失败：屏幕采集初始化失败（"
+                                         f"{monitor.capture_fail}）——"
+                                         "请检查游戏窗口是否被最小化/遮挡，"
+                                         "或重启 ok-nte 后重试")
+                # 游戏窗口不可见即时报警（RunMonitor 只展示不判定）：日志出现 visible:False
+                # 时屏幕采集已失效、战斗检测将静默死等——立即在面板日志与状态 API
+                # （window_warning 字段）报警，用户不再干等 90 分钟超时；恢复可见自动清除
+                if monitor.window_invisible and not window_warned:
+                    window_warned = True
+                    self._log("警告：检测到游戏窗口不可见（visible:False）——屏幕采集已失效，"
+                              "战斗检测将无法进行：请勿最小化游戏、建议无边框窗口模式")
+                    with self.lock:
+                        self.status["window_warning"] = \
+                            "游戏窗口不可见：请勿最小化游戏、建议无边框窗口模式"
+                elif not monitor.window_invisible and window_warned:
+                    window_warned = False
+                    self._log("游戏窗口已恢复可见（visible:True），窗口不可见警告解除")
+                    with self.lock:
+                        self.status["window_warning"] = ""
                 # 战斗阶段可观测（RunMonitor 只展示不判定）：进副本/战斗检测中 Xs
                 if getattr(monitor, "combat_started", False) or getattr(monitor, "in_dungeon", False):
                     if combat_phase_since is None:
                         combat_phase_since = time.time()
                         phase = "战斗检测中" if monitor.combat_started else "已进副本"
-                        self._log(f"已进入副本（{phase}）——若长时间无'战斗结束'日志，"
-                                  "多为游戏画面识别失效（显卡滤镜/全屏/分辨率），诊断截图见 working/screenshots/")
+                        self._log(f"已进入副本（{phase}）——若长时间无战斗日志且出现窗口不可见警告："
+                                  "请勿最小化游戏、建议无边框窗口模式")
                 else:
                     combat_phase_since = None
                     with self.lock:  # 阶段结束即清除状态键，避免残留旧值误导
@@ -609,6 +650,24 @@ class Runner:
                     self._log("超出单次运行时限，强制结束子进程")
                     self._kill_child()
                     return "failed", 0, "运行超时"
+                # 卡死看门狗：进入战斗流程（「开始执行战斗流程」）后超过阈值无任何新日志行
+                # → 执行线程被 PrintWindow(PW_RENDERFULLCONTENT) 同步截图永久阻塞
+                # （ok-nte bitblt_utils.py:78，v1.5.1/v1.5.2 两次卡死实证；ok-nte 内置
+                # wait_until 超时因每轮先 next_frame() 后查条件而永不触发）→ 杀脚本进程
+                # （复用 _kill_child，不带 /T 保游戏），警告透出任务卡；note 以「启动失败：」
+                # 前缀交还上层——_settle 不拉黑，_daily/_hunter_loop 走等待重试，
+                # _execute_step 的失败重试天然接管重启（与 window_warning 独立字段共存）
+                freeze_silence = monitor.combat_freeze_seconds()
+                if freeze_silence is not None \
+                        and freeze_silence > RunMonitor.COMBAT_FREEZE_SECONDS:
+                    self._log(f"警告：进入战斗流程后超过 {RunMonitor.COMBAT_FREEZE_SECONDS} "
+                              "秒无任何新日志，判定执行卡死，已自动重启任务")
+                    with self.lock:
+                        self.status["freeze_warning"] = "检测到执行卡死，已自动重启任务"
+                    self._kill_child()
+                    return "failed", 0, (f"启动失败：战斗流程日志静默超过 "
+                                         f"{RunMonitor.COMBAT_FREEZE_SECONDS} 秒，判定执行卡死"
+                                         "（已杀掉脚本进程，由重试逻辑自动重启）")
                 time.sleep(1)
             # 进程退出后再收一次日志，避免最后几行丢失
             for _ in range(3):

@@ -1,4 +1,5 @@
 """规划器状态持久化：设置、角色、库存、当日进度、历史。"""
+import errno
 import json
 import os
 import shutil
@@ -8,11 +9,28 @@ import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 
-if getattr(sys, "frozen", False):  # PyInstaller 等打包环境：用户数据放 EXE 旁边，不进临时解包目录
-    ROOT = os.path.dirname(os.path.abspath(sys.executable))
+# ---- 数据目录派生（全仓库唯一派生点；STATE 在模块尾导入期实例化，首启迁移必须在此之前完成）----
+_FROZEN = getattr(sys, "frozen", False)  # PyInstaller 等打包环境
+# 打包态声明：frozen，或启动器注入 OKNTE_PLANNER_USER_DATA=1——启动器档经
+# python -m app.main 拉起、永远非 frozen，由 LAUNCHER_CS Run() 注入该变量声明；
+# 变量名与 state.py 读取名是两处无编译期检查的字符串，接线由 build_exe.
+# _launch_and_probe 的 .migrated 断言在每次构建真机拉起时验证
+_PACKAGED_RUN = _FROZEN or os.environ.get("OKNTE_PLANNER_USER_DATA") == "1"
+if _FROZEN:
+    ROOT = os.path.dirname(os.path.abspath(sys.executable))  # EXE 旁（出厂数据表位）
 else:
-    ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.path.join(ROOT, "data")
+    ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 仓库根/dist 根
+# 用户数据目录：打包态实际数据位；源码态仅供迁移 CLI（tools/migrate_user_data）引用。
+# 两个 EXE 共用同一份（requireAdministrator 异账户提权时指向提权账户的 LocalAppData）
+USER_DATA_DIR = os.path.join(
+    os.environ.get("LOCALAPPDATA") or os.path.expanduser("~/AppData/Local"),
+    "OKntePlanner", "data")
+if _PACKAGED_RUN:
+    BUNDLED_DATA_DIR = os.path.join(ROOT, "data")  # EXE 旁出厂数据表（首启播种源）
+    DATA_DIR = USER_DATA_DIR
+else:  # 源码态：行为与旧版完全一致（数据落仓库/dist data/，不触发任何迁移）
+    BUNDLED_DATA_DIR = None
+    DATA_DIR = os.path.join(ROOT, "data")
 STATE_FILE = os.path.join(DATA_DIR, "state.json")
 
 
@@ -56,6 +74,163 @@ def load_json(path):
     except (OSError, ValueError):
         return None
 
+
+# ---- 首启用户数据初始化/迁移（BUILD-01/SEC-01：打包态用户数据统一落 %LOCALAPPDATA%）----
+
+def _remove_quiet(path):
+    """尽力删除单个文件（清理复制失败留下的 .tmp 残骸），任何失败静默吞掉。"""
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _copy_tree_no_clobber(src, dst, dry_run=False):
+    """整树逐文件原子 no-clobber 复制（首启播种/迁移 CLI/旧数据迁移共用机械实现）。
+
+    语义（迁移契约）：
+    - 只复制：绝不移动或删除源目录任何文件；目标已存在的文件一律跳过
+      （no-clobber——多个源按处理顺序先到先得，同路径文件先处理的源获胜）。
+    - 单文件原子：先写 <dst>.<uuid>.tmp 再 os.rename(tmp, dst)——Windows 上
+      rename 到已存在目标抛 FileExistsError，天然原子 no-clobber；tmp 名含
+      uuid 防双 EXE 并发首播互踩；进程被硬杀落在复制中途只会留下 .tmp 残骸，
+      目标文件要么不存在要么完整，绝不半截（下次启动 no-clobber 自愈重试，
+      零失败照写 marker——截断表会让 planner 的裸 json.load 崩且无 .bak 回退）。
+    - realpath 相同（src==dst）直接返回，防自拷。
+    - check-then-rename 在 POSIX 下存在理论竞态窗口：本产品为 win32 专用构建链，
+      可忽略。
+    返回 {dirs, copied, skipped, failed, errors}（errors 为目标侧相对路径清单，
+      绝不含文件内容或任何敏感值）。
+    """
+    result = {"dirs": 0, "copied": 0, "skipped": 0, "failed": 0, "errors": []}
+    src = os.path.abspath(src)
+    dst = os.path.abspath(dst)
+    if os.path.realpath(src) == os.path.realpath(dst):
+        return result  # 源目标同一目录：跳过防自拷
+    for base, _dirs, files in os.walk(src):  # followlinks 默认 False：符号链接目录不进入
+        rel = os.path.relpath(base, src)
+        target_dir = dst if rel == os.curdir else os.path.join(dst, rel)
+        if not os.path.isdir(target_dir):
+            if dry_run:
+                result["dirs"] += 1
+            else:
+                try:
+                    os.makedirs(target_dir)
+                except FileExistsError:  # 并发对手（双 EXE 首播）已建
+                    pass
+                except OSError:
+                    result["failed"] += 1
+                    result["errors"].append("." if rel == os.curdir else rel)
+                else:
+                    result["dirs"] += 1
+        for name in files:
+            s = os.path.join(base, name)
+            d = os.path.join(target_dir, name)
+            if os.path.isdir(d):
+                # 同名目录占位：文件落不进去，属失败（半迁移状态 → marker 不写，下次可自愈重试）
+                result["failed"] += 1
+                result["errors"].append(os.path.relpath(d, dst))
+                continue
+            if os.path.exists(d):
+                result["skipped"] += 1
+                continue
+            if dry_run:
+                result["copied"] += 1
+                continue
+            tmp = "%s.%s.tmp" % (d, uuid.uuid4().hex[:8])
+            try:
+                shutil.copy2(s, tmp)
+                os.rename(tmp, d)
+                result["copied"] += 1
+            except FileExistsError:
+                _remove_quiet(tmp)
+                result["skipped"] += 1  # 并发对手已先复制完成
+            except OSError as exc:
+                _remove_quiet(tmp)
+                if getattr(exc, "errno", None) == errno.EEXIST:
+                    result["skipped"] += 1
+                else:
+                    result["failed"] += 1
+                    result["errors"].append(os.path.relpath(d, dst))
+    return result
+
+
+def _dir_has_files(path):
+    for _base, _dirs, files in os.walk(path):
+        if files:
+            return True
+    return False
+
+
+def _migration_note(user_dir, msg):
+    """迁移告警双通道：user_dir/migration.log（尽力而为）+ stderr（noconsole 下
+    sys.stderr 为 None 时跳过）。只写一行文本，绝不落任何文件内容/敏感值。"""
+    try:
+        with open(os.path.join(user_dir, "migration.log"), "a", encoding="utf-8") as f:
+            f.write("%s %s\n" % (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), msg))
+    except OSError:
+        pass
+    try:
+        if sys.stderr is not None:
+            print("[user-data] %s" % msg, file=sys.stderr)
+    except (OSError, ValueError):
+        pass
+
+
+def ensure_user_data(user_dir, bundled_dir, marker_path=None):
+    """首启用户数据初始化/迁移（幂等、无网络、显式参数；绝不移动或删除源目录）。
+
+    - marker（默认 <user_dir>/.migrated）已存在 → skip（幂等门）。
+    - bundled 存在且含任意文件 → 整树原子 no-clobber 复制到 user_dir：旧 EXE 旁
+      用户数据+出厂数据表一并迁移；全新安装 EXE 旁 data 只含出厂数据表，同一
+      复制即『播种』——两分支统一一套机械实现。复制零失败才用 save_json_atomic
+      写 marker（原子写，绝不半写——半建 marker 会让迁移永久跳过）；有失败抛
+      OSError（marker 未写 → 下次启动自愈重试）。marker 内容=时间戳+来源目录
+      +计数，无敏感值。
+    - bundled 缺失/为空 → 仅建 user_dir 并每次启动告警『EXE 旁缺少出厂数据表』，
+      不写 marker（用户日后补齐 EXE 旁数据表后首播播种照常发生，自愈门保持
+      开启）。
+    返回 {"action": "skip"|"empty"|"migrated", "stats": …}。
+    """
+    os.makedirs(user_dir, exist_ok=True)
+    marker = marker_path if marker_path is not None \
+        else os.path.join(user_dir, ".migrated")
+    if os.path.isfile(marker):
+        return {"action": "skip", "stats": None}
+    if not bundled_dir or not os.path.isdir(bundled_dir) \
+            or not _dir_has_files(bundled_dir):
+        _migration_note(user_dir, "EXE 旁缺少出厂数据表（%s 缺失或为空），本次未播种；"
+                                  "补齐后重启面板将自动补种" % (bundled_dir or "出厂数据目录",))
+        return {"action": "empty", "stats": None}
+    stats = _copy_tree_no_clobber(bundled_dir, user_dir)
+    if stats["failed"]:
+        raise OSError("用户数据初始化/迁移有 %d 项失败（下次启动自动重试）：%s"
+                      % (stats["failed"], "; ".join(stats["errors"])))
+    save_json_atomic(marker, {
+        "migrated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "source": bundled_dir,
+        "dirs": stats["dirs"],
+        "copied": stats["copied"],
+        "skipped": stats["skipped"],
+    })
+    return {"action": "migrated", "stats": stats}
+
+
+def _ensure_user_data_boot():
+    """导入期首启初始化包装：任何 OSError 只告警不抛出（失败绝不阻断面板启动，
+    marker 未写 → 下次启动自愈重试）；成功迁移记一行首启可见日志。"""
+    try:
+        result = ensure_user_data(USER_DATA_DIR, BUNDLED_DATA_DIR)
+    except OSError as exc:
+        _migration_note(USER_DATA_DIR,
+                        "首启用户数据初始化失败（下次启动自动重试）：%s" % exc)
+        return
+    if result["action"] == "migrated":
+        stats = result["stats"]
+        _migration_note(USER_DATA_DIR,
+                        "首启用户数据初始化完成：新建目录 %d、复制文件 %d、跳过已存在 %d"
+                        % (stats["dirs"], stats["copied"], stats["skipped"]))
+
 DEFAULT_SETTINGS = {
     "oknte_root": r"D:\GamingAssistant\ok-nte",
     "daily_stamina_limit": 180,
@@ -79,6 +254,8 @@ DEFAULT_SETTINGS = {
     "ocr_max_pages": 5,
     # 背包 OCR v3：游戏进程名（空=从 ok-nte devices.json 自动读取；/api/ocr/select 后落盘）
     "game_process_name": "",
+    # 角色 OCR 全局紧急停止热键（Ctrl+Alt+Q，提权面板监听游戏焦点按键；出错时游戏内一键停）
+    "ocr_stop_hotkey": True,
 }
 
 TRACK_KEYS = ["char_level", "ability_level", "arc_level", "console_level"]
@@ -148,6 +325,9 @@ class State:
     def __init__(self):
         self.lock = threading.RLock()
         self.data = self._load()
+        self.rev = 0  # 数据版本号（仅存内存，重启归零无碍）：/api/bootstrap 下发、
+        # 写端点响应回传；前端保存时携带 base_rev 比对，防止多标签页陈旧 DOM 整行回写
+        # 把塔吉多同步刚抬起的 tgt 打回（诊断 item6）
 
     def _load(self):
         data = load_json(STATE_FILE)
@@ -185,6 +365,7 @@ class State:
         with self.lock:
             self.data["schema"] = STATE_SCHEMA
             save_json_atomic(STATE_FILE, self.data)
+            self.rev += 1  # 落盘成功后自增：任何一次写入都使其他标签页的 base_rev 过期
 
     # ---- 当日窗口 ----
     def day_key(self, now=None):
@@ -223,5 +404,10 @@ class State:
     def history(self):
         return self.data["history"]
 
+
+if _PACKAGED_RUN:
+    # 打包态导入期即完成首启播种/迁移：STATE 在下方导入期实例化并读 STATE_FILE，
+    # 必须在此之前把 EXE 旁数据整树搬入用户数据目录；失败只告警不阻断启动
+    _ensure_user_data_boot()
 
 STATE = State()

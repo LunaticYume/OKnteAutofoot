@@ -10,8 +10,27 @@
     --line:#223041; --line2:#2d3d51;
     --txt:#e6eef7; --dim:#8fa2b7; --faint:#5f7186;
     --acc:#53b6ff; --acc-deep:#1f6fbd; --acc-soft:rgba(83,182,255,.12);
+    --acc-bd:rgba(83,182,255,.45); --acc-bd-soft:rgba(83,182,255,.35); --acc-ghost:rgba(83,182,255,.04);
     --ok:#3ecf8e; --warn:#f5b544; --err:#ff6b6b;
     --r:14px; --shadow:0 8px 28px rgba(0,0,0,.35);
+  }
+  /* 明亮主题覆盖块（四页调整④）：html[data-theme=light] 时整体换亮色变量，由
+     topbar 按钮 + localStorage('theme') 切换/持久化（缺省=暗色即上面的默认集）。
+     主题敏感的强调蓝已全部 var 化（--acc-bd/--acc-bd-soft/--acc-ghost）：暗色
+     取值与原硬编码逐字一致（唯 hero 渐变尾 .06→.04、pv-day 边 .50→.45 两处并入
+     既有变量，≤.05 alpha 差异不可感知），亮色给深一档蓝保证对比度；ok/warn/err
+     同步加深一档（亮底上原色偏浅难以辨认），暗色不受影响。有意保留的硬编码：
+     .chip.acc 的 .4 边/.07 底（chip 家族淡色底边一体口径，chip.ok/.warn/.err 同
+     为硬编码）、OCR 标定预览格内联 rgba（叠加在游戏截图上，与主题无关）、
+     历史图表 SVG 填色 #53b6ff/#3ecf8e（亮底可辨）。 */
+  [data-theme="light"]{
+    --bg:#eef2f7; --panel:#ffffff; --panel2:#f1f5fa; --panel3:#e5ecf4;
+    --line:#d4deea; --line2:#c1cfdd;
+    --txt:#1b2735; --dim:#4e6178; --faint:#76879c;
+    --acc:#1e78d0; --acc-deep:#155a9e; --acc-soft:rgba(30,120,208,.12);
+    --acc-bd:rgba(30,120,208,.45); --acc-bd-soft:rgba(30,120,208,.35); --acc-ghost:rgba(30,120,208,.06);
+    --ok:#1d9e6b; --warn:#b07a15; --err:#d64545;
+    --shadow:0 8px 28px rgba(40,70,110,.14);
   }
   *{box-sizing:border-box}
   html,body{margin:0}
@@ -27,7 +46,7 @@
   .logo b{font-size:16px;letter-spacing:.5px;display:flex;align-items:center;gap:9px}
   .logo b::before{content:"";width:26px;height:26px;border-radius:8px;flex-shrink:0;
     background:linear-gradient(135deg,var(--acc),var(--acc2,#7c5cff));
-    box-shadow:0 0 14px rgba(83,182,255,.45)}
+    box-shadow:0 0 14px var(--acc-bd)}
   .logo span{display:block;font-size:11px;color:var(--faint);margin-top:3px;padding-left:35px}
   nav#nav{display:flex;flex-direction:column;gap:2px;padding:12px 10px;flex:1;overflow-y:auto}
   nav#nav button{display:flex;align-items:center;gap:11px;width:100%;text-align:left;
@@ -35,7 +54,7 @@
     border-radius:10px;cursor:pointer;font-size:14px;transition:background .15s,color .15s}
   nav#nav button svg{width:17px;height:17px;flex-shrink:0}
   nav#nav button:hover{color:var(--txt);background:var(--panel2)}
-  nav#nav button.on{color:var(--txt);background:var(--acc-soft);border-color:rgba(83,182,255,.35)}
+  nav#nav button.on{color:var(--txt);background:var(--acc-soft);border-color:var(--acc-bd-soft)}
   nav#nav button.on svg{color:var(--acc)}
   .side-foot{padding:12px 14px;border-top:1px solid var(--line);font-size:12px}
   .side-foot .tag{display:flex;justify-content:center;margin-bottom:6px}
@@ -108,7 +127,7 @@
   .tag.ok{color:var(--ok);border-color:rgba(62,207,142,.45)}
   .tag.err{color:var(--err);border-color:rgba(255,107,107,.45)}
   .tag.warn{color:var(--warn);border-color:rgba(245,181,68,.45)}
-  .tag.acc{color:var(--acc);border-color:rgba(83,182,255,.45)}
+  .tag.acc{color:var(--acc);border-color:var(--acc-bd)}
 
   .chip{display:inline-flex;align-items:center;padding:1px 9px;border-radius:7px;font-size:12px;
     background:var(--panel3);color:var(--txt);border:1px solid var(--line2);font-variant-numeric:tabular-nums}
@@ -116,11 +135,143 @@
   .chip.acc{color:var(--acc);border-color:rgba(83,182,255,.4);background:rgba(83,182,255,.07)}
   .chip.warn{color:var(--warn);border-color:rgba(245,181,68,.4);background:rgba(245,181,68,.07)}
   .ocr-off{opacity:.45}  /* OCR 命中预览行取消勾选：弱化显示（应用/保存时跳过该行） */
+  /* OCR 命中行数量框：聚焦强化高亮（宽框+黄边，明示「这是可编辑输入」——用户曾把
+     90px 小框夹在大 chip 后当成静态徽标，实测「没有办法改成3」） */
+  #ocrHitGrid input[data-ocr]:focus{border-color:var(--warn);box-shadow:0 0 0 3px rgba(245,181,68,.28);background:var(--panel3)}
+  /* 判 0 标记：「以本次识别为准」清 0 的库存输入框加醒目红框，提交前肉眼复核 */
+  input.inv-zeroed{border-color:var(--err)!important;box-shadow:0 0 0 2px rgba(255,107,107,.30)!important}
+
+  /* ===== 抽卡分析改版（2026-11-08）：池 Tab / 筛选 chip / 保底区间条 / 出S直方图 / S明细横条图
+     2026-11-12 AK 排版（参考 arkgacha.kwer.top 字号体系）：撤 0.75 zoom，文字直接
+     回到舒适区；汇总改 metric 大数字卡 + 新增三池汇总卡行；保底条胶囊化 ===== */
+  .gtab{cursor:pointer;border:1px solid var(--line2);background:var(--panel2);color:var(--dim);
+    padding:5px 18px;border-radius:999px;font-size:14px;transition:border .15s,color .15s}
+  .gtab:hover{color:var(--txt);border-color:var(--acc)}
+  .gtab.on{color:var(--acc);border-color:var(--acc-bd);background:var(--acc-soft)}
+  .gstate{display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:12.5px;color:var(--faint);
+    border:1px dashed var(--line2);border-radius:9px;padding:5px 12px;margin-top:10px}
+  /* 汇总 metric 卡：label 小字 muted + 大数字 + 小注（撤 zoom 后的替代排版） */
+  .gmetrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:10px}
+  @media (max-width:640px){.gmetrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  .gmetric{display:flex;flex-direction:column;gap:2px;min-width:0;border:1px solid var(--line2);
+    border-radius:12px;background:var(--panel2);padding:10px 14px}
+  .gmetric-label{font-size:12.5px;color:var(--dim)}
+  .gmetric-val{font-size:clamp(22px,3vw,30px);font-weight:700;letter-spacing:-0.02em;
+    line-height:1.2;color:var(--txt);font-variant-numeric:tabular-nums}
+  .gmetric-note{font-size:12px;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* 三池汇总卡行：每池一卡横排（窄屏换行单列），卡=池名 + 大数字抽数 + 出S/平均小注 */
+  .gpool-cards{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}
+  @media (max-width:640px){.gpool-cards{grid-template-columns:1fr}}
+  .gpool-card{display:flex;flex-direction:column;gap:2px;min-width:0;border:1px solid var(--line2);
+    border-radius:12px;background:var(--panel2);padding:10px 14px}
+  .gpool-card .gpool-name{font-size:13px;color:var(--dim)}
+  .gpool-card .gpool-num{display:flex;align-items:baseline;gap:4px}
+  .gpool-card .gpool-num b{font-size:clamp(22px,3vw,30px);font-weight:700;letter-spacing:-0.02em;
+    line-height:1.2;font-variant-numeric:tabular-nums}
+  .gpool-card .gpool-unit{font-size:12px;color:var(--faint)}
+  .gpool-card .gpool-note{font-size:12px;color:var(--faint);overflow:hidden;
+    text-overflow:ellipsis;white-space:nowrap}
+  /* 保底进度行：胶囊条 14px→8px 全圆角；「精确/估算」tag 在此行放大到 12px
+     （.tag 基类 11.5px 全局共用，不全局改，只作用域本行） */
+  .gp-line .tag{font-size:12px}
+  .gpity{position:relative;height:8px;border-radius:999px;background:var(--panel2);
+    border:1px solid var(--line2);overflow:hidden;margin-top:8px}
+  .gpity .gp-fill{position:absolute;left:0;top:0;bottom:0;background:var(--acc);opacity:.85}
+  .gpity .gp-zone{position:absolute;top:0;bottom:0;  /* 垫抽数下界→保底线：不确定区（斜纹） */
+    background:repeating-linear-gradient(45deg,rgba(245,181,68,.45) 0 6px,transparent 6px 12px)}
+  .ghisto{display:flex;align-items:flex-end;gap:6px;height:130px;margin-top:10px}
+  .ghisto .gp-col{flex:1;display:flex;flex-direction:column;justify-content:flex-end;
+    align-items:center;gap:2px;min-width:0}
+  .ghisto .gp-bar{width:72%;max-width:42px;border-radius:3px 3px 0 0;
+    display:flex;flex-direction:column;justify-content:flex-end;overflow:hidden}
+  .ghisto .gp-cap{font-size:12px;color:var(--faint);white-space:nowrap}
+  /* S 明细横躺条形图（2026-11-08 迭代：按月分组 chip 时间线退役）：每发 S 一行，
+     画法复用 .gpity 的「容器 + absolute 填充 + inline 百分比宽度」 */
+  .gbar-row{margin-top:10px}
+  .gbar-top{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;
+    padding-left:108px;  /* 名字行左缘与下方条形对齐（100px 头像 + 8px gap，四页调整③） */
+    font-size:13px;color:var(--faint);margin-bottom:3px}
+  .gbar-top b{font-size:14px;color:var(--txt)}
+  /* 角色头像（2026-11-09 工作包2）：/avatars/ 本地缓存图 + 首字母占位回落 */
+  .avatar-img{width:26px;height:26px;border-radius:7px;object-fit:cover;display:block;
+    border:1px solid var(--line2);background:var(--panel2)}
+  .avatar-img.sm{width:22px;height:22px;border-radius:6px}
+  .avatar-ph{width:26px;height:26px;border-radius:7px;display:inline-flex;flex-shrink:0;
+    align-items:center;justify-content:center;font-size:13px;font-weight:600;
+    color:var(--acc);background:var(--acc-soft);border:1px solid var(--acc-bd-soft)}
+  .avatar-ph.sm{width:22px;height:22px;border-radius:6px;font-size:11px}
+  /* 大头像作用域：角色卡详情大头像在 .body 内右浮动环绕（见下方 .char .body
+     .avatar-box）；空幕卡维持恒显全卡高竖列（stretch）贴右缘。头像统一 9:16 竖版
+     （height:auto 让 aspect-ratio 接管高度；object-position:top 裁切时保住头部）。 */
+  .char.char-av{display:flex;align-items:flex-start}
+  .char-main,.nm-body{flex:1;min-width:0}
+  .nm-card{display:flex;align-items:stretch}
+  /* 角色卡详情大头像：.body 首元素右浮动环绕（2026-11-11 调整——下方内容绕排，
+     不再把后续行整段下推）；120px 9:16，展开态由 .body 可见性天然保持 */
+  .char .body .avatar-box{float:right;margin:0 0 8px 10px;display:flex;
+    flex-direction:column;align-items:center;gap:5px}
+  .char .body .avatar-box .avatar-img,.char .body .avatar-box .avatar-ph{
+    width:120px;aspect-ratio:9/16;height:auto;object-fit:cover;object-position:top;
+    border-radius:14px;font-size:40px}
+  .nm-card>.avatar-box{flex:0 0 120px;width:120px;display:flex;flex-direction:column;
+    align-items:center;justify-content:flex-start;gap:5px;padding:10px 0;
+    border-left:1px solid var(--line)}
+  .nm-card>.avatar-box .avatar-img,.nm-card>.avatar-box .avatar-ph{
+    width:120px;aspect-ratio:9/16;height:auto;object-fit:cover;object-position:top;
+    border-radius:14px;font-size:40px}
+  .avatar-name{max-width:96px;font-size:11px;color:var(--faint);line-height:1.2;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* 抽卡 S 明细行（2026-11-10 第二轮调优）：两行结构——上行=角色名/时间/卡池名；
+     下行=100px 9:16 竖版头像 + track 垂直居中（行高随头像自然撑开） */
+  .gbar-body{display:flex;align-items:center;gap:8px}
+  .gbar-av{flex:0 0 100px}
+  .gbar-av .avatar-img,.gbar-av .avatar-ph{width:100px;aspect-ratio:9/16;height:auto;
+    object-fit:cover;object-position:top;border-radius:12px;font-size:22px}
+  /* 配队卡成员头像行（2026-11-10 第二轮调优）：4 等分 grid 与成员下拉行同宽，
+     每格 9:16 竖版头像居中于对应下拉列正上方；空位灰虚线占位同形状 */
+  .team-avrow{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;
+    justify-items:center;margin:8px 0}
+  .team-avrow>span{display:inline-flex}
+  /* 头像与下方下拉按钮等宽（格宽=4 等分，随页面宽度缩放；2026-11-11 调整） */
+  .team-avrow>span{width:100%;cursor:pointer}
+  .team-avrow .avatar-img,.team-avrow .avatar-ph{width:100%;aspect-ratio:9/16;height:auto;
+    object-fit:cover;object-position:top;border-radius:14px;font-size:30px}
+  .team-avrow .avatar-ph.av-empty{background:var(--panel2);border-style:dashed;
+    border-color:var(--line2);color:var(--faint)}
+  .team-memrow{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin:8px 0}
+  .team-memrow .t-member{width:100%}
+  .gbar-track{position:relative;flex:1;height:27px;border-radius:13px;background:var(--panel2);  /* 条形加粗 18→27 / r9→13（四页调整②） */
+    border:1px solid var(--line2);overflow:hidden}
+  /* 条形填充改 90deg 渐变（2026-11-12 AK 排版）：rgba(色,.45)→实色，阈值三色语义
+     不变（≤30 ok / 贴 m err / 中段 warn）。淡色端 rgba 硬编码沿用 chip 家族同款
+     口径（chip.ok/.warn/.err 亦硬编码；亮色主题下淡端略亮可接受） */
+  .gbar-fill{position:absolute;left:0;top:0;bottom:0;opacity:.85;
+    background:linear-gradient(90deg,rgba(83,182,255,.45),var(--acc))}
+  .gbar-fill.ok{background:linear-gradient(90deg,rgba(62,207,142,.45),var(--ok))}
+  .gbar-fill.warn{background:linear-gradient(90deg,rgba(245,181,68,.45),var(--warn))}
+  .gbar-fill.err{background:linear-gradient(90deg,rgba(255,107,107,.45),var(--err))}
+  .gbar-val{position:absolute;right:6px;top:50%;transform:translateY(-50%);  /* 条内右侧标 pity 数 */
+    font-size:12px;color:var(--txt);font-variant-numeric:tabular-nums;  /* 11→12：条加粗后保持可读（四页调整②） */
+    text-shadow:0 1px 2px rgba(0,0,0,.6);pointer-events:none}
+  .chip.err{color:var(--err);border-color:rgba(255,107,107,.4);background:rgba(255,107,107,.07)}
+
+  /* ===== 材料副本（2026-11-08 迭代；2026-11-09 工作包4 改 grid 固定列） =====
+     原 flex+gap16+wrap 窄屏换行时 需/持/差 三格错位；改 grid 后所有行按列对齐：
+     名称自适应（minmax(0,1fr) 可收缩）+ 需/持/差 64px 定宽 + 轮次 pill 右固定 */
+  .dmat{display:grid;grid-template-columns:minmax(0,1fr) repeat(3,64px) auto;
+    align-items:center;gap:6px 16px;padding:8px 0}
+  .dmat>.chip{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .dmat+.dmat{border-top:1px dashed var(--line)}  /* 材料行间细分隔；合计行自带 border-top 对齐 */
+  .dstat{display:flex;flex-direction:column;gap:1px;min-width:52px}
+  .dstat .ds-label{font-size:11px;color:var(--faint);line-height:1.35}
+  .dstat .ds-val{font-size:13.5px;font-weight:600;font-variant-numeric:tabular-nums;line-height:1.35}
+  .dstat-gap .ds-val{font-size:16.5px;color:var(--err)}  /* 差值：缺口>0 着色大字强调（err） */
+  .dstat-gap.gap-zero .ds-val{font-size:13.5px;font-weight:normal;color:var(--faint)}  /* 已齐：弱化 */
 
   table{width:100%;border-collapse:collapse;font-size:13px}
   th,td{padding:7px 9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}
   th{color:var(--faint);font-weight:normal;font-size:12px;white-space:nowrap}
-  tbody tr:hover{background:rgba(83,182,255,.04)}
+  tbody tr:hover{background:var(--acc-ghost)}
 
   .banner{display:flex;gap:8px;align-items:flex-start;padding:8px 12px;border-radius:10px;
     font-size:12.5px;margin:8px 0;border:1px solid}
@@ -133,7 +284,7 @@
 
   /* ===== 总览 ===== */
   .hero{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;align-items:center;
-    background:linear-gradient(120deg,var(--panel) 55%,rgba(83,182,255,.06))}
+    background:linear-gradient(120deg,var(--panel) 55%,var(--acc-ghost))}
   .run-line{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
   .run-line b{font-size:16px}
   .hero .desc{color:var(--faint);font-size:12px;margin-top:6px;max-width:560px}
@@ -155,7 +306,7 @@
   .step:last-child{border-bottom:none}
   .step-n{width:24px;height:24px;border-radius:8px;flex-shrink:0;display:flex;align-items:center;
     justify-content:center;background:var(--acc-soft);color:var(--acc);font-size:12.5px;font-weight:700;
-    border:1px solid rgba(83,182,255,.35);margin-top:2px}
+    border:1px solid var(--acc-bd-soft);margin-top:2px}  /* .35 与变量逐字同值，归一（复审 #11 遗留） */
   .step-main{flex:1;min-width:0}
   .step-reason{color:var(--dim);font-size:12px;margin-top:3px}
 
@@ -174,7 +325,7 @@
 
   .pv-days{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px}
   .pv-day{border:1px solid var(--line);border-radius:12px;padding:10px 13px;background:var(--panel2)}
-  .pv-day.today{border-color:rgba(83,182,255,.5);background:var(--acc-soft)}
+  .pv-day.today{border-color:var(--acc-bd);background:var(--acc-soft)}
   .pv-day .pv-date{font-weight:600;font-size:13px}
   .pv-day .pv-budget{font-size:12px;color:var(--acc);margin:2px 0 6px;font-variant-numeric:tabular-nums}
   .pv-day .pv-steps{font-size:12px;color:var(--dim);min-height:34px}
@@ -184,8 +335,9 @@
   .char{border:1px solid var(--line);border-radius:12px;margin-bottom:10px;overflow:hidden;
     background:var(--panel);transition:border-color .15s}
   .char:hover{border-color:var(--line2)}
-  .char .head{display:flex;align-items:center;gap:9px;padding:9px 13px;background:var(--panel2);flex-wrap:wrap}
+  .char .head{display:flex;align-items:center;gap:9px;padding:9px 13px;background:var(--panel2);flex-wrap:wrap;cursor:pointer}
   .char .body{padding:12px 14px;display:none;border-top:1px solid var(--line)}
+  .char .body::after{content:"";display:block;clear:both}  /* 浮动头像 clearfix：末行内容不与头像重叠 */
   .char.open .body{display:block}
   .need-row{display:grid;grid-template-columns:2fr 70px 70px 70px 60px;gap:6px;align-items:center}
   .lib-chip{display:inline-flex;align-items:center;gap:5px;padding:3px 6px 3px 11px;border-radius:999px;
@@ -228,6 +380,30 @@
   .modal{background:var(--panel);border:1px solid var(--line2);border-radius:14px;
     padding:20px 22px;max-width:440px;width:calc(100% - 40px);box-shadow:var(--shadow)}
   .modal-msg{font-size:13.5px;line-height:1.7;white-space:pre-wrap}
+
+  /* ===== ok-nte 规划编辑器（2026-11-12）：分组卡 + 开关/键值行 + 循环序列多选网格 ===== */
+  .plan-modal{max-width:760px;max-height:86vh;overflow-y:auto}
+  .plan-group{border:1px solid var(--line2);border-radius:12px;background:var(--panel2);
+    padding:12px 14px;margin-top:10px}
+  .plan-group-h{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+  .plan-group-h b{font-size:13.5px}
+  .plan-src{font-size:12px;color:var(--faint)}  /* 组标题旁小字 */
+  .plan-group-b{font-size:13px}
+  .plan-checks{display:flex;gap:6px;flex-wrap:wrap}
+  .plan-check{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--txt);
+    cursor:pointer;padding:4px 10px;border:1px solid var(--line);border-radius:9px;
+    background:var(--panel);user-select:none}
+  .plan-check:hover{border-color:var(--acc)}
+  .plan-check input{margin:0;flex-shrink:0}
+  .plan-num-row{display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-top:4px}
+  .plan-kv{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--dim)}
+  .plan-kv input{width:130px}
+  .plan-range{font-size:11px;color:var(--faint)}
+  .plan-sec{margin-top:10px;padding-top:8px;border-top:1px dashed var(--line)}
+  .plan-sec:first-child{border-top:none;padding-top:0;margin-top:0}
+  .plan-sec-name{display:inline-block;font-size:12.5px;color:var(--dim);margin-bottom:4px}
+  .plan-seq-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin-top:6px}
+  @media (max-width:700px){.plan-seq-grid{grid-template-columns:1fr 1fr}}
 </style>
 </head>
 <body>
@@ -237,8 +413,10 @@
     <nav id="nav">
       <button data-t="overview" class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></svg><span>总览</span></button>
       <button data-t="chars"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>角色</span></button>
+      <button data-t="gacha"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13"/><path d="M19 12v7a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-7"/><path d="M7.5 8a2.5 2.5 0 0 1 0-5A4.8 8 0 0 1 12 8a4.8 8 0 0 1 4.5-5 2.5 2.5 0 0 1 0 5"/></svg><span>抽卡</span></button>
       <button data-t="arc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg><span>弧盘</span></button>
       <button data-t="nullmux"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 12h18"/><path d="M12 3v18"/></svg><span>空幕</span></button>
+      <button data-t="dungeons"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3 3.6 5.1a1 1 0 0 0-.6.9v13.6a1 1 0 0 0 1.4.9L9 18l6 3 5.4-2.1a1 1 0 0 0 .6-.9V4.4a1 1 0 0 0-1.4-.9L15 6 9 3z"/><path d="M9 3v15"/><path d="M15 6v15"/></svg><span>材料副本</span></button>
       <button data-t="teams"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>配队</span></button>
       <button data-t="codex"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg><span>图鉴数据</span></button>
       <button data-t="common"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 3h15"/><path d="M6 3v16a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V3"/><path d="M6 14h12"/></svg><span>通用材料</span></button>
@@ -251,7 +429,7 @@
     <div class="side-foot" id="envTags"></div>
   </aside>
   <div class="content">
-    <header class="topbar"><h1 id="pageTitle">总览</h1><span class="sub" id="pageSub"></span></header>
+    <header class="topbar"><h1 id="pageTitle">总览</h1><span class="sub" id="pageSub"></span><button class="btn sec mini" id="btnTheme" style="margin-left:auto" title="切换到明亮主题">🌙 暗色</button></header>
     <main id="main"></main>
   </div>
 </div>
@@ -262,6 +440,47 @@
 const $ = (s,el=document)=>el.querySelector(s);
 const esc = s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 let BOOT=null, TIMER=null;
+/* 面板令牌（SEC-05）：后端 GET / 每请求把占位符替换为本次启动生成的令牌，
+   所有 /api 请求经 AUTH_HEADERS 附 X-Panel-Token 头（api() 与 15 处裸 fetch）。 */
+const PANEL_TOKEN="__PANEL_TOKEN__";
+const AUTH_HEADERS={"X-Panel-Token":PANEL_TOKEN};
+
+/* ---------- 角色头像（2026-11-09 工作包2；2026-11-10 源站改 wiki.mysqil.com） ----------
+   数据源=bootstrap 的 BOOT.avatars（实名→/avatars/<slug>.webp，后端只发本机已
+   下载文件；wiki.mysqil.com 头像（mysqil 拼音 slug）随「同步攻略站」落本机）。
+   三处使用：抽卡 S 明细行头 / 角色卡头 / 空幕卡标题。未映射或加载失败一律回落
+   首字母占位（绝不破图）。 */
+function avatarUrl(name){
+  /* 实名→头像 URL：精确 → 去尾部（…）基名（零（男）→零，后端已做同规则，此处
+     只是兜底）→ 去前缀段取「·」后实名（塔吉多面板实名可能带「异能者·」类前缀，
+     同 _tajiduo_match_name 口径）。映射不到返回 null（调用方渲染首字母占位）。 */
+  const map=BOOT&&BOOT.avatars||{};
+  const n=String(name||"").trim();
+  if(!n) return null;
+  if(map[n]) return map[n];
+  const base=n.replace(/（[^）]*）$/,"").trim();
+  if(base && map[base]) return map[base];
+  const tail=n.split("·").pop().trim();
+  if(tail && tail!==n){ if(map[tail]) return map[tail];
+    const tb=tail.replace(/（[^）]*）$/,"").trim();
+    if(tb && map[tb]) return map[tb]; }
+  return null;
+}
+function avatarImg(name, small){
+  const url=avatarUrl(name), cls=small?" sm":"";
+  if(!url)
+    return `<span class="avatar-ph${cls}">${esc(String(name||"?").trim().charAt(0)||"?")}</span>`;
+  return `<img class="avatar-img${cls}" src="${esc(url)}" alt="" loading="lazy"
+    data-avname="${esc(String(name||"?"))}" onerror="avatarFallback(this)">`;
+}
+window.avatarFallback=function(img){
+  /* <img onerror> 全局回落：按 data-avname 首字母生成占位块（textContent 赋值，
+     实名不进 HTML 上下文） */
+  const ph=document.createElement("span");
+  ph.className="avatar-ph"+(String(img.className).includes(" sm")?" sm":"");
+  ph.textContent=String(img.dataset.avname||"?").trim().charAt(0)||"?";
+  img.replaceWith(ph);
+};
 
 /* ---------- Toast 与对话框（替代 alert/confirm） ---------- */
 function toast(msg, kind="ok"){
@@ -287,21 +506,45 @@ function qConfirm(msg){
 }
 
 async function api(path, body, timeoutMs=15000){
-  const opt = body===undefined ? {} : {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)};
+  const opt = body===undefined ? {headers:AUTH_HEADERS} : {method:"POST",headers:{...AUTH_HEADERS,"Content-Type":"application/json"},body:JSON.stringify(body)};
   // 本地面板不该有请求挂死：默认 15 秒超时兜底，失败走「加载失败」横幅而不是无限空白。
   // 慢端点按后端最坏耗时传入更大的 timeoutMs（如 /api/ocr/capture 截屏链路最坏 ≈120s：
   // _bind_game_window→窗口枚举 PS timeout=30s + 截图 _ocr_run_ps 默认 timeout=90s），
   // 否则慢机器上客户端先超时报错、后端截图却实际成功，用户按报错重试反复失败
   const res = await fetch(path, {...opt, signal: AbortSignal.timeout(timeoutMs)});
   const data = await res.json().catch(()=>({}));
-  if(!res.ok) throw new Error(data.error||res.status);
+  if(!res.ok){
+    // 面板令牌 401（panel_auth 专字段，SEC-05）：面板重启后旧页面令牌失效——
+    // 必须先于 404 兜底与通用 throw，且绝不落入塔吉多「登录已过期」重绑引导
+    if(res.status===401 && data.panel_auth) throw new Error(data.error||"面板鉴权失败：请刷新页面");
+    // 404 且为裸 "not found"/带 hint = 旧后端进程缺新路由（诊断根因①：路由表随
+    // 进程启动固化、本页每请求从磁盘重读）：给重启提示而非裸 "not found"。
+    // 业务 404（如 /api/ocr/select「窗口不存在」）带具体 error 文案，原样保留
+    const nf=notFoundHint(res,data);
+    if(nf) throw new Error(nf);
+    throw new Error(data.error||res.status);
+  }
+  // 服务端在写端点响应里回传数据版本 rev：本页基线随时跟进，避免自己写完后
+  // 下次保存被 base_rev 乐观锁误拦（诊断 item6：跨标签页陈旧回写防线）
+  if(BOOT && typeof data.rev==="number") BOOT.rev=data.rev;
   return data;
+}
+
+/* 404 自检（诊断根因①）：裸 "not found"（旧进程）或后端显式 hint = 面板后端
+   进程为旧版本（新前端 + 旧后端错位窗口）。区别于「未绑定」等业务态——
+   统一给可行动的重启提示，不误导用户去重新绑定。返回 null 表示不是该症状。 */
+const NOTFOUND_HINT="面板后端进程为旧版本（缺少新接口），请完全退出面板进程（含托盘/后台 python）后重新启动/更新面板";
+function notFoundHint(res,data){
+  if(res && res.status===404 && ((data&&data.hint)||(data&&data.error==="not found")))
+    return (data&&data.hint)||NOTFOUND_HINT;
+  return null;
 }
 
 /* ---------- 数据工具 ---------- */
 function allMaterials(){
   const M=BOOT.tables.materials;
-  const list=(M.targets||[]).map(t=>({id:t.id,display:t.display_name||t.name,category:t.category,
+  const list=(M.targets||[]).map(t=>({id:t.id,
+    display:(t.concrete_names&&t.concrete_names.purple)||t.display_name||t.name,category:t.category,
     source:t.source||"",obtain:"stamina",name:t.name}));
   (M.extra_materials||[]).forEach(m=>list.push({id:m.id,display:m.display_name||m.id,
     category:m.category,source:m.source||"",obtain:m.obtain||"external"}));
@@ -332,6 +575,7 @@ function ringSvg(pct){
 async function renderOverview(){
   $("#main").innerHTML='<div class="card"><div class="muted">加载中…</div></div>';
   const st = BOOT.state, plan = await api("/api/plan").catch(e=>({error:e.message}));
+  const dg = await api("/api/dungeon-gaps").catch(e=>({error:e.message}));  // 总计划（2026-11-12）
   const compat = BOOT.compat, run = await api("/api/status");
   const today = run.today||{};
   const pend = run.pending||[];
@@ -367,18 +611,68 @@ async function renderOverview(){
   const clearBl = (!steps.length && (p.no_op_reason === "waiting_for_reset" || (d?.skipped_blacklisted || []).length))
     ? `<div class="row" style="margin-top:10px"><button class="btn sec mini" id="btnClearBlacklist">清空今日拉黑（重试被跳过的目标）</button>
        <span class="muted">昨日启动失败等残留拉黑可用此自救；游戏内真失败的目标拉黑后仍建议等次日</span></div>` : "";
+  // ---- 总计划（2026-11-12 图一式具名渲染）：GET /api/dungeon-gaps 逐块
+  //      「副本名 ×轮数（体力）」→ 材料具名 chips（缺g（需n/持h）· 约N轮）；
+  //      勾选块经底部主按钮写入 ok-nte 循环序列（entry 由后端 cycle_item 下发，
+  //      与真实 configs 循环序列同格式）。weekly/双通道标注沿用副本页口径。 ----
+  const dgBlocks = dg.blocks||[];
+  const dgLimit = Number(st.settings.daily_stamina_limit)||0;
+  const dgTotal = dgBlocks.reduce((s,b)=>s+(b.total_stamina||0)+(b.weekly_stamina||0),0);
+  const dgDays = dgLimit>0?Math.ceil(dgTotal/dgLimit):null;
+  const dgChip = m=>`<span class="chip ${m.runs>0?"acc":""}" title="${esc(m.mat_id)}">${
+    esc(m.name)} 缺${m.gap}（需${m.need}/持${m.have}）${
+    m.runs>0?` · 约${m.runs}轮`:" · 无产量数据"}</span>`;
+  const dgChk=(i,checked)=>`<label class="plan-check"><input type="checkbox" data-dgblock="${i}" ${checked?"checked":""}> 纳入循环序列</label>`;
+  const dgBlockHtml = dgBlocks.map((b,i)=>{
+    const gapped=(b.mats||[]).filter(m=>m.gap>0);
+    // weekly/双通道标注：文案沿用副本页 renderDungeons 口径
+    const weekly=b.weekly_times?`<div class="row" style="gap:8px;margin-top:4px">
+        <span class="tag acc">周本口径</span>
+        <span class="muted">每周限 ${b.weekly_times} 次 × ${b.stamina_per_run} 体力 = ${b.weekly_stamina} 体力/周（用户口径；面板未追踪本周已刷次数，材料缺口无每轮产量，不计入轮数合计）</span></div>`:"";
+    const dual=b.dual_channel?`<div class="row" style="gap:8px;margin-top:4px">
+        <span class="tag warn">双通道</span><span class="muted">${esc(b.note||"")}</span></div>`:"";
+    if(!gapped.length)  // 全部已齐：折叠成一行 ✓（勾选框默认不勾，仍可手动纳入）
+      return `<div class="row" style="gap:10px;margin-top:10px">${dgChk(i,false)}
+        <span style="color:var(--ok);font-size:13px">✓ 已齐：${esc(b.block||"—")}</span></div>${weekly}${dual}`;
+    const multiRuns=(b.mats||[]).filter(m=>m.runs>0).length>1;
+    return `<div style="margin-top:12px;padding-top:10px;border-top:1px dashed var(--line)">
+      <div class="row" style="gap:8px;flex-wrap:wrap;align-items:baseline;font-size:15.5px;font-weight:700">
+        <span>${esc(b.block||"—")}</span><span class="num">× ${b.total_runs} 轮（${b.total_stamina} 体力）</span>
+        <span class="muted" style="font-size:12px;font-weight:normal">${esc(b.entry||"")}</span></div>
+      <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:6px">${gapped.map(dgChip).join("")}</div>
+      ${multiRuns?`<div class="muted" style="margin-top:4px">各材料轮数直和——每轮只产出所选的一个系列，需按材料分别执行</div>`:""}
+      ${weekly}${dual}
+      <div style="margin-top:6px">${dgChk(i,true)}</div></div>`;
+  }).join("");
+  const dgExt=(dg.external||[]);
+  const dgExtHtml=dgExt.length?`<div style="margin-top:12px;padding-top:10px;border-top:1px dashed var(--line)">
+      <b style="font-size:13.5px">外部来源材料</b><span class="plan-src" style="margin-left:8px">不在体力副本块内，无法按轮数规划，不参与循环序列写入</span>
+      ${dgExt.map(m=>`<div class="row" style="gap:10px;margin-top:4px">
+        <span class="chip ${m.extra?"warn":"acc"}" title="${esc(m.mat_id)}">${esc(m.name)}</span>
+        <span class="num" style="color:var(--err)">缺 ${m.gap}</span><span class="muted num">需${m.need}/持${m.have}</span>
+        ${m.source?`<span class="muted">${esc(m.source)}</span>`:""}</div>`).join("")}</div>`:"";
+  const dgHtml = dg.error
+    ? `<div class="banner warn">${esc(dg.error)}</div>`
+    : `<div class="row" style="gap:8px;flex-wrap:wrap;align-items:baseline">
+        <span>预计消耗体力 <b class="num" style="color:var(--acc);font-size:16px">${dgTotal}</b></span>
+        <span class="num">· 约 <b style="color:var(--acc)">${dgDays??"—"}</b> 天</span>
+        <span class="muted">（每日限额 ${dgLimit||"未设置"}）</span></div>
+       ${dgBlockHtml||`<div class="muted">无副本分块数据</div>`}
+       ${dgExtHtml}`;
   $("#main").innerHTML = `
     <div class="card hero">
       <div>
         <div class="run-line"><span class="pill" id="statePill"></span><b id="runState"></b></div>
         <div class="desc">日常与追猎共用一个执行器，同一时刻只跑一个（ok-nte 中两者互斥）。</div>
         <div id="waitInfo" style="margin-top:6px"></div>
+        <div id="windowWarn"></div>  <!-- 游戏窗口不可见常驻横幅（runner window_warning，恢复 visible:True 自动清空；复审 #7a：此前该字段无前端消费者） -->
       </div>
       <div class="row">
         <button class="btn big" id="btnStart" ${(run.state==="running"||run.state==="waiting"||pend.length)?"disabled":""}>▶ 开始日常</button>
         <button class="btn sec" id="btnStartHunter" ${(run.state==="running"||run.state==="waiting"||pend.length)?"disabled":""}>🎯 开始追猎</button>
         <button class="btn sec" id="btnDry">👁 预演（不落盘）</button>
         <button class="btn sec" id="btnCompat">⬇ 兼容报告</button>
+        <button class="btn sec" id="btnPlanOpts">🧭 ok-nte 选项规划</button>  <!-- 锚点：滚动到总计划区块内的 ok-nte 选项折叠组（模态已于 2026-11-12 迁移退役） -->
         <button class="btn danger" id="btnStop" ${(run.state!=="running"&&run.state!=="waiting")?"disabled":""}>■ 停止</button>
       </div>
     </div>
@@ -390,8 +684,20 @@ async function renderOverview(){
         <div class="t-main"><b class="num">${today.hunter_spent??0}<span style="font-size:13px;color:var(--faint)">/${st.settings.anomaly_hunter_stamina??180}</span></b><span>追猎已耗 / 额度</span></div></div>
     </div>
     ${pendHtml}
-    <div class="card"><h3>日常体力计划</h3>${planErr}${warns}${stepsHtml}${clearBl}${budgetLine}
-      <div class="muted" style="margin-top:8px">策略：按角色优先级顺序补齐缺口；每次执行刷一个目标，完成自动切换下一个；ok-nte 的循环模式由本规划器接管（置为停用）。</div>
+    <div class="card" id="planMaster"><h3>总计划<span class="h-sub">副本 × 轮数（体力）→ 材料缺口 · 勾选副本写入 ok-nte 循环序列</span></h3>
+      <div id="dgPlanBody">${dgHtml}</div>
+      <div class="row" style="gap:10px;margin-top:12px">
+        <button class="btn" id="btnWriteCycle">把勾选副本写入循环序列并保存</button>
+        <span class="muted">勾选块的全部材料条目按块顺序去重合并进循环序列（data/oknte_plan.json 覆盖，下次执行生效）</span></div>
+      <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--line)">
+        <h3 style="margin:0 0 10px">今日执行（体力预算内）</h3>
+        ${planErr}${warns}${stepsHtml}${clearBl}${budgetLine}
+        <div class="muted" style="margin-top:8px">策略：按角色优先级顺序补齐缺口；每次执行刷一个目标，完成自动切换下一个；ok-nte 的循环模式由本规划器接管（置为停用）。</div>
+      </div>
+      <details id="planOptsBox" style="margin-top:14px">
+        <summary style="cursor:pointer"><b>ok-nte 选项（执行时写入副本配置）</b><span class="h-sub">日常任务开关 · 空幕计划 · 循环序列具名多选 · 追猎 · 杂项</span></summary>
+        <div id="planOptsBody" style="margin-top:8px"><span class="muted">展开时加载 ok-nte 配置选项…</span></div>
+      </details>
     </div>
     <div class="card"><h3>追猎计划<span class="h-sub">独立开始 · BOSS 每局 60 体力 · 掉落对应角色突破材料</span></h3>
       <div class="row" style="gap:8px;margin-bottom:10px">
@@ -416,7 +722,7 @@ async function renderOverview(){
   $("#btnDry").onclick = doDryRun;
   $("#btnCompat").onclick = async ()=>{
     try{
-      const res = await fetch("/api/compat-report");
+      const res = await fetch("/api/compat-report", {headers: AUTH_HEADERS});
       const text = await res.text();
       const blob=new Blob([text],{type:"text/markdown"});
       const a=document.createElement("a");
@@ -425,6 +731,54 @@ async function renderOverview(){
       a.click(); URL.revokeObjectURL(a.href);
       toast("兼容报告已下载");
     }catch(e){alertErr(e);}
+  };
+  // 总计划：勾选块 → 循环序列写入。POST 为全量替换 overrides
+  //（save_oknte_plan_overrides），故先 GET 现值并把现有段原样携带回传；仅替换
+  // daily_anomaly.循环序列（其余覆盖键保留）。空序列=停用循环（ok-nte 口径），需确认。
+  $("#btnWriteCycle").onclick = async ()=>{
+    const btn=$("#btnWriteCycle"); btn.disabled=true;
+    try{
+      const entries=[];
+      document.querySelectorAll("#dgPlanBody [data-dgblock]").forEach(c=>{
+        if(!c.checked) return;
+        const b=dgBlocks[+c.dataset.dgblock]; if(!b) return;
+        (b.mats||[]).forEach(m=>{
+          const e=m.cycle_item&&m.cycle_item.entry;
+          if(e&&!entries.includes(e)) entries.push(e);  // 按块顺序去重
+        });
+      });
+      if(!entries.length){
+        const go=await qConfirm("未勾选任何副本：将写入空循环序列（=停用循环），确定？");
+        if(!go) return;
+      }
+      const tree=await api("/api/oknte/plan");
+      const ov=tree.overrides||{};
+      const body={};
+      if(ov.routine_items) body.routine_items=ov.routine_items;
+      body.daily_anomaly={...(ov.daily_anomaly||{}), "循环序列":entries};
+      if(ov.hunter) body.hunter=ov.hunter;
+      if(ov.misc) body.misc=ov.misc;
+      if(ov.plan_targets) body.plan_targets=ov.plan_targets;
+      await api("/api/oknte/plan", body, 30000);
+      toast("已写入计划，下次执行生效");
+    }catch(e){ alertErr(e); }
+    finally{ btn.disabled=false; }
+  };
+  // ok-nte 选项折叠组：懒加载（首次展开拉取 /api/oknte/plan 选项树；旧版后端缺
+  // 该路由时 404 走 notFoundHint 版本自检口径——api() 已转成「面板后端进程为旧
+  // 版本…请重启」提示，展示在折叠组加载失败横幅处；502 带 ok-nte 配置路径原文）
+  const optsBox=$("#planOptsBox"), optsBody=$("#planOptsBody");
+  if(optsBox) optsBox.addEventListener("toggle", ()=>{
+    if(!optsBox.open||optsBody.dataset.loaded) return;
+    optsBody.dataset.loaded="1";
+    mountPlanOpts(optsBody, dg);
+  });
+  // #btnPlanOpts 原为模态入口（openPlanEditor 已退役迁入总计划区块）：改为展开
+  // 选项折叠组并滚动锚点
+  $("#btnPlanOpts").onclick = ()=>{
+    if(optsBox) optsBox.open=true;
+    const anchor=optsBox||$("#planMaster");
+    if(anchor) anchor.scrollIntoView({behavior:"smooth", block:"start"});
   };
   $("#btnPreview").onclick = doPreview;
   $("#btnHunterPlan").onclick = doHunterPlan;
@@ -520,6 +874,204 @@ async function doDryRun(){
     body.innerHTML=html;
   }catch(e){ body.innerHTML=`<div class="banner warn">预演失败：${esc(e.message)}</div>`; }
 }
+/* ---------- ok-nte 选项表单（2026-11-12 总览迁移：原 openPlanEditor 模态退役，
+   四组表单挂进总览页总计划区块的折叠组，懒加载） ---------- */
+/* Routine Items 开关 id → 中文名（id 与后端 OKNTE_ROUTINE_ITEM_IDS/前端白名单同源；
+   中文口径沿用 ok-nte_adapter.prepare_daily_profile 注释：咖啡/领奖/影院/喷泉/家具/礼物） */
+const PLAN_ROUTINE_LABELS={
+  coffee:"咖啡",cinema_date:"影院约会",furniture:"家具",gift:"礼物",
+  daily_anomaly:"空幕刷取（异象）",daily_anomaly_hunter:"异象追猎",daily_claim:"每日领取",
+  fountain:"喷泉签到",store_purchase:"商店购买",
+  bot_notify:"失败发送 BOT 通知",exit_after_task:"执行后退出"};
+const PLAN_ROUTINE_IDS=["coffee","cinema_date","furniture","gift","daily_anomaly",
+  "daily_anomaly_hunter","daily_claim","fountain","store_purchase"];  // 9 开关顺序同后端
+const PLAN_TASK_TYPES=["经验与甲硬币","异能升级材料","弧盘突破材料","空幕"];
+const PLAN_REWARD_GOALS=["角色经验","弧盘经验","甲硬币"];
+async function mountPlanOpts(host, dg){
+  /* ok-nte 选项表单（宿主=总计划区块折叠组 #planOptsBody；dg=总计划已加载的
+     dungeon-gaps 数据，供「按缺口生成」钮）。GET /api/oknte/plan（旧版后端缺该
+     路由时 404 → api() 已转 notFoundHint 版本提示口径，渲染进宿主横幅；502 带
+     ok-nte 配置路径原文）→ 分组表单 → [保存计划] POST /api/oknte/plan 全量覆盖体
+     （取全量，简单可靠）。预填口径：键级取 覆盖现值（data/oknte_plan.json，下次
+     执行实际生效的就是它），无覆盖回落 ok-nte configs 现值；有覆盖的组标题旁 tag
+     标注，避免「表单显示的与 configs 不同却无解释」。循环模式不提交（后端白名单
+     拒绝：规划器强制「停用」）。 */
+  host.innerHTML='<div class="muted">加载中…</div>';
+  let tree;
+  try{ tree=await api("/api/oknte/plan"); }
+  catch(e){ host.innerHTML=`<div class="banner warn">${esc(e.message)}</div>`; return; }
+  if(!host.isConnected) return;  // 加载期间切页：宿主已随 #main 重建，不写旧节点
+  const ov=tree.overrides||{};
+  const riCur=tree.routine_items||{}, riOv=ov.routine_items||{};
+  const daily=tree.daily_anomaly||{}, dOv=ov.daily_anomaly||{};
+  const hunter=tree.hunter||{}, hOv=ov.hunter||{};
+  const misc=tree.misc||{}, mOv=ov.misc||{};
+  const pick=(cur,ovSec,key)=> (ovSec&&Object.prototype.hasOwnProperty.call(ovSec,key))?ovSec[key]:cur;
+  const ovTag=n=>n?`<span class="tag acc">已存覆盖 ${n} 项 · 表单按覆盖值预填</span>`:"";
+  const srcNote=`<span class="plan-src">当前值来自 ok-nte 配置，保存后写入面板计划覆盖，下次执行生效</span>`;
+  const group=(title,ovCount,body)=>`<div class="plan-group">
+    <div class="plan-group-h"><b>${title}</b>${ovTag(ovCount)}${srcNote}</div>
+    <div class="plan-group-b">${body}</div></div>`;
+  const ovCount=s=>Object.keys(s||{}).length;
+  /* select 选项 = 指定候选 + 现值（现值不在候选时前置补入，不吞真实配置值） */
+  const selOpts=(cands,cur)=>[...new Set([...(cur!=null&&cur!==""?[String(cur)]:[]),...cands])]
+    .map(v=>`<option ${v===String(cur)?"selected":""}>${esc(v)}</option>`).join("");
+  // ---- ① 日常任务：9 开关 + BOT 通知/执行后退出（现值缺项如实按未勾选渲染） ----
+  const riHtml=PLAN_ROUTINE_IDS.map(id=>`
+    <label class="plan-check"><input type="checkbox" data-pri="${id}" ${pick(riCur[id],riOv,id)?"checked":""}> ${esc(PLAN_ROUTINE_LABELS[id]||id)}</label>`).join("")
+    +`<label class="plan-check"><input type="checkbox" data-pri="bot_notify" ${pick(riCur.bot_notify,riOv,"bot_notify")?"checked":""}> ${esc(PLAN_ROUTINE_LABELS.bot_notify)}</label>
+      <label class="plan-check"><input type="checkbox" data-pri="exit_after_task" ${pick(riCur.exit_after_task,riOv,"exit_after_task")?"checked":""}> ${esc(PLAN_ROUTINE_LABELS.exit_after_task)}</label>`;
+  // ---- ② 空幕刷取计划：任务类型/奖励目标 select + 三个序号 + 目标体力 + 循环序列具名多选 ----
+  const numField=(label,attr,range,cur)=>`<label class="plan-kv">${label}${range?`<span class="plan-range">${range}</span>`:""}
+    <input type="number" ${attr} ${cur!=null&&cur!==""?`value="${esc(String(cur))}"`:'placeholder="配置未设"'}></label>`;
+  // 循环序列多选=后端 cycle_options 19 项全集（label 具名渲染替换裸 entry 内部写法）；
+  // 勾选预填=现值序列（覆盖优先）。按缺口生成=总计划块内 gap>0 材料的 entry。
+  const gapEntries=new Set();
+  (dg.blocks||[]).forEach(b=>(b.mats||[]).forEach(m=>{
+    if(m.gap>0&&m.cycle_item&&m.cycle_item.entry) gapEntries.add(m.cycle_item.entry); }));
+  const seqCur=pick(daily["循环序列"],dOv,"循环序列");
+  const seqSet=new Set(Array.isArray(seqCur)?seqCur.filter(v=>typeof v==="string"):[]);
+  const copts=Array.isArray(tree.cycle_options)?tree.cycle_options:[];
+  const orphan=Array.from(seqSet).filter(e=>!copts.some(o=>o.entry===e));
+  const seqHtml=copts.length?`
+    <div class="plan-seq-grid">${copts.map(o=>`
+      <label class="plan-check"><input type="checkbox" data-pseq="${esc(o.entry)}" ${seqSet.has(o.entry)?"checked":""}> ${esc(o.label||o.entry)}</label>`).join("")}</div>
+    <div class="row" style="gap:8px;margin-top:8px">
+      <button type="button" class="btn sec mini" data-seqall>全选</button>
+      <button type="button" class="btn sec mini" data-seqnone>清空</button>
+      <button type="button" class="btn sec mini" data-seqgap>按缺口生成</button>
+      <span class="muted">具名选项=循环序列全集（共 ${copts.length} 项，entry 与 ok-nte 配置同格式），按选项顺序保存勾选项</span></div>
+    ${orphan.length?`<div class="banner warn" style="margin-top:6px">当前循环序列的这些项不在具名全集内，保存后将不保留：${esc(orphan.join("、"))}</div>`:""}`
+    :`<div class="muted">后端未提供 cycle_options 具名全集，保存将写入空数组=停用循环序列</div>`;
+  const dailyHtml=`
+    <div class="plan-num-row">
+      <label class="plan-kv">任务类型 <select data-ptask>${selOpts(PLAN_TASK_TYPES,pick(daily["任务类型"],dOv,"任务类型"))}</select></label>
+      <span data-goal-row style="display:none"><label class="plan-kv">具体奖励目标 <select data-pgoal>${selOpts(PLAN_REWARD_GOALS,pick(daily["具体奖励目标"],dOv,"具体奖励目标"))}</select></label></span>
+    </div>
+    <div class="plan-num-row">
+      ${numField("异能材料序号",'min="1" max="5" data-pnum="0"',"1-5",pick(daily["异能材料序号"],dOv,"异能材料序号"))}
+      ${numField("弧盘材料序号",'min="1" max="5" data-pnum="1"',"1-5",pick(daily["弧盘材料序号"],dOv,"弧盘材料序号"))}
+      ${numField("空幕序号",'min="1" max="6" data-pnum="2"',"1-6",pick(daily["空幕序号"],dOv,"空幕序号"))}
+      ${numField("目标消耗体力",'min="0" data-pstam',"≥0",pick(daily["目标消耗体力"],dOv,"目标消耗体力"))}
+    </div>
+    <div style="margin-top:8px"><b>循环序列</b><span class="plan-src" style="margin-left:8px">多选，按当前序列顺序生效</span>${seqHtml}</div>`;
+  // ---- ③ 异象追猎：目标 select（当前值 + 常见 BOSS）+ 领取奖励次数 ----
+  const bossNames=(BOOT.tables.materials.hunter_bosses||[]).map(b=>b.name).filter(Boolean);
+  const hcur=pick(hunter["追猎目标"],hOv,"追猎目标");
+  const hunterHtml=`
+    <div class="plan-num-row">
+      <label class="plan-kv">追猎目标 <select data-phboss>${bossNames.length||hcur!=null?selOpts(bossNames,hcur):`<option value="">（无可用 BOSS 列表）</option>`}</select></label>
+      ${numField("领取奖励次数",'min="0" data-phcount',"≥0",pick(hunter["领取奖励次数"],hOv,"领取奖励次数"))}
+    </div>`;
+  // ---- ④ 杂项：各段键按值类型渲染（bool→checkbox / string→text / number→number /
+  //         其他→JSON 文本），键名沿用 ok-nte 原生；键集合=config 键 ∪ 覆盖键 ----
+  const miscField=(sec,key,val)=>{
+    const attrs=`data-psec="${esc(sec)}" data-pkey="${esc(key)}"`;
+    if(typeof val==="boolean")
+      return `<label class="plan-check"><input type="checkbox" ${attrs} ${val?"checked":""}> ${esc(key)}</label>`;
+    if(typeof val==="number")
+      return `<label class="plan-kv">${esc(key)}<input type="number" step="any" ${attrs} value="${esc(String(val))}"></label>`;
+    if(typeof val==="string")
+      return `<label class="plan-kv">${esc(key)}<input type="text" ${attrs} value="${esc(val)}"></label>`;
+    return `<label class="plan-kv">${esc(key)}<input type="text" ${attrs} class="plan-json" value="${esc(JSON.stringify(val))}" title="复杂值以 JSON 文本编辑"></label>`;
+  };
+  const miscHtml=["coffee","cinema_date","fountain","furniture","store_purchase","gift"].map(sec=>{
+    const cur=misc[sec]||{}, ovp=mOv[sec]||{};
+    const keys=[...new Set([...Object.keys(cur),...Object.keys(ovp)])];
+    return `<div class="plan-sec"><span class="plan-sec-name">${esc(sec)}${PLAN_ROUTINE_LABELS[sec]?` · ${esc(PLAN_ROUTINE_LABELS[sec])}`:""}</span>${
+      keys.length?keys.map(k=>miscField(sec,k,pick(cur[k],ovp,k))).join("")
+        :`<span class="muted">该段配置为空，暂无可编辑项</span>`}</div>`;
+  }).join("");
+  host.innerHTML=`
+    ${group("① 日常任务",ovCount(riOv),`<div class="plan-checks">${riHtml}</div>`)}
+    ${group("② 空幕刷取计划",ovCount(dOv),dailyHtml)}
+    ${group("③ 异象追猎",ovCount(hOv),hunterHtml)}
+    ${group("④ 杂项（参考 ok-nte 原生选项）",Object.keys(mOv).reduce((s,k)=>s+ovCount(mOv[k]),0),miscHtml)}
+    <div class="row" style="margin-top:14px;justify-content:flex-end">
+      <span class="muted grow plan-saved"></span>
+      <button class="btn" data-plan-save>💾 保存计划</button>
+    </div>
+    <div class="muted" style="margin-top:6px">覆盖文件：${esc(tree.overrides_path||"data/oknte_plan.json")}${(tree.warnings||[]).length?` · 警告：${esc(tree.warnings.join("；"))}`:""}</div>`;
+  // 具体奖励目标仅「经验与甲硬币」时显示（ask 口径；隐藏时不提交该键）
+  const ttSel=host.querySelector("[data-ptask]"), goalRow=host.querySelector("[data-goal-row]");
+  const syncGoal=()=>{ goalRow.style.display=ttSel.value==="经验与甲硬币"?"":"none"; };
+  ttSel.onchange=syncGoal; syncGoal();
+  // 循环序列全选/清空/按缺口生成三钮（选项集为空时无该钮，判空防 TypeError）
+  const seqAllBtn=host.querySelector("[data-seqall]"), seqNoneBtn=host.querySelector("[data-seqnone]"),
+        seqGapBtn=host.querySelector("[data-seqgap]");
+  const seqBoxes=()=>host.querySelectorAll("[data-pseq]");
+  if(seqAllBtn) seqAllBtn.onclick=()=>seqBoxes().forEach(c=>c.checked=true);
+  if(seqNoneBtn) seqNoneBtn.onclick=()=>seqBoxes().forEach(c=>c.checked=false);
+  if(seqGapBtn) seqGapBtn.onclick=()=>seqBoxes().forEach(c=>{ c.checked=gapEntries.has(c.dataset.pseq); });
+  /* 数字输入读取：空串→null（=不覆盖该键）；非有限数如实报错不静默 */
+  const readNum=(sel,label)=>{
+    const el=host.querySelector(sel), s=String(el.value).trim();
+    if(s==="") return null;
+    const v=Number(s);
+    if(!Number.isFinite(v)) throw new Error(`『${label}』不是有效数字（当前输入「${s}」）`);
+    return v;
+  };
+  /* 收集全量覆盖体（routine_items/daily_anomaly/hunter/misc 四段；plan_targets
+     本编辑器不涉及）。循环模式永不写入（后端白名单拒绝，规划器强制「停用」）。 */
+  const collectPlanBody=()=>{
+    const body={routine_items:{},daily_anomaly:{},hunter:{},misc:{}};
+    host.querySelectorAll("[data-pri]").forEach(c=>{ body.routine_items[c.dataset.pri]=c.checked; });
+    body.daily_anomaly["任务类型"]=ttSel.value;
+    if(ttSel.value==="经验与甲硬币")
+      body.daily_anomaly["具体奖励目标"]=host.querySelector("[data-pgoal]").value;
+    const intKeys=["异能材料序号","弧盘材料序号","空幕序号"];
+    intKeys.forEach((k,i)=>{
+      const v=readNum(`[data-pnum="${i}"]`,k);
+      if(v==null) return;
+      if(!Number.isInteger(v)) throw new Error(`daily_anomaly『${k}』必须是整数（当前 ${v}）`);
+      body.daily_anomaly[k]=v;
+    });
+    const stam=readNum("[data-pstam]","目标消耗体力");
+    if(stam!=null){
+      if(!Number.isInteger(stam)||stam<0) throw new Error(`daily_anomaly『目标消耗体力』必须是非负整数（当前 ${stam}）`);
+      body.daily_anomaly["目标消耗体力"]=stam;
+    }
+    // 具名多选：按 cycle_options 全集顺序收集勾选项（value=entry 与 ok-nte 同格式）
+    body.daily_anomaly["循环序列"]=[...seqBoxes()].filter(c=>c.checked).map(c=>c.dataset.pseq);
+    const hb=host.querySelector("[data-phboss]");
+    if(hb.value) body.hunter["追猎目标"]=hb.value;
+    const hc=readNum("[data-phcount]","领取奖励次数");
+    if(hc!=null){
+      if(!Number.isInteger(hc)||hc<0) throw new Error(`hunter『领取奖励次数』必须是非负整数（当前 ${hc}）`);
+      body.hunter["领取奖励次数"]=hc;
+    }
+    host.querySelectorAll("[data-psec]").forEach(el=>{
+      const sec=el.dataset.psec, key=el.dataset.pkey;
+      let v;
+      if(el.type==="checkbox") v=el.checked;
+      else if(el.type==="number"){
+        const s=String(el.value).trim(); if(s==="") return;
+        v=Number(s); if(!Number.isFinite(v)) throw new Error(`misc『${sec}.${key}』不是有效数字`);
+      }else if(el.classList.contains("plan-json")){
+        try{ v=JSON.parse(el.value); }
+        catch(_){ throw new Error(`misc『${sec}.${key}』不是合法 JSON 文本`); }
+      }else v=el.value;
+      (body.misc[sec]||(body.misc[sec]={}))[key]=v;
+    });
+    return body;
+  };
+  // [保存计划]：POST 全量覆盖体 → toast + restarts 提示（口径沿用 _plan_options：
+  // ok-nte 运行中=1 无头任务 busy 等待其完全退出后生效，否则 0 独立配置副本每步
+  // 拉起重读即生效——BOOT.oknte_running 为页载快照，与侧栏「ok-nte 运行中」标签同源）
+  const saved=host.querySelector(".plan-saved");
+  host.querySelector("[data-plan-save]").onclick=async ev=>{
+    const btn=ev.currentTarget; btn.disabled=true;
+    try{
+      const r=await api("/api/oknte/plan", collectPlanBody(), 30000);
+      const restarts=BOOT.oknte_running?1:0;
+      toast("已保存，下次执行生效");
+      saved.innerHTML=`<div class="banner ${restarts?"warn":"info"}" style="margin:0">已写入 <code>${esc(r.saved_path||"data/oknte_plan.json")}</code> · 需重启 ok-nte：${restarts} 次${restarts
+        ?"（ok-nte 正在运行：无头任务会等待其完全退出后再写配置副本，随后生效）"
+        :"（headless 独立配置副本每步拉起重读，下次执行即生效）"}</div>`;
+    }catch(e){ toast("操作失败："+e.message,"err"); }
+    finally{ btn.disabled=false; }
+  };
+}
 function stateShort(run){
   const map={idle:"空闲",running:"运行中",stopping:"停止中",waiting:"等待中",done:"已完成",stopped:"已停止",error:"出错",interrupted:"已中断"};
   const mode = run.mode==="hunter"?"【追猎】":run.mode==="daily"?"【日常】":"";
@@ -560,6 +1112,10 @@ async function refreshStatus(){
     const sp=$("#statePill"); if(sp){sp.className=statePillClass(run);sp.textContent=stateShort(run);}
     const el=$("#runState"); if(el) el.textContent = run.message && run.state!=="waiting" ? run.message : "";
     const w=$("#waitInfo"); if(w) w.innerHTML = waitInfoText(run);
+    // 游戏窗口不可见常驻横幅（复审 #7a：runner 的 window_warning 此前无前端消费者，
+    // 只能靠「最新日志」瞬时渠道；这里 2s 轮询常驻展示，恢复可见后端清空字段即消失）
+    const ww=$("#windowWarn");
+    if(ww) ww.innerHTML = run.window_warning ? `<div class="banner warn">⚠ ${esc(run.window_warning)}</div>` : "";
     const b1=$("#btnStart"),bh=$("#btnStartHunter"),b2=$("#btnStop");
     const active = run.state==="running"||run.state==="waiting";
     if(b1) b1.disabled = active;
@@ -619,11 +1175,30 @@ async function renderChars(){
     <div class="card"><div class="row" style="justify-content:space-between">
       <h3 style="margin:0">角色列表<span class="h-sub">列表顺序 = 补齐优先级，从上到下；异能系与弧盘可在此直接选择，空幕在专属页维护</span></h3>
       <div class="row" style="gap:8px">
-        <button class="btn sec mini" id="btnLvlOcr">📷 识别等级（实验）</button>
         <button class="btn" id="addChar">＋ 新建角色</button>
       </div>
     </div></div>
-    <div id="lvlPreview"></div>
+    <div class="card"><h3>塔吉多同步<span class="h-sub">手动触发（绝不自动/定时）：官方社区 App「塔吉多」的个人角色数据通道，直连官方 API、凭证只存本机（data/tajiduo_token.json，不入库不上传）。材料库存等该通道没有的数据如实标注「塔吉多无此数据」</span></h3>
+      <div id="tjdStatus" class="muted">加载中…</div>
+      <div id="tjdBindBox" style="display:none;margin-top:8px">
+        <div class="row" style="flex-wrap:wrap;gap:8px">
+          <input id="tjdPhone" placeholder="手机号（大陆 11 位）" style="width:180px" maxlength="11" autocomplete="off">
+          <button class="btn sec mini" id="tjdSend" disabled>发送验证码</button>
+          <input id="tjdCaptcha" placeholder="短信验证码" style="width:110px" maxlength="8" autocomplete="off">
+          <button class="btn mini" id="tjdBind" disabled>绑定</button>
+        </div>
+        <div class="muted" style="margin-top:4px">绑定 = 手机号+验证码登录官方社区账号 → 换取本机会话凭证；验证码发送有约 2 分钟冷却。令牌仅存本机文件，删除 data/tajiduo_token.json 即解绑。</div>
+      </div>
+      <div class="row" style="margin-top:8px;flex-wrap:wrap;gap:8px">
+        <button class="btn sec mini" id="tjdSync">🔄 拉取角色面板（仅预览，不写数据）</button>
+        <button class="btn sec mini" id="tjdGacha">🎴 抽卡分析</button>
+        <button class="btn sec mini" id="tjdLogout" style="display:none">登出</button>
+      </div>
+      <!-- 排版修复（2026-11-08 审计）：.banner{display:flex} 无 wrap，同步预览的多行
+           角色卡片会被压成横排。此容器内容是纵向卡片流，覆写为 column + stretch（保住
+           info 描边观感）；display 仍由 JS 在 none/""（回落类样式 flex）间切换不受影响 -->
+      <div class="banner info" id="tjdResult" style="display:none;flex-direction:column;align-items:stretch;margin-top:8px"></div>
+    </div>
     <div id="charList"></div>
     <details id="parkedBox" style="margin-top:10px">
       <summary class="muted" id="parkedSummary" style="cursor:pointer">不想练（0）</summary>
@@ -708,149 +1283,9 @@ async function renderChars(){
     const names=chars.map(x=>x.name);
     if(new Set(names).size!==names.length){
       toast("存在重名角色（互斥录入），请修正后再保存","err");return;}
-    try{ const r=await api("/api/characters",{characters:chars});
+    try{ const r=await api("/api/characters",{characters:chars,base_rev:BOOT.rev||0});
       BOOT.state.characters=r.characters||chars;  // 用服务器消毒后的数据回填，避免与重启后不一致
       toast(`已保存 ${chars.length} 个角色`); renderChars(); }catch(e){alertErr(e);}
-  };
-  $("#btnLvlOcr").onclick = async ()=>{
-    // 角色等级 OCR v2（2026-11-04 真实 UI 遍历）：逐个点头像 → 信息页（名字+Lv）→
-    // "异能"页（四技能 N/10 + 都市特技 N/5、N/2）；预览确认后分项应用
-    const btn=$("#btnLvlOcr");
-    if(OCR_LVL_RUN){ OCR_LVL_RUN.ctl.abort(); return; }  // 识别中再次点击=取消等待并尽力叫停后端
-    const old=btn.textContent;
-    // 真机 7 头像 × 每头像 2 次 OCR 在远程会话下超过 120s：等待上限放宽到 300s，
-    // 并记录 AbortController（OCR_LVL_RUN）——超时/再次点击都会 abort，
-    // catch 里 ocrFireCancel() 发后即忘叫停后端遍历
-    btn.textContent="识别中…（逐个点头像约 2-3 分钟，请勿操作游戏）";
-    const prev=$("#lvlPreview"); prev.innerHTML='<div class="muted">识别中…（再点上方按钮可取消）</div>';
-    const ctl=new AbortController(); OCR_LVL_RUN={ctl,timedOut:false};
-    const lvlTo=setTimeout(()=>{ if(OCR_LVL_RUN){ OCR_LVL_RUN.timedOut=true; ctl.abort(); } },300000);
-    try{
-      const res=await fetch("/api/characters/ocr",{method:"POST",headers:{"Content-Type":"application/json"},
-        body:"{}",signal:ctl.signal});
-      const r=await res.json();
-      if(!res.ok) throw new Error(r.error||res.status);
-      const rows=(r.characters||[]);
-      const findCard=name=>[...document.querySelectorAll(".char")].find(e=>e.querySelector(".c-name")?.value===name);
-      const SK=["normal","variable","orbit","assist"], SKN={normal:"普攻",variable:"变轨",orbit:"极轨",assist:"援护"};
-      // 未识别/未导入行的手动映射下拉：本系统角色名单（.c-name 与 state.characters
-      // 同源，findCard 可命中）+（跳过）；选择后该行 name 替换为所选角色，四个应用按钮照常生效
-      const charOpts=(BOOT.state.characters||[]).map(c=>`<option value="${esc(c.name)}">${esc(c.name)}</option>`).join("");
-      prev.innerHTML=`<div class="card"><h3>等级识别结果<span class="h-sub">${esc(r.window||"")} · 识别 ${rows.length} 名角色${(r.warnings||[]).length?` · ${(r.warnings||[]).map(esc).join("；")}`:""}</span></h3>
-        ${rows.length?`<table><tr><th>角色名</th><th>等级</th><th>普攻</th><th>变轨</th><th>极轨</th><th>援护</th><th>特技①</th><th>特技②</th><th>弧盘</th><th>弧盘等级</th><th>本系统</th></tr>
-        ${rows.map((x,ri)=>{const has=x.name&&!!findCard(x.name);
-          return `<tr><td><b data-lname="${ri}">${esc(x.name||"（未识别）")}</b>${
-            has?"":`<div style="margin-top:4px"><select data-lmap="${ri}" style="max-width:140px" title="OCR 名字未匹配到本系统角色：手动指定后，本行的四个应用按钮按所选角色生效">
-              <option value="">（跳过）</option>${charOpts}</select></div>`}</td>
-          <td class="num">${x.level??"—"}</td><td class="num">${x.normal??"—"}</td><td class="num">${x.variable??"—"}</td>
-          <td class="num">${x.orbit??"—"}</td><td class="num">${x.assist??"—"}</td>
-          <td class="num">${x.talent1??"—"}</td><td class="num">${x.talent2??"—"}</td>
-          <td><b data-arcaname="${ri}" ${x.arc_name?"":"class='muted'"}>${esc(x.arc_name||"（未识别）")}</b>${
-            x.arc_name?"":`<div style="margin-top:4px"><select data-arcmap="${ri}" style="max-width:170px" title="OCR 未识别到已知弧盘实名：手动指定后「应用弧盘」按所选弧盘生效">
-              <option value="">（跳过）</option>${Object.keys(weaponMeta).map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join("")}</select></div>`}</td>
-          <td class="num">${x.arc_level??"—"}</td>
-          <td data-lstat="${ri}">${has?"<span class='tag ok'>已在列表</span>":`<span class='tag warn'>未识别/未导入</span>`}</td></tr>`;}).join("")}</table>
-        <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:8px">
-          <button class="btn" id="lvlApplyLv">应用等级 → 角色等级·当前</button>
-          <button class="btn" id="lvlApplySk">应用四技能 → 各技能·当前</button>
-          <button class="btn" id="lvlApplyTl">应用特技 → 都市特技等级</button>
-          <button class="btn" id="lvlApplyArc">应用弧盘 → 弧盘绑定+等级</button>
-          <button class="btn sec" id="lvlDismiss">放弃</button>
-          <span class="muted">应用后仍需点「保存角色」落库；未识别名字/弧盘的行先用下拉指定（或跳过）再应用</span></div>`
-        :`<div class="muted">未识别到角色（确认游戏停留在角色「信息」页且头像列可见）${(r.unmatched_lines||[]).length?`：${(r.unmatched_lines||[]).slice(0,8).map(esc).join(" / ")}`:""}</div>`}
-      </div>`;
-      const applyLv=$("#lvlApplyLv"), applySk=$("#lvlApplySk"), applyTl=$("#lvlApplyTl"),
-            applyArc=$("#lvlApplyArc");
-      // 手动映射：把该行 name 替换为所选角色（（跳过）= 置空，应用逻辑按 !x.name 天然跳过），
-      // 四个应用按钮沿用 findCard(x.name) 的现有逻辑，无需改动
-      prev.querySelectorAll("[data-lmap]").forEach(sel=>sel.onchange=()=>{
-        const i=+sel.dataset.lmap, x=rows[i]; if(!x) return;
-        const tr=sel.closest("tr"), orig=x.name;   // OCR 原文（可能误读），跳过时保留展示
-        x.name=sel.value||null;
-        const b=tr.querySelector(`[data-lname="${i}"]`);
-        if(b) b.textContent=x.name||(orig?`${orig}（已跳过）`:"（未识别）");
-        const stat=tr.querySelector(`[data-lstat="${i}"]`);
-        if(stat) stat.innerHTML=(x.name&&findCard(x.name))?"<span class='tag ok'>已在列表</span>":"<span class='tag warn'>未识别/未导入</span>";
-      });
-      // 弧盘手动映射：把该行 arc_weapon 替换为所选弧盘实名（（跳过）= 置空），
-      // 「应用弧盘」按 arc_weapon||arc_name 读取
-      prev.querySelectorAll("[data-arcmap]").forEach(sel=>sel.onchange=()=>{
-        const i=+sel.dataset.arcmap, x=rows[i]; if(!x) return;
-        x.arc_weapon=sel.value||null;
-        const b=sel.closest("tr").querySelector(`[data-arcaname="${i}"]`);
-        if(b){ b.textContent=x.arc_weapon||"（未识别）"; b.classList.toggle("muted", !x.arc_weapon); }
-      });
-      if(applyLv) applyLv.onclick=()=>{
-        let hits=0;
-        rows.forEach(x=>{ if(x.level==null||!x.name) return;
-          const card=findCard(x.name); if(!card) return;
-          const inp=card.querySelector('[data-track="char_level"][data-tk="cur"]');
-          if(inp && String(inp.value)!==String(x.level)){ inp.value=x.level; inp.style.borderColor="var(--warn)"; hits++; }});
-        toast(hits?`已预填 ${hits} 个角色等级（黄色边框），请核对后保存`:"数值无变化");
-      };
-      if(applySk) applySk.onclick=()=>{
-        let hits=0;
-        rows.forEach(x=>{ if(!x.name) return;
-          const card=findCard(x.name); if(!card) return;
-          SK.forEach(k=>{ if(x[k]==null) return;
-            const inp=card.querySelector(`.c-skill[data-skill='${k}'][data-tk='cur']`);
-            if(inp && String(inp.value)!==String(x[k])){ inp.value=x[k]; inp.style.borderColor="var(--warn)"; hits++; }});
-        });
-        toast(hits?`已预填 ${hits} 项技能当前等级（黄色边框），请核对后保存`:"数值无变化");
-      };
-      if(applyTl) applyTl.onclick=()=>{
-        let hits=0;
-        rows.forEach(x=>{ if(!x.name) return;
-          const card=findCard(x.name); if(!card) return;
-          const lv=[x.talent1, x.talent2];   // 槽位上限按游戏实测：①上限 5、②上限 2
-          lv.forEach((v,i)=>{ if(v==null) return;
-            const inp=card.querySelector(`.c-ct-lv[data-ct='${i}']`);
-            const capped=Math.min(v, i===0?5:2);
-            if(inp && String(inp.value)!==String(capped)){ inp.value=capped; inp.style.borderColor="var(--warn)"; hits++; }});
-        });
-        toast(hits?`已预填 ${hits} 项都市特技等级（黄色边框），请核对后保存`:"数值无变化");
-      };
-      if(applyArc) applyArc.onclick=()=>{
-        let hits=0;
-        rows.forEach(x=>{
-          const arcName=x.arc_weapon||x.arc_name;   // 手动映射优先，OCR 实名兜底
-          if(!arcName||!x.name) return;
-          const card=findCard(x.name); if(!card) return;
-          const sel=card.querySelector(".c-weapon");
-          if(sel){
-            // 弧盘下拉按物态适配过滤，OCR 实名可能不在选项里：缺则补一项，防静默丢值
-            if(![...sel.options].some(o=>o.value===arcName)){
-              const o=document.createElement("option"); o.value=arcName;
-              o.textContent=arcName+"（OCR 指定·不在适配列）"; sel.appendChild(o);
-            }
-            if(sel.value!==arcName){ sel.value=arcName; hits++; }
-            // 程序赋值不触发 change：chip 手动同步（与 .c-weapon onchange 同口径）
-            const chip=card.querySelector(".arc-chip");
-            if(chip) chip.textContent="弧盘："+arcName;
-          }
-          if(x.arc_level!=null){
-            const inp=card.querySelector('[data-track="arc_level"][data-tk="cur"]');
-            if(inp && String(inp.value)!==String(x.arc_level)){
-              inp.value=x.arc_level; inp.style.borderColor="var(--warn)"; hits++; }
-          }
-        });
-        toast(hits?`已预填 ${hits} 项弧盘绑定/等级（黄色边框），请核对后保存`:"数值无变化");
-      };
-      const dis=$("#lvlDismiss");
-      // 放弃：尽力叫停后端遍历（此时请求多已自然结束，调用是无副作用的兜底）
-      if(dis) dis.onclick=()=>{ ocrFireCancel(); prev.innerHTML=""; };
-    }catch(e){
-      prev.innerHTML="";
-      if(e&&e.name==="AbortError"){
-        // 超时/用户取消：发后即忘叫停后端逐格遍历（当前头像点完即停，不再继续）
-        ocrFireCancel();
-        toast(OCR_LVL_RUN&&OCR_LVL_RUN.timedOut
-          ?"识别超时——后端已停止：请降低头像数或稍后再试"
-          :"已取消识别——后端已停止：请降低头像数或稍后再试","err");
-      }
-      else alertErr(e);
-    }
-    finally{ clearTimeout(lvlTo); OCR_LVL_RUN=null; btn.textContent=old; }
   };
   $("#btnImportLibs").onclick = async ()=>{
     if(!(await qConfirm("把游戏目录中的全部角色与弧盘合并进角色库/武器库？（自定义名字保留，不覆盖）")))return;
@@ -877,19 +1312,455 @@ async function renderChars(){
       toast(`已导入「${c.name}」。`+(low.length?` 注意：${low.join("；")}`:"全部字段高/中置信。"), low.length?"err":"ok");
     }catch(e){alertErr(e);}
   };
+  // 塔吉多手动同步（预览→应用；令牌只存本机，前端只见脱敏摘要）——卡片自设置页移入角色页
+  let TJD_ROWS=[];
+  const tjdStatus=async()=>{
+    try{
+      const fr=await fetch("/api/tajiduo/status",{headers:AUTH_HEADERS});
+      const s=await fr.json().catch(()=>({}));
+      const nf=notFoundHint(fr,s);
+      if(nf){  // 旧版后端进程：明确提示重启，不落入「未绑定」分支误导用户重新绑定
+        $("#tjdStatus").innerHTML=`<span class='tag warn'>面板版本过旧</span> <span class="muted">${esc(nf)}</span>`;
+        return;
+      }
+      if(s.bound){ $("#tjdStatus").innerHTML=`<span class='tag ok'>已绑定</span> <span class="muted">绑定于 ${esc(s.bound_at||"—")} · 账号 ${esc(s.uid||"—")}${s.phone_masked?` · 手机号 ${esc(s.phone_masked)}`:""}</span>`; $("#tjdBindBox").style.display="none"; $("#tjdLogout").style.display=""; }
+      else{ $("#tjdStatus").innerHTML=`<span class='tag warn'>未绑定</span> <span class="muted">手机号+短信验证码绑定官方社区账号后可同步</span>`; $("#tjdBindBox").style.display=""; $("#tjdLogout").style.display="none"; }
+      // 手机号记忆：绑定表单预填脱敏 mask（完整号码只存本机凭证文件，绝不同传）。
+      // mask 进 placeholder 而非 value——mask 不是可提交的合法手机号，进 value 会
+      // 诱导「直接点发码」被 400 拒；验证码仍每次手动获取（用户约束不变）
+      $("#tjdPhone").placeholder = s.phone_masked ? `手机号（上次绑定：${s.phone_masked}）` : "手机号";
+    }catch(e){ $("#tjdStatus").innerHTML=`<span class='tag warn'>绑定状态读取失败</span>`; }
+  };
+  tjdStatus();
+  // 手机号记忆（只取脱敏 mask，不重绘状态条）：401 重绑展开表单时也用得上——
+  // 凭证文件存在时 status 仍报「已绑定」，直接调 tjdStatus() 会盖掉「登录已过期」
+  // 提示并收起重绑表单，故此处只回填 placeholder；验证码仍每次手动获取
+  const tjdPhoneMask=async()=>{
+    try{
+      const s=await (await fetch("/api/tajiduo/status",{headers:AUTH_HEADERS})).json().catch(()=>({}));
+      $("#tjdPhone").placeholder = s.phone_masked ? `手机号（上次绑定：${s.phone_masked}）` : "手机号";
+    }catch(e){/* 状态读取失败不阻塞绑定流程 */}
+  };
+  $("#tjdPhone").oninput=()=>{$("#tjdSend").disabled=!/^\d{11}$/.test($("#tjdPhone").value.trim());};
+  $("#tjdCaptcha").oninput=()=>{$("#tjdBind").disabled=!$("#tjdCaptcha").value.trim();};
+  $("#tjdSend").onclick=async()=>{
+    const btn=$("#tjdSend"); btn.disabled=true;
+    try{
+      await api("/api/tajiduo/send-captcha",{phone:$("#tjdPhone").value.trim()});
+      toast("验证码已发送（同号约 2 分钟冷却）");
+      let n=120; const t=setInterval(()=>{ if(!btn.isConnected){clearInterval(t);return;}
+        if(n<=0){clearInterval(t);btn.textContent="发送验证码";btn.disabled=!$("#tjdPhone").value.trim();return;}
+        n--; btn.textContent=`重发（${n}s）`; },1000);
+    }catch(e){alertErr(e);btn.disabled=false;}
+  };
+  $("#tjdBind").onclick=async()=>{
+    try{
+      const r=await api("/api/tajiduo/bind",{phone:$("#tjdPhone").value.trim(),captcha:$("#tjdCaptcha").value.trim()},30000);
+      toast(`已绑定（账号 ${r.uid||"—"}）`); $("#tjdCaptcha").value=""; tjdStatus();
+    }catch(e){alertErr(e);}
+  };
+  // 登出（已绑定时显示；手动）：删本机凭证 → 状态复位未绑定 + 清空绑定表单与预览
+  $("#tjdLogout").onclick=async()=>{
+    try{
+      await api("/api/tajiduo/logout",{});
+      TJD_ROWS=[]; $("#tjdResult").style.display="none";  // 同「放弃」：清预览
+      $("#tjdPhone").value=""; $("#tjdCaptcha").value="";
+      $("#tjdSend").disabled=true; $("#tjdBind").disabled=true;
+      toast("已登出塔吉多账号（本机凭证已删除，抽卡本地累积记录保留）");
+      tjdStatus();  // 复位为未绑定态（重新显示绑定表单）
+    }catch(e){alertErr(e);}
+  };
+  const tjdFmt=(cur,nw)=>`${cur??"—"} → ${nw??"—"}`;
+  $("#tjdSync").onclick=async()=>{
+    const btn=$("#tjdSync"); const box=$("#tjdResult");
+    if(TJD_ROWS.length){ TJD_ROWS=[]; box.style.display="none"; return; }  // 再点=放弃预览
+    btn.disabled=true; btn.textContent="同步中…（拉取角色面板约 5~30 秒）";
+    try{
+      const fr=await fetch("/api/tajiduo/sync",{method:"POST",headers:{...AUTH_HEADERS,"Content-Type":"application/json"},body:"{}",signal:AbortSignal.timeout(120000)});
+      const d=await fr.json();
+      if(!fr.ok){
+        // 401/needs_rebind（照抄抽卡页 sync-gacha 的重绑引导模式）：凭证失效 →
+        // 状态条改「登录已过期」+ 就地展开手机号+验证码绑定表单（本页即可重绑）。
+        // panel_auth 守卫（SEC-05）：面板令牌失败绝不能误渲染成塔吉多重绑表单，
+        // 落到下方 toast 通用报错分支（401 文案自带「请刷新页面」指引）
+        if(!d.panel_auth && (fr.status===401 || d.needs_rebind)){
+          $("#tjdStatus").innerHTML=`<span class='tag warn'>登录已过期</span> <span class="muted">${esc(d.error||"请重新绑定塔吉多账号后再同步")}</span>`;
+          $("#tjdBindBox").style.display="";
+          tjdPhoneMask();  // 只回填脱敏手机号 placeholder（手机号记忆），不重绘状态条
+        }
+        toast(notFoundHint(fr,d)||d.error||"同步失败","err"); return;
+      }
+      TJD_ROWS=(d.rows||[]).map(x=>({...x, target:x.matched_name||null, arc_weapon:x.arc?.matched_name||null}));
+      const home=d.role_home, warn=(d.warnings||[]).map(esc).join("；");
+      const charOpts=(BOOT.state.characters||[]).map(c=>`<option value="${esc(c.name)}">${esc(c.name)}</option>`).join("");
+      const arcOpts=(d.weapon_options||[]).map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join("");  // 与 apply 校验同源
+      box.innerHTML=`<div style="font-weight:600;margin-bottom:4px">同步预览 <span class="muted" style="font-weight:400">${esc(d.synced_at)} · ${TJD_ROWS.length} 名角色${home?` · 面板等级 ${home.lev??"—"} · 世界等级 ${home.worldlevel??"—"} · 成就 ${home.achievement??"—"}/${home.achievement_total??"—"} · 已获角色 ${home.charid_cnt??"—"}`:""}${warn?` · ${warn}`:""}</span></div>
+        ${TJD_ROWS.length?TJD_ROWS.map((x,ri)=>{
+          // 每角色一张多行卡片（替代原 11 列单行表格）：行头=角色名+匹配态+手动映射下拉，
+          // 字段按「基础/四技能/弧盘/卡带」分组分行，保证每类字段一眼可读（诊断 item4）
+          const has=!!x.target;
+          const sk=k=>esc(tjdFmt(x.cur_skills?.[k], x.skills?.[k]));
+          const cas=x.cassette||{};
+          // 卡带：套装/主属性可应用（对比 cur→new，同等级/技能行口径）；词条仅展示
+          const curCas=x.cur_cassette||{};
+          const casTxt=(cas.set||cas.main)
+            ? [cas.set?`套装 ${esc(tjdFmt(curCas.set,cas.set))}`:"",
+               cas.main?`主属性 ${esc(tjdFmt(curCas.main,cas.main))}`:"",
+               (cas.affixes&&cas.affixes.length)?`词条 ${esc(cas.affixes.join("、"))}（仅展示，不落库）`:""]
+              .filter(Boolean).join(" · ")
+            : "塔吉多无此数据";
+          // 弧盘未映射提示（诊断 item7）：等级仍会照常写入（与实名解耦，见 apply 组装），
+          // 只有武器绑定不变更——警示但不误导「等级将被跳过」
+          const arcNote=(x.arc?.level!=null&&!x.arc_weapon)
+            ?`<span class="tag warn" data-arcnote="${ri}" title="弧盘实名未映射：等级会照常写入「弧盘等级」轨道（目标≥当前），仅武器绑定不变更">未映射</span>`
+            :`<span data-arcnote="${ri}"></span>`;
+          return `<div class="card" style="margin-bottom:8px">
+          <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center">
+            <b>${esc(x.name||"（无名）")}</b>
+            <span data-tstatus="${ri}">${has?"<span class='tag ok'>匹配</span>":"<span class='tag warn' title='未匹配实名：先在右侧下拉指定目标角色，或选（跳过）放弃该行'>未匹配</span>"}</span>
+            ${has?"":`<select data-tmap="${ri}" style="max-width:150px"><option value="">（跳过）</option>${charOpts}</select>`}
+          </div>
+          <div class="row" style="gap:16px;flex-wrap:wrap;margin-top:6px">
+            <span class="muted" style="width:52px">基础</span>
+            <span class="num">等级 ${esc(tjdFmt(x.cur_level,x.level))}</span>
+            <span class="num">觉醒 ${esc(tjdFmt(x.cur_awakening,x.awakening))}</span>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(2,minmax(170px,1fr));gap:4px 20px;margin-top:6px">
+            <span class="num"><span class="muted">四技能</span> 普攻 ${sk("normal")}</span>
+            <span class="num">变轨 ${sk("variable")}</span>
+            <span class="num">极轨 ${sk("orbit")}</span>
+            <span class="num">援护 ${sk("assist")}${x.skills_inferred?' <span class="tag warn" title="技能名与 type 均无法判别，按面板列表顺序推断归属（推断，待真实 payload 核对）">顺序推断</span>':""}</span>
+          </div>
+          <div class="row" style="gap:16px;flex-wrap:wrap;margin-top:6px">
+            <span class="muted" style="width:52px">弧盘</span>
+            <span>${x.arc?.name?esc(x.arc.name):"（无）"}${x.arc?.name&&!x.arc.matched_name?` <select data-tarcmap="${ri}" style="max-width:170px"><option value="">（跳过）</option>${arcOpts}</select>`:""}</span>
+            <span class="num">等级 ${x.arc?.level!=null?esc(tjdFmt(x.arc.cur_level,x.arc.level)):"—"}</span>
+            ${arcNote}
+          </div>
+          <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:6px">
+            <span class="muted" style="width:52px">卡带</span><span>${esc(casTxt)}</span>
+          </div>
+        </div>`;}).join("")
+        :`<div class="muted">未取到角色面板数据${warn?"："+warn:""}</div>`}
+        <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:8px">
+          <button class="btn" id="tjdApply">应用 → 写入角色（等级/四技能/觉醒/弧盘/卡带套装·主属性）</button>
+          <button class="btn sec" id="tjdDismiss">放弃</button>
+        </div>
+        <div class="muted" style="margin-top:6px">应用后直接落库（与 OCR 预填不同，无需再点「保存角色」）；未匹配实名/弧盘的行先在下拉里指定目标（或跳过）再应用。塔吉多通道无此数据（不编造、不改动）：${(d.no_data||[]).map(esc).join("、")}。</div>`;
+      box.style.display="";
+      box.querySelectorAll("[data-tmap]").forEach(sel=>sel.onchange=()=>{
+        const x=TJD_ROWS[+sel.dataset.tmap]; if(!x) return;
+        x.target=sel.value||null;   // 弧盘映射独立保留（弧盘下拉仍是唯一事实来源）
+        const st=box.querySelector(`[data-tstatus="${sel.dataset.tmap}"]`);  // 行头匹配态 tag
+        if(st) st.innerHTML=x.target?"<span class='tag ok'>匹配</span>":"<span class='tag warn' title='未匹配实名：先在右侧下拉指定目标角色，或选（跳过）放弃该行'>未匹配</span>";
+      });
+      box.querySelectorAll("[data-tarcmap]").forEach(sel=>sel.onchange=()=>{
+        const x=TJD_ROWS[+sel.dataset.tarcmap]; if(!x) return;
+        x.arc_weapon=sel.value||null;
+        const note=box.querySelector(`[data-arcnote="${sel.dataset.tarcmap}"]`);  // 映射态变化同步提示
+        if(note) note.innerHTML=(x.arc?.level!=null&&!x.arc_weapon)
+          ?`<span class="tag warn" title="弧盘实名未映射：等级会照常写入「弧盘等级」轨道（目标≥当前），仅武器绑定不变更">未映射</span>`:"";
+      });
+      const dismiss=box.querySelector("#tjdDismiss");
+      if(dismiss) dismiss.onclick=()=>{ TJD_ROWS=[]; box.style.display="none"; };
+      const apply=box.querySelector("#tjdApply");
+      if(apply) apply.onclick=async()=>{
+        // 弧盘实名只控制 weapon 绑定；弧盘等级是角色级轨道 tracks.arc_level，与实名
+        // 解耦发送（后端支持无 arc_weapon 时单独写，selftest 已覆盖）——此前把
+        // arc_level 门控在 arc_weapon 上，弧盘未映射时等级被静默丢弃（诊断 item2）
+        const rows=TJD_ROWS.filter(x=>x.target).map(x=>({
+          target:x.target, level:x.level, awakening:x.awakening, skills:x.skills||{},
+          arc_weapon:x.arc_weapon||null, arc_level:(x.arc?.level!=null)?x.arc.level:null,
+          cassette:{set:x.cassette?.set||null, main:x.cassette?.main||null}}));
+        if(!rows.length){ toast("没有可应用的行（先手动指定目标或跳过）","err"); return; }
+        try{
+          const r=await api("/api/tajiduo/apply",{rows});
+          BOOT.state.characters=r.characters||BOOT.state.characters;
+          TJD_ROWS=[]; box.style.display="none";
+          // 应用成功即重渲染角色页（与「保存角色」「导入」流程同模式）：输入框与培养
+          // 进度立即显示新值，也堵住「接着点保存角色」把旧 DOM 值整行写回的路径
+          renderChars();
+          // 明细 toast（toast 走 textContent，不再 esc）：含「等级目标→X」「弧盘目标→X」
+          // 等 tgt 联动条目，实机可直接确认联动是否生效（诊断 item7）
+          const n=(r.applied||[]).reduce((s,a)=>s+a.changed.length,0);
+          const detail=(r.applied||[]).map(a=>`${a.target}：${a.changed.join("、")}`).join("；");
+          const skip=(r.skipped||[]).map(s=>`${s.target}（${s.reason}）`).join("；");
+          toast(`已应用 ${n} 项变更${detail?`：${detail.length>200?detail.slice(0,200)+"…":detail}`:""}${skip?`；跳过：${skip}`:""}`);
+        }catch(e){alertErr(e);}
+      };
+    }
+    catch(e){alertErr(e);}
+    finally{ btn.disabled=false; btn.textContent="🔄 拉取角色面板（仅预览，不写数据）"; }  // !fr.ok 早退也复位（复审④小疵）：否则按钮卡在「同步中…」直到下次 renderChars
+  };
+  // 抽卡分析已迁移为独立侧边栏页签（「抽卡」，诊断②改造）：按钮只负责跳页
+  $("#tjdGacha").onclick=()=>switchPage("gacha");
+}
+/* ---------- 塔吉多抽卡分析（独立页签；绝不自动/定时同步） ---------- */
+/* 官方抽卡窗口 180 天（口径同后端 main.py _GACHA_NOTE / tajiduo_client 观测） */
+const GACHA_WINDOW_DAYS=180;
+function gachaPoolView(d, view){
+  /* 选中池的详情视图（2026-11-08 调研模式改版）：汇总卡 + 区间式保底进度条 +
+     出S分布直方图 + S 明细横条图。d=payload，view={pool,time}；纯渲染，
+     Tab/筛选事件由 renderGacha 绑定（切换只重绘本视图，不重新拉数据）。
+     【诚实口径】官方只下发已出 S 记录（含该发 S 的保底计数）与窗口总抽数，
+     不下发非 S 逐抽流水 → 当前垫抽数无精确值，能算的只有下界（见下方 pity 推导），
+     绝不编造精确垫抽数。 */
+  const pools=d.pools||[];
+  const p=pools.find(x=>x.key===view.pool)||pools[0];
+  if(!p) return `<div class="muted" style="margin-top:10px">暂无数据（绑定后点「同步抽卡记录」拉取）</div>`;
+  const nowMs=Date.now();
+  const winMs=GACHA_WINDOW_DAYS*86400000, curMs=30*86400000;
+  const inWin=ms=>typeof ms==="number"&&ms>0&&ms>=nowMs-winMs;
+  const timeOk=r=>{
+    if(view.time==="cur") return typeof r.time_ms==="number"&&r.time_ms>=nowMs-curMs;
+    if(view.time==="win") return inWin(r.time_ms);
+    return true;  // all=全部本地（窗口外记录在直方图分色标注）
+  };
+  const rows=(p.records||[]).filter(r=>timeOk(r));
+  /* 汇总四格改 metric 卡（2026-11-12 AK 排版）：label 12.5px muted + 大数字
+     clamp(22,3vw,30) + 12px 小注。官方窗口统计（draw_count 等）仅同步时才下发
+     （_tajiduo_gacha_view），未同步如实显示「—」并在小注说明 */
+  const gw=v=>(v==null||v==="")?"—":esc(String(v));
+  const gmetric=(label,val,note)=>`<div class="gmetric">
+    <span class="gmetric-label">${label}</span>
+    <b class="gmetric-val">${gw(val)}</b>
+    <span class="gmetric-note">${note}</span></div>`;
+  const synced=p.draw_count!=null;
+  // 百分位大数字（官方 player_over，如 "45%"；未同步/无数据不显示）
+  const over=String(p.player_over||"").trim();
+  const big=over?`<div style="margin-top:8px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
+    <span style="font-size:30px;font-weight:700;color:var(--acc);line-height:1.1">战胜 ${esc(over)} 玩家</span>
+    <span class="muted">官方百分位（该池窗口内）</span></div>`:"";
+  // ---- 区间式保底进度条 ----
+  // 保底线 m=官方字段（观测：角色池 90 / 弧盘池 60）——数据里只有这一个保底常数，
+  // 不虚构「硬保底」数字；下界 X 推导：窗口内未被任何 S 计数器吸收的抽法
+  // X = max(0, draw_count − Σ(窗口内各 S 的 pity))（窗口内每抽必属于某个窗口内
+  // S 的计数器或 last S 之后的垫抽，故 X 是垫抽下界；首发 S 若跨窗口起点只会让
+  // 真值更大，≥X 恒成立）。唯一可数学强制的「精确」：rare_count == draw_count
+  // （窗口内每一抽都出 S → 最近一抽必为 S）→ 垫抽=0（截至同步时刻）。
+  const mVal=p.m>0?p.m:0;
+  const pct=x=>mVal>0?Math.min(100,Math.max(0,x/mVal*100)):0;
+  let pity=null, pityWhy="";
+  if(p.draw_count!=null&&p.rare_count!=null&&p.draw_count>0&&p.rare_count===p.draw_count){
+    pity={x:0,exact:true};
+  }else if(p.draw_count!=null){
+    const sumWin=(p.records||[]).reduce((s,r)=>s+((inWin(r.time_ms)&&r.pity>0)?r.pity:0),0);
+    if(sumWin<=p.draw_count) pity={x:p.draw_count-sumWin,exact:false};
+    else pityWhy="官方窗口统计与本地 S 记录暂无法对齐";
+  }else pityWhy="尚未同步官方窗口统计（同步后可给出垫抽数下界估算）";
+  const y=(mVal>0&&pity)?Math.max(0,mVal-pity.x):null;
+  const pityLine=pity
+    ?(pity.exact
+      ?`<span class="tag ok">精确</span> <span>截至同步时刻垫抽为 0（窗口内每一抽都出 S，最近一抽即 S）${y!=null?`，最晚还剩 ${y} 抽出 S`:""}</span>`
+      :`<span class="tag warn">估算</span> <span>已垫 ≥${pity.x} 抽${y!=null?`，最晚还剩 ${y} 抽出 S`:"（官方保底字段缺失，给不出剩余上限）"}</span>`)
+    :`<span class="muted">${esc(pityWhy||"垫抽数未知：官方不下发非 S 逐抽流水")}</span>`;
+  const bar=(mVal>0&&pity)?`<div class="gpity" title="保底线 m=${mVal}（官方字段，观测：角色池 90 / 弧盘池 60）">
+      ${pity.x>0?`<div class="gp-fill" style="width:${pct(pity.x).toFixed(1)}%"></div>`:""}
+      <div class="gp-zone" style="left:${pct(pity.x).toFixed(1)}%;right:0"></div>
+    </div>`:"";
+  // ---- 出S分布直方图：x=保底计数分桶（10 一档），y=次数；窗口外分色（纯 CSS 柱）----
+  const allPity=(p.records||[]).map(r=>r.pity).filter(v=>v>0);
+  const mAxis=mVal>0?mVal:(allPity.length?Math.max(...allPity):0);
+  const buckets=[];
+  for(let lo=1;mAxis>0&&lo<=mAxis;lo+=10) buckets.push({lo,hi:Math.min(mAxis,lo+9),win:0,out:0});
+  rows.forEach(r=>{
+    if(!(r.pity>0)) return;
+    const b=buckets.find(b=>r.pity>=b.lo&&r.pity<=b.hi);
+    if(b) (inWin(r.time_ms)?b.win++:b.out++);
+  });
+  const hMax=Math.max(1,...buckets.map(b=>b.win+b.out));
+  const hist=buckets.length?`<div class="ghisto">${buckets.map(b=>{
+    const tot=b.win+b.out;
+    return `<div class="gp-col" title="${b.lo}–${b.hi} 抽出 S：窗口内 ${b.win} 次 / 窗口外 ${b.out} 次">
+      <span class="gp-cap">${tot||""}</span>
+      <div class="gp-bar" style="height:${tot?Math.max(6,Math.round(tot/hMax*72)):2}px">
+        ${b.win?`<div style="flex:${b.win};background:var(--acc);opacity:.85"></div>`:""}
+        ${b.out?`<div style="flex:${b.out};background:var(--warn);opacity:.5"></div>`:""}
+      </div>
+      <span class="gp-cap">${b.lo}–${b.hi}</span>
+    </div>`;}).join("")}</div>
+    <div class="muted" style="margin-top:4px"><span class="chip acc">官方窗口内</span> <span class="chip warn">窗口外（本地累积保留的更早记录）</span> · 横轴=出 S 那一抽的保底计数${mVal<=0?"（官方保底字段缺失，横轴按记录最大计数）":""}</div>`
+    :`<div class="muted" style="margin-top:8px">当前筛选下暂无出 S 记录可分布</div>`;
+  // ---- S 明细横躺条形图（2026-11-08 迭代：按月分组 chip 时间线退役）----
+  // 每发 S 一行：条上=名称/时间，条长=该发 S 的保底计数占比。分母用所在池
+  // 硬保底 p.m（观测：角色池 90 / 弧盘池 60）；官方 m 字段缺失（mVal=0）时退化为
+  // 按当前筛选记录最大 pity 归一（与上方直方图横轴同口径），绝不虚构 m。
+  // 着色阈值沿用原 chipCls 语义（各池 m 不同 → 用 mVal 动态判定）：
+  // ≤30 绿（前段）/ 31→m 之前 橙（软保底区）/ ≥m 红（贴保底线）。
+  // rows 已由后端按 time_ms 倒序（_tajiduo_gacha_records_view），最新在最上，直接用。
+  const maxPity=rows.reduce((s,r)=>Math.max(s,r.pity>0?r.pity:0),0);
+  const barW=r=>{
+    if(!(r.pity>0)) return 0;
+    if(mVal>0) return Math.min(100,r.pity/mVal*100);
+    return maxPity>0?r.pity/maxPity*100:0;
+  };
+  const gbarCls=r=>!(r.pity>0)?"":(r.pity<=30?"ok":(mVal>0&&r.pity>=mVal)?"err":"warn");
+  const bars=rows.length?rows.map(r=>{
+    const cls=gbarCls(r), w=barW(r).toFixed(1);
+    // 2026-11-10 工作包3：两行结构——上行=角色名/时间/卡池名（角色名此前重复渲染
+    // 两次，本轮修复）；下行=100px 头像 + track。第二轮调优：整行悬浮 title 移除，
+    // 悬浮信息只剩 track 上的保底计数/时间；卡池名取渲染作用域池对象 p.tab||p.key
+    // （后端 payload 无 p.name 字段，与顶部池 Tab 同源）
+    return `<div class="gbar-row">
+      <div class="gbar-top">
+        <b>${r.item_name?esc(r.item_name):`${esc(r.item_id||"—")} <span class='tag warn'>未映射</span>`}</b>
+        <span class="num">${esc(r.time||"—")}</span>
+        <span>${esc(p.tab||p.key||"—")}</span>
+      </div>
+      <div class="gbar-body">
+        <span class="gbar-av">${r.item_name?avatarImg(r.item_name):""}</span>
+        <div class="gbar-track" title="保底计数 ${esc(r.pity??"—")}${mVal>0?` / 软保底 m=${mVal}`:"（官方保底字段缺失）"} · 时间 ${esc(r.time||"—")}">
+          <div class="gbar-fill ${cls}" style="width:${w}%"></div>  <!-- 阈值色改 90deg 渐变类（ok/warn/err），见 CSS 2026-11-12 注 -->
+          <span class="gbar-val">${esc(r.pity??"—")} 抽</span>
+        </div>
+      </div>
+    </div>`;}).join("")
+    :`<div class="muted" style="margin-top:8px">当前筛选下无 S 明细</div>`;
+  return `<div style="margin-top:6px">
+    <div class="gmetrics">
+      ${gmetric("总抽数",p.draw_count,synced?"官方窗口 180 天":"尚未同步官方窗口统计")}
+      ${gmetric("已出S",p.rare_count,synced?`本地累积 ${p.s_count??(p.records||[]).length} 条`:"尚未同步官方窗口统计")}
+      ${gmetric("平均出S",p.average,synced?"官方窗口内两发 S 间隔均值":"尚未同步官方窗口统计")}
+      ${gmetric("软保底 m",mVal>0?p.m:"—",mVal>0?"官方保底字段（观测：角色池 90 / 弧盘池 60）":"官方保底字段缺失")}
+    </div>
+    ${big}
+    <div style="margin-top:10px"><div class="row gp-line" style="gap:8px;flex-wrap:wrap"><b>保底进度</b>${pityLine}</div>${bar}</div>
+    <div style="margin-top:10px"><b>出S分布</b>${hist}</div>
+    <div style="margin-top:12px"><b>S 明细</b><span style="margin-left:8px;color:var(--faint);font-size:12px">每发 S 一条横条 · 条长=该发保底计数占比${mVal>0?`（软保底 m=${mVal}）`:"（官方保底字段缺失，按当前筛选最大计数归一）"} · 最新在最上</span></div>${bars}
+  </div>`;
+}
+async function renderGacha(){
+  /* 抽卡分析独立页（2026-11-07 由模态迁移，诊断②；2026-11-08 调研模式改版）：
+     顶部三池 Tab（限定/常驻/弧盘，沿用官方心智）+ 数据状态条（官方窗口 180 天 ·
+     本地累积 N 条 · 上次同步时间）+ 每池汇总卡/区间式保底进度条/出S直方图/
+     S 明细横条图 + 筛选两件套（池 Tab × 时间范围）。
+     手动同步 only（唯一触发点=「同步抽卡记录」按钮），绝不自动/定时；
+     数据=塔吉多官方「抽卡分析」端点 + 本地累积存档（data/gacha_history.json）。
+     既有元素保留：绑定引导 #gachaBind、玄学评分 #gachaLuck、数据说明行 #gachaNote
+     （后端 payload 的 note 字段= _GACHA_NOTE）。 */
+  $("#main").innerHTML=`
+    <div class="card"><h3>🎴 抽卡分析<span class="h-sub">数据来源：塔吉多官方「抽卡分析」（手动同步 only，绝不自动/定时）</span></h3>
+      <div id="gachaBind"></div>
+      <div class="row" style="margin-top:8px;gap:8px;flex-wrap:wrap">
+        <button class="btn" id="gachaSync">🔄 同步抽卡记录</button>
+        <span class="muted" id="gachaMeta"></span>
+      </div>
+      <div id="gachaLuck" style="margin-top:8px"></div>
+      <div id="gachaBody"></div>  <!-- 2026-11-12 撤 gacha-zoom（0.75 缩放把文字压到 <11px，AK 排版改直接给舒适字号） -->
+      <div class="muted" id="gachaNote" style="margin-top:8px"></div>
+    </div>`;
+  const bindBox=$("#gachaBind"), syncBtn=$("#gachaSync");
+  let bindInfo={}, data=null;   // data=最近一次 payload（存档或同步结果），切 Tab/筛选复用
+  const view={pool:"limited", time:"all"};  // 页内选择状态（重新进页即复位）
+  const goBind=()=>{
+    // 「去绑定」跨页跳转到角色页塔吉多绑定卡片：renderChars 是 async（两个 await
+    // 后才写 #main），switchPage 不 await——挂到渲染 Promise 完成后再 scrollIntoView
+    const scroll=()=>{const card=$("#tjdStatus"); if(card) card.scrollIntoView({behavior:"smooth",block:"center"});};
+    const p=switchPage("chars");
+    (p&&p.then)?p.then(scroll).catch(()=>{}):scroll();
+  };
+  const renderBind=(bound, errText)=>{
+    if(errText){
+      bindBox.innerHTML=`<span class='tag warn'>${esc(errText)}</span> <span class="muted">请重新绑定塔吉多账号后再同步</span> <button class="btn sec mini" data-gbind>去绑定</button>`;
+    }else if(bound){
+      bindBox.innerHTML=`<span class='tag ok'>已绑定</span> <span class="muted">绑定于 ${esc(bindInfo.bound_at||"—")} · 账号 ${esc(bindInfo.uid||"—")}</span>`;
+    }else{
+      bindBox.innerHTML=`<span class='tag warn'>未绑定</span> <span class="muted">请先到「角色」页「塔吉多同步」卡片完成手机号验证码绑定，再回来同步抽卡记录</span> <button class="btn sec mini" data-gbind>去绑定</button>`;
+    }
+    const gbind=bindBox.querySelector("[data-gbind]");
+    if(gbind) gbind.onclick=goBind;
+    syncBtn.disabled=!bound;
+  };
+  const drawGacha=()=>{
+    /* 用当前 view 重绘 Tab 条/数据状态条/筛选条/池详情（不重新拉数据）。
+       同步时间移入数据状态条；#gachaMeta 只保留角色名/等级。 */
+    const host=$("#gachaBody");
+    if(!host||!data) return;  // 同步期间切页后 #main 已重建：不写旧节点
+    const pools=data.pools||[];
+    const rank=k=>({limited:0,permanent:1,weapon:2}[k]??9);  // 官方三池固定顺序在前
+    const order=[...pools].sort((a,b)=>rank(a.key)-rank(b.key));
+    if(!order.some(p=>p.key===view.pool)) view.pool=order[0]?order[0].key:"";
+    const total=pools.reduce((s,p)=>s+((p.records||[]).length),0);
+    const role=data.role||{};
+    const meta=$("#gachaMeta");
+    if(meta) meta.textContent=role.rolename?`${role.rolename}${role.lev?` Lv.${role.lev}`:""}`:"";
+    const luck=data.luck||{};
+    const luckEl=$("#gachaLuck");
+    if(luckEl) luckEl.innerHTML=(luck.title||luck.type!=null)
+      ?`<span class="tag acc">玄学评分</span> <b>${luck.type??"—"}</b>/12 · ${esc(String(luck.title||"").replace(/运气/g,""))}`:"";  /* 后端 title 可能带的字样显示前 strip（正则即所删词） */
+    const note=$("#gachaNote");
+    if(note) note.textContent=data.note||"";
+    host.innerHTML=`
+      <!-- 三池汇总卡行（2026-11-12 AK 排版，图一式）：每池一卡=池名 + 大数字抽数 +
+           出S/平均小注；数据缺失显示「—」。字段与 _tajiduo_gacha_view 的池卡片
+           统计同源（draw_count/rare_count/average，官方窗口快照，仅同步时非空） -->
+      <div class="gpool-cards">${order.map(p=>`
+        <div class="gpool-card">
+          <span class="gpool-name">${esc(p.tab||p.key||"—")}</span>
+          <span class="gpool-num"><b>${(p.draw_count==null)?"—":esc(String(p.draw_count))}</b><span class="gpool-unit">抽</span></span>
+          <span class="gpool-note">出S ${(p.rare_count==null)?"—":esc(String(p.rare_count))} · 平均 ${(p.average&&String(p.average))?esc(String(p.average)):"—"}</span>
+        </div>`).join("")}</div>
+      <div class="row" style="gap:6px;margin-top:12px;flex-wrap:wrap">
+        ${order.map(p=>`<button class="gtab ${p.key===view.pool?"on":""}" data-gtab="${esc(p.key)}">${esc(p.tab||p.key||"—")}</button>`).join("")}
+      </div>
+      <div class="gstate">官方窗口 ${GACHA_WINDOW_DAYS} 天 · 本地累积 ${total} 条 S 记录 · ${data.synced_at?`上次同步 ${esc(data.synced_at)}`:"尚未同步过"}</div>
+      <div class="row" style="gap:6px;margin-top:10px;flex-wrap:wrap">
+        <span class="muted">时间</span>
+        <button class="gtab ${view.time==="cur"?"on":""}" data-gtime="cur" title="官方未下发卡池周期数据，无法对齐 UP 池边界；以最近 30 天近似「本期」">本期(近30天)</button>
+        <button class="gtab ${view.time==="win"?"on":""}" data-gtime="win">官方窗口(${GACHA_WINDOW_DAYS}天)</button>
+        <button class="gtab ${view.time==="all"?"on":""}" data-gtime="all">全部本地</button>
+      </div>
+      ${gachaPoolView(data,view)}`;
+    host.querySelectorAll("[data-gtab]").forEach(b=>b.onclick=()=>{view.pool=b.dataset.gtab; drawGacha();});
+    host.querySelectorAll("[data-gtime]").forEach(b=>b.onclick=()=>{view.time=b.dataset.gtime; drawGacha();});
+  };
+  // 绑定状态（未绑定 → 引导去角色页绑定卡片；同步按钮置灰）
+  try{
+    const fr=await fetch("/api/tajiduo/status",{headers:AUTH_HEADERS});
+    bindInfo=await fr.json().catch(()=>({}));
+    const nf=notFoundHint(fr,bindInfo);
+    if(nf){  // 旧版后端进程：明确提示重启，不误导为「未绑定」
+      bindBox.innerHTML=`<span class='tag warn'>面板版本过旧</span> <span class="muted">${esc(nf)}</span>`;
+    }else renderBind(!!bindInfo.bound);
+  }catch(e){ renderBind(false); }
+  // 进入页面即渲染本地累积存档（只读端点，不触网）
+  try{ data=await (await fetch("/api/tajiduo/gacha-history",{headers:AUTH_HEADERS})).json(); drawGacha(); }
+  catch(e){ const host=$("#gachaBody"); if(host) host.innerHTML=`<div class="muted" style="margin-top:8px">本地存档读取失败：${esc(e.message)}</div>`; }
+  // 手动同步（唯一触发点：本按钮）
+  syncBtn.onclick=async()=>{
+    syncBtn.disabled=true; syncBtn.textContent="同步中…（拉取抽卡分析约 5~15 秒）";
+    try{
+      const fr=await fetch("/api/tajiduo/sync-gacha",{method:"POST",headers:{...AUTH_HEADERS,"Content-Type":"application/json"},body:"{}",signal:AbortSignal.timeout(60000)});
+      const d=await fr.json().catch(()=>({}));
+      if(!fr.ok){
+        // panel_auth 守卫（SEC-05）：面板令牌失败不进重绑引导，落下方 toast 兜底
+        if(!d.panel_auth && (fr.status===401 || d.needs_rebind)){
+          renderBind(false,d.error||"登录已过期");  // 重绑表单引导（输入手机号+验证码）
+          const meta=$("#gachaMeta"); if(meta) meta.textContent="登录已过期：点「去绑定」重新绑定后再同步";
+        }
+        toast(notFoundHint(fr,d)||d.error||"抽卡同步失败","err"); return;
+      }
+      if($("#gachaBody")){ data=d; drawGacha(); }  // 同步期间切页后 #main 已重建：不写旧节点
+      toast(d.new_total>0?`同步完成：新增 ${d.new_total} 条 S 记录`:"同步完成：无新增 S 记录");
+      (d.warnings||[]).forEach(w=>toast(w,"err"));
+    }catch(e){ alertErr(e); }
+    syncBtn.disabled=!bindInfo.bound; syncBtn.textContent="🔄 同步抽卡记录";
+  };
 }
 function seriesOptions(prefix, count, cur, onlyN){
-  /* ability_N/arc_N/console_N 的可读名来自 materials targets；
-     异能系显示简写（"技能书·雏鸟系（…）"→"雏鸟系"），其余前缀照旧；
-     onlyN=数字时只显示该系（角色适配过滤），未定系则显示全部 */
+  /* ability_N/arc_N/console_N 的可读名来自 materials targets；系列材料优先
+     concrete_names.purple（具体道具名，如「黑帽子」——系名"技能书·帽子系（…）"
+     不指向具体道具），缺失回退旧逻辑（异能系简写"雏鸟系"，其余前缀照旧）；
+     option value 仍是序号键不变；onlyN=数字时只显示该系（角色适配过滤） */
   const targets=(BOOT.tables.materials||{}).targets||[];
   const out=[];
   for(let n=1;n<=count;n++){
     if(onlyN && n!==onlyN) continue;
     const id=`${prefix}_${n}`;
     const t=targets.find(x=>x.id===id);
-    let label=t?(t.display_name||t.name):id;
-    if(prefix==="ability"){
+    const purple=t&&t.concrete_names&&t.concrete_names.purple;
+    let label=purple||(t?(t.display_name||t.name):id);
+    if(!purple && prefix==="ability"){
       const parts=label.split("·");
       if(parts.length>1) label=parts[1].split("（")[0];
     }
@@ -906,17 +1777,19 @@ function abilityOptionsFor(c){
   return seriesOptions("ability", 5, c.mats?.ability, series?+String(series).replace("ability_",""):null);
 }
 function abilitySeriesOptions(sel){
-  /* 技能书系下拉（图鉴录入用）：可读名，绝不显示 ability_N 内部ID */
+  /* 技能书系下拉（图鉴录入用）：可读名，绝不显示 ability_N 内部ID；
+     优先具体道具紫名（concrete_names.purple，如「黑帽子」），缺失回退系名 */
   const targets=(BOOT.tables.materials||{}).targets||[];
   return [1,2,3,4,5].map(n=>{
     const t=targets.find(x=>x.id===`ability_${n}`);
-    const label=t?(t.display_name||t.name).split("（")[0]:`技能书系${n}`;
+    const purple=t&&t.concrete_names&&t.concrete_names.purple;
+    const label=purple||(t?(t.display_name||t.name).split("（")[0]:`技能书系${n}`);
     return `<option value="ability_${n}" ${sel===`ability_${n}`?"selected":""}>${esc(label)}</option>`;
   }).join("");
 }
 function charCard(c,i,tracks,rowsOf,weaponMeta,stateToCan){
   const div=document.createElement("div");
-  div.className="char"; div.dataset.idx=i; div.dataset.cid=c.id;
+  div.className="char char-av"; div.dataset.idx=i; div.dataset.cid=c.id;  // char-av：角色卡（详情大头像在 .body 首行右列，四页调整⑥；外层 flex 规则保留无害）
   const skillTop = BOOT.skill_max||10;  // wiki skillUpgrade 实际上限（bootstrap 下发）
   const trackRows = Object.entries(tracks)
     .filter(([k])=>k==="char_level")  // 技能材料已按四技能逐级计算；弧盘/空幕在专属页
@@ -955,22 +1828,34 @@ function charCard(c,i,tracks,rowsOf,weaponMeta,stateToCan){
   const nmChip = c.cassette?.set
     ? "卡带 " + esc(c.cassette.set) + "·" + esc(c.cassette.main || "未选主属性") + " · 驱动块 " + (c.drivers||[]).length + " 件"
     : "卡带未选择 · 驱动块 " + (c.drivers||[]).length + " 件";
+  // 异能系静态化（四页调整⑤）：属性→书系映射唯一（abilityOptionsFor 只产出一个
+  // 选项，如 伊洛伊→白蔷薇）时渲染静态 chip + hidden input.c-ability——保存链
+  // el.querySelector(".c-ability").value 仍读到同一序号值（保存代码零改动）；
+  // 属性缺失/多候选时保持原下拉
+  const abOpts=abilityOptionsFor(c);
+  const abSingle=(abOpts.match(/<option\b/g)||[]).length===1
+    ? abOpts.match(/^<option value="(\d+)"[^>]*>([\s\S]+)<\/option>$/) : null;
   div.innerHTML=`
+    <div class="char-main">
     <div class="head">
       <span class="drag-handle" title="拖动排序" style="cursor:grab;color:var(--faint);font-size:15px;letter-spacing:-1px">⋮⋮</span>
       <label class="switch" title="启用/停用（停用归入不想练区）"><input type="checkbox" class="c-enabled" ${c.enabled?"checked":""}><span class="sl"></span></label>
       <input class="c-name" list="charNameList" style="width:150px" value="${esc(c.name)}" placeholder="角色名">
-      <span class="muted">异能系</span><select class="c-ability" style="max-width:150px">${abilityOptionsFor(c)}</select>
+      <span class="muted">异能系</span>${abSingle
+        ?`<input type="hidden" class="c-ability" value="${abSingle[1]}"><span class="chip acc" title="书系由角色属性唯一确定，不可多选">${abSingle[2]}</span>`  /* 静态文本（值语义由 hidden input 承载，四页调整⑤） */
+        :`<select class="c-ability" style="max-width:150px">${abOpts}</select>`}
       <span class="muted">弧盘</span><select class="c-weapon" style="max-width:220px" title="按角色物态适配过滤（同「弧盘」页）；罐头系随物态自动派生">${arcWeaponOptions(c, weaponMeta, "")}</select>
       <span class="grow"></span>
       <button class="btn sec mini" data-act="maxAll" title="角色等级/技能目标全部设为满级">全部满级</button>
       <button class="btn sec mini" data-act="up" title="上移（优先级更高）">↑</button>
       <button class="btn sec mini" data-act="down" title="下移">↓</button>
       <button class="btn sec mini" data-act="del">删除</button>
-      <button class="btn sec mini" data-act="fold">详情</button>
     </div>
     <div class="body">
-      <div class="row" style="gap:12px;margin-bottom:8px;flex-wrap:wrap;align-items:center">
+      <!-- 详情大头像：.body 首元素右浮动环绕（2026-11-11 调整）——下方各行内容绕排，
+           不整段下推；.body 仅 .char.open 展开态可见，「展开才显示头像」语义天然保持 -->
+      <div class="avatar-box" title="${esc(c.name)}">${avatarImg(c.name)}<span class="avatar-name">${esc(c.name)}</span></div>
+      <div class="row" style="gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
         <span class="muted">觉醒档位</span>
         <select class="c-awaken" title="觉醒档位（独立记录字段，与突破材料无关）">${[0,1,2,3,4,5,6].map(n=>`<option value="${n}" ${(c.awakening??0)===n?"selected":""}>${n}</option>`).join("")}</select>
         <label class="switch" title="天赋解锁一（wiki talentUnlock，开启计入技能材料）"><input type="checkbox" class="c-talent" data-tier="0" ${c.talent_unlocks?.[0]?"checked":""}><span class="sl"></span></label><span class="muted">天赋1</span>
@@ -998,8 +1883,15 @@ function charCard(c,i,tracks,rowsOf,weaponMeta,stateToCan){
       <div style="font-size:13px;color:var(--acc);margin:6px 0">额外材料登记 <span class="muted">（仅自定义材料：BOSS/周本/小怪等已由模型自动计算并在上方实时显示，此处改数目保存后即同步进计算）</span></div>
       <div class="grid extra-list">${extraRows}</div>
       <button class="btn sec mini" data-act="addExtra" style="margin-top:8px">＋ 添加材料</button>
-    </div>`;
-  div.querySelector('[data-act="fold"]').onclick=()=>div.classList.toggle("open");
+    </div>
+    </div>`;  // avatar-box 在 .body 首元素位置右浮动环绕（2026-11-11 调整）
+  // 整行点击展开/收缩（2026-11-11：详情按钮退役，整条 .head 行接管）——
+  // 命中交互控件（按钮/输入/下拉/开关/拖动手柄）不触发，避免误收缩
+  const headEl=div.querySelector(".head");
+  headEl.onclick=(ev)=>{
+    if(ev.target.closest("button,select,input,label,a,.drag-handle")) return;
+    div.classList.toggle("open");
+  };
   // 弧盘下拉联动（与「弧盘」页同源逻辑）：选择后即时更新 chip；罐头系在保存时按物态派生
   const arcSel=div.querySelector(".c-weapon");
   if(arcSel) arcSel.onchange=()=>{
@@ -1010,6 +1902,15 @@ function charCard(c,i,tracks,rowsOf,weaponMeta,stateToCan){
     inp.addEventListener("input", ()=>{
       const cur=+inp.value||0;
       const tgt=div.querySelector(`.c-skill[data-skill="${inp.dataset.skill}"][data-tk="tgt"]`);
+      if(tgt && (+tgt.value||0) < cur) tgt.value=cur;
+    });
+  });
+  // 轨道同规则（角色等级等）：手改 cur 时 tgt 跟抬（与服务端 sanitize 兜底一致）；
+  // 弧盘 cur 在角色页无 tgt 输入（目标在「弧盘」页维护），querySelector 找不到即无操作
+  div.querySelectorAll("[data-track][data-tk='cur']").forEach(inp=>{
+    inp.addEventListener("input", ()=>{
+      const cur=+inp.value||0;
+      const tgt=div.querySelector(`[data-track="${inp.dataset.track}"][data-tk="tgt"]`);
       if(tgt && (+tgt.value||0) < cur) tgt.value=cur;
     });
   });
@@ -1106,7 +2007,11 @@ async function renderArc(){
   });
   const state_to_can = gd.matter_state_to_can||{};
   const targets = (BOOT.tables.materials||{}).targets||[];
-  const arcDisplayName = n => { const t=targets.find(x=>x.id===`arc_${n}`); return t?(t.display_name||t.name):`罐头系${n}（名称缺失）`; };
+  /* 弧盘 chip 显示名：优先具体道具紫名（concrete_names.purple，如"金色苹果核"），
+     缺失回退系名（"弧盘突破·苹果核（铁制→金色）"） */
+  const arcDisplayName = n => { const t=targets.find(x=>x.id===`arc_${n}`);
+    const purple=t&&t.concrete_names&&t.concrete_names.purple;
+    return purple||(t?(t.display_name||t.name):`罐头系${n}（名称缺失）`); };
   const snap = await api("/api/status").catch(()=>null);
   const rowsByChar = {};
   if(snap && snap.snapshot) (snap.snapshot.characters||[]).forEach(c=>{ rowsByChar[c.name] = c.rows||[]; });
@@ -1139,7 +2044,7 @@ async function renderArc(){
         tracksOut[inp.dataset.track][inp.dataset.tk]=+inp.value||0;});
       return {...c, weapon, mats, tracks:tracksOut};
     });
-    try{ const r=await api("/api/characters",{characters:charsOut});
+    try{ const r=await api("/api/characters",{characters:charsOut,base_rev:BOOT.rev||0});
       BOOT.state.characters=r.characters||charsOut;
       toast("弧盘已保存");
       renderArc();
@@ -1225,6 +2130,13 @@ function arcCard(c, tracks, weaponMeta, state_to_can, arcDisplayName, gapOf){
   div.querySelector('[data-act="maxArc"]').onclick = ()=>{
     div.querySelector('[data-track="arc_level"][data-tk="tgt"]').value = arcT.max??80;
   };
+  // 目标≥当前：手改弧盘当前等级时目标跟抬（与角色页/服务端 sanitize 同规则）
+  const arcCur=div.querySelector('[data-track="arc_level"][data-tk="cur"]');
+  const arcTgt=div.querySelector('[data-track="arc_level"][data-tk="tgt"]');
+  if(arcCur&&arcTgt) arcCur.addEventListener("input", ()=>{
+    const cur=+arcCur.value||0;
+    if((+arcTgt.value||0) < cur) arcTgt.value=cur;
+  });
   return div;
 }
 
@@ -1257,13 +2169,27 @@ async function renderNullmux(){
         return `<option value="${n}" ${+cur===n?"selected":""}>${esc(t.display_name||t.name)}</option>`;}).join("");
   };
   const suitOpts=(c,cur)=>{
+    // BIS 推荐组（2026-11-09 工作包3）：builds 缓存（window.__BIS_BUILDS__，随
+    // 「拉取BIS建议/同步攻略站」写入）里该角色的 console.cartridge 文本与 wiki 套装
+    // 名归一互含匹配 → 只显示推荐组；匹配不到/无 BIS → 回退全量（原行为）。
+    // 当前值即使不在列表也保底保留（仿 arcWeaponOptions：不丢已选值）
     const el=elemOf(c);
     const fit=sets.filter(x=>el && x.element===el);
     const generic=sets.filter(x=>x.element==="泛用");
     const others=sets.filter(x=>!fit.includes(x)&&!generic.includes(x));
+    const norm=s=>String(s||"").replace(/[「」\s×xX*]/g,"").toLowerCase();
+    let rows=[...fit,...generic,...others];
+    const b=bisBuildOf(c);
+    const cartText=norm(b&&b.console&&b.console.cartridge&&(b.console.cartridge.zh||b.console.cartridge.en));
+    if(cartText){
+      const rec=rows.filter(x=>cartText.includes(norm(x.name))||norm(x.name).includes(cartText));
+      if(rec.length) rows=rec;  // 只显示推荐组；命名对不上（rec 空）回退全量
+    }
     let out=`<option value="" ${!cur?"selected":""}>（未选择卡带）</option>`;
-    [...fit,...generic,...others].forEach(x=>{
+    rows.forEach(x=>{
       out+=`<option value="${esc(x.name)}" ${x.name===cur?"selected":""}>${esc(x.name)}${x.element&&x.element!=="泛用"?`（${esc(x.element)}）`:"（泛用）"}</option>`;});
+    if(cur && !rows.some(x=>x.name===cur))
+      out+=`<option value="${esc(cur)}" selected>${esc(cur)}（当前已选·不在列表）</option>`;
     return out;
   };
   try {
@@ -1273,6 +2199,7 @@ async function renderNullmux(){
         角色旁仅展示最佳 2-3 组词条（用户维护，与实际装备记录分区）。${sets.length?`已载入 ${sets.length} 套卡带`:"（卡带数据未抓取：点下方按钮从 wiki 拉取）"}</div>
       <div class="card"><div class="row">
         <button class="btn sec mini" id="btnFetchCassette">${sets.length?"🔄 重新拉取卡带数据":"🌐 从 wiki 拉取卡带数据"}</button>
+        <button class="btn sec mini" id="btnFetchBis">💡 拉取BIS建议（ntestrategy）</button>
         <span class="muted" id="cassetteFetchInfo"></span></div></div>
       <div id="nmList">${chars.length?chars.map(c=>nullmuxCard(c,sets,mainStats,subStats,driverMains,suitOpts,statOpts,nodeOpts,consoleT)).join(""):""}</div>`;
   } catch (e) {
@@ -1280,16 +2207,40 @@ async function renderNullmux(){
     $("#main").innerHTML=`
       <div class="banner warn">空幕页渲染失败：${esc(e.message)}</div>
       <div class="card"><div class="row">
-        <button class="btn sec mini" id="btnFetchCassette">🌐 从 wiki 拉取卡带数据</button></div></div>
+        <button class="btn sec mini" id="btnFetchCassette">🌐 从 wiki 拉取卡带数据</button>
+        <button class="btn sec mini" id="btnFetchBis">💡 拉取BIS建议（ntestrategy）</button></div></div>
       <div id="nmList"></div>`;
   }
   if(!chars.length && $("#nmList")) $("#nmList").innerHTML=`<div class="empty">还没有角色</div>`;
   $("#btnFetchCassette").onclick=async()=>{
     const btn=$("#btnFetchCassette"); btn.disabled=true; btn.textContent="拉取中…（约 15 秒）";
-    try{ const fr=await fetch("/api/wiki/fetch-cassettes",{method:"POST",signal:AbortSignal.timeout(120000)});
+    try{ const fr=await fetch("/api/wiki/fetch-cassettes",{method:"POST",headers:AUTH_HEADERS,signal:AbortSignal.timeout(120000)});
       const d=await fr.json(); toast(d.ok?`已抓取 ${d.sets} 套卡带`:(d.error||"拉取失败"), d.ok?"ok":"err");
       NULLMUX_CASSETTES=null; renderNullmux();
     }catch(e){alertErr(e); btn.disabled=false; btn.textContent="🌐 从 wiki 拉取卡带数据";}
+  };
+  // BIS 建议拉取（ntestrategy shared.js 的 TRAINS/CONSOLE_BUILDS/CHAR_ARCS，按 slug
+  // 归并进快照 builds 段）：纯建议展示（可复制文本），绝不自动写 cassette/drivers/
+  // stigma_groups。复用 /api/sites/sync-guide（该端点同时做目录合并——与「设置页
+  // 同步攻略站」同源，前端同步回填库列表保持一致）。
+  $("#btnFetchBis").onclick=async()=>{
+    const btn=$("#btnFetchBis"); btn.disabled=true; btn.textContent="拉取中…（约 15 秒）";
+    try{
+      const fr=await fetch("/api/sites/sync-guide",{method:"POST",headers:{...AUTH_HEADERS,"Content-Type":"application/json"},
+        body:"{}",signal:AbortSignal.timeout(120000)});
+      const d=await fr.json();
+      if(!fr.ok){ toast(d.error||"BIS 建议拉取失败","err"); return; }
+      if(typeof d.rev==="number") BOOT.rev=d.rev;  // 同步会合并库 bump rev；裸 fetch 不走 api()，须手动跟进基线（复审阻断 #1）
+      if(d.char_library) BOOT.state.char_library=d.char_library;
+      if(d.weapon_library) BOOT.state.weapon_library=d.weapon_library;
+      if(d.avatars) BOOT.avatars=d.avatars;          // 头像映射刷新（本次新下载立即可见）
+      if(d.guide_slug_names) window.__GUIDE_SLUG_NAMES__=d.guide_slug_names;  // BIS 别名归一用
+      if(d.builds) window.__BIS_BUILDS__=d.builds;   // builds 缓存通路：套组推荐下拉等复用
+      const builds=d.builds||[];
+      if(!builds.length){ toast("BIS 建议为空（站点可能未提供 TRAINS/CONSOLE_BUILDS/CHAR_ARCS 数据块）","err"); return; }
+      showBisModal(builds, (d.sources||{}).ntestrategy||{});
+    }catch(e){alertErr(e);}
+    finally{ btn.disabled=false; btn.textContent="💡 拉取BIS建议（ntestrategy）"; }
   };
   const saveNmBtn=$("#saveNm");
   if(saveNmBtn) saveNmBtn.onclick=async()=>{
@@ -1318,7 +2269,7 @@ async function renderNullmux(){
         tracks.console_level={...(tracks.console_level||{}),[inp.dataset.tk]:+inp.value||0};});
       return {...c, cassette, drivers, stigma_groups, mats, tracks};
     });
-    try{ const r=await api("/api/characters",{characters:charsOut});
+    try{ const r=await api("/api/characters",{characters:charsOut,base_rev:BOOT.rev||0});
       BOOT.state.characters=r.characters||charsOut; toast("空幕记录已保存"); renderNullmux();
     }catch(e){alertErr(e);}
   };
@@ -1361,6 +2312,7 @@ function nullmuxCard(c,sets,mainStats,subStats,driverMains,suitOpts,statOpts,nod
   const groups=(c.stigma_groups&&c.stigma_groups.length)?c.stigma_groups:[{label:"词条组 1",main:"",subs:["","","",""]}];
   return `
     <div class="card nm-card" data-cid="${esc(c.id)}">
+      <div class="nm-body">
       <h3>${esc(c.name)}<span class="h-sub">卡带 ×1 + 驱动块（只记录）+ 空幕结点/等级</span></h3>
       <div class="set-row"><label>卡带套装</label>
         <select class="nm-set" style="max-width:260px">${suitOpts(c,cassette.set)}</select>
@@ -1378,6 +2330,8 @@ function nullmuxCard(c,sets,mainStats,subStats,driverMains,suitOpts,statOpts,nod
       <div style="margin-top:8px"><span class="muted">驱动块（<span class="drv-count">${drivers.length}</span>）</span>
         <button class="btn sec mini nm-add-driver">＋ 驱动块</button></div>
       <div class="nm-drivers">${drivers.map(d=>nullmuxDriverRow(d,driverMains,subStats)).join("")||'<span class="muted extra-empty-drv">（暂无驱动块记录）</span>'}</div>
+      </div>
+      <div class="avatar-box" title="${esc(c.name)}">${avatarImg(c.name)}<span class="avatar-name">${esc(c.name)}</span></div>
     </div>`;
 }
 function nullmuxDriverRow(d,driverMains,subStats){
@@ -1392,6 +2346,125 @@ function nullmuxDriverRow(d,driverMains,subStats){
       ${[0,1,2,3].map(i=>`<select class="d-sub" style="width:110px">${subStats.map(x=>`<option ${d.subs?.[i]===x?"selected":""}>${esc(x)}</option>`).join("")}</select>`).join("")}
       <button class="btn sec mini nm-del">×</button>
     </div>`;
+}
+/* ---------- BIS 建议（ntestrategy 快照 builds 段；纯建议展示，不写任何记录） ---------- */
+function bisBuildOf(c, buildsArg){
+  /* BIS 条目匹配（2026-11-09 工作包3，伊洛伊/跨源异译修复）：此前按 name 精确
+     匹配，本地实名与站方译名不一致（法蒂亚 vs 法帝娅、哈尼尔 vs 哈尼娅、
+     埃德加 vs 埃德嘉）或角色形态名（零（男））时全部落空。三级匹配：
+     ①name 精确 → ②slug 归一（__GUIDE_SLUG_NAMES__：两站同 slug 实体多名并存，
+     本地任一译名 → slug → build.id）→ ③去尾部（…）基名（零（男）→零）。
+     buildsArg 缺省读 window.__BIS_BUILDS__ 缓存（同步攻略站/拉取BIS后写入）。
+     匹配不到返回 null（未覆盖角色，上层明示「暂无建议」）。 */
+  const builds=buildsArg||window.__BIS_BUILDS__||[];
+  if(!c||!builds.length) return null;
+  const name=String(c.name||"").trim();
+  if(!name) return null;
+  let b=builds.find(x=>x.name===name);
+  if(b) return b;
+  const slugMap=window.__GUIDE_SLUG_NAMES__||{};
+  for(const [slug,names] of Object.entries(slugMap)){
+    if((names||[]).includes(name)){
+      b=builds.find(x=>x.id===slug);
+      if(b) return b;
+    }
+  }
+  const base=name.replace(/（[^）]*）$/,"").trim();
+  if(base && base!==name) b=builds.find(x=>x.name===base);
+  return b||null;
+}
+function bisPlainText(b){
+  /* 建议文本汇总（一键复制用）：缺失段如实标「（无数据）」 */
+  const sec=(title,lines)=>`${title}\n`+(lines.filter(Boolean).join("\n")||"（无数据）");
+  const t=b.train||{}, c=b.console||{};
+  const tri=v=>(v&&(v.zh||v.en))?(v.zh||v.en):"";
+  const out=[`【BIS 建议】${b.name||b.id}（来源：${b.source||"ntestrategy"}）`];
+  if(b.arcs&&b.arcs.length)
+    out.push(sec("弧盘优先级",b.arcs.map(p=>`[${p.rank||"?"}] ${p.zh||p.en}${p.en&&p.zh?`（${p.en}）`:""}`)));
+  out.push(sec("卡带组合", [tri(c.cartridge)&&`卡带：${tri(c.cartridge)}`,
+    tri(c.trait)&&`套装特性：${tri(c.trait)}`,
+    tri(c.driveReq)&&`驱动块（必需）：${tri(c.driveReq)}`,
+    tri(c.driveOpt)&&`驱动块（可选）：${tri(c.driveOpt)}`,
+    tri(c.mainstats)&&`主词条优先级：${tri(c.mainstats)}`,
+    tri(c.substats)&&`副词条优先级：${tri(c.substats)}`]));
+  out.push(sec("养成优先级", [tri(t.stats)&&`属性：${tri(t.stats)}`,
+    tri(t.skill)&&`技能：${tri(t.skill)}`, tri(t.awk)&&`觉醒：${tri(t.awk)}`,
+    tri(t.arc)&&`弧盘：${tri(t.arc)}`, tri(t.mod)&&`卡带：${tri(t.mod)}`]));
+  return out.join("\n\n");
+}
+function showBisModal(builds, source){
+  const chars=(BOOT.state.characters||[]).filter(c=>c.enabled);
+  const ov=document.createElement("div"); ov.className="modal-ov";
+  const opts=chars.map((c,i)=>`<option value="${i}">${esc(c.name)}</option>`).join("");
+  ov.innerHTML=`<div class="modal" style="max-width:680px">
+    <h3 style="margin:0 0 10px;font-size:14px">BIS 建议（仅展示，不写入记录）
+      <span class="h-sub">来源 ntestrategy（按 slug 关联，本地按实名对齐）${source.fetched_at?` · 抓取于 ${esc(source.fetched_at)}`:""}</span></h3>
+    <div class="row" style="gap:8px;margin-bottom:8px">
+      <select id="bisChar" style="max-width:220px">${opts}</select>
+      <button class="btn sec mini" id="bisCopy">📋 一键复制文本</button>
+    </div>
+    <div id="bisBody" style="max-height:52vh;overflow-y:auto"></div>
+    <div class="row" style="margin-top:12px"><span class="muted grow">建议内容为攻略站观点，仅供取舍参考；词条组/驱动块记录仍由本页手动维护。</span>
+      <button class="btn sec" id="bisClose">关闭</button></div></div>`;
+  document.body.appendChild(ov);
+  const close=()=>ov.remove();
+  ov.onclick=e=>{ if(e.target===ov) close(); };
+  ov.querySelector("#bisClose").onclick=close;
+  const render=()=>{
+    const c=chars[+ov.querySelector("#bisChar").value];
+    const b=c?bisBuildOf(c,builds):null;
+    const body=ov.querySelector("#bisBody");
+    if(!b){ body.innerHTML=`<div class="banner warn" style="margin:0">ntestrategy 暂无该角色建议（已覆盖 ${builds.length} 个角色）。「${esc(c?c.name:"")}」不在覆盖名单，或实名尚未对齐——建议列表以站方数据为准，本面板不编造。</div>`; return; }
+    const rankTag=r=>r==="BIS"?"<span class='tag acc'>BIS</span>":r==="STRONG"?"<span class='tag ok'>STRONG</span>":"<span class='tag'>OK</span>";
+    const arcs=(b.arcs||[]).map(p=>`<tr><td>${rankTag(p.rank)}</td><td>${esc(p.zh||p.en||"—")}${p.en&&p.zh?` <span class="muted">${esc(p.en)}</span>`:""}</td></tr>`).join("");
+    const tri=v=>(v&&(v.zh||v.en))?(v.zh||v.en):"";
+    const row=(label,val)=>val?`<div class="set-row"><label>${label}</label><span>${esc(val)}</span></div>`:"";
+    // 右列「现有」：本系统记录的卡带套装/主属性 + 驱动块摘要（用户自维护数据，
+    // 只读对照，绝不建议侧覆盖）
+    const curCas=(c&&c.cassette)||{};
+    const drvList=(c&&c.drivers)||[];
+    const drvTxt=drvList.length
+      ? drvList.map(d=>`${esc(d.shape||"?")}·${esc(d.quality||"?")}（${esc(d.main||"主属性未记")}）`).join("；")
+      : "（无记录）";
+    const curCol=`<div class="card" style="margin:0"><h3 style="margin-top:0">现有（本系统记录）</h3>
+      <div class="set-row"><label>卡带套装</label><span>${esc(curCas.set||"未选择")}</span></div>
+      <div class="set-row"><label>卡带主属性</label><span>${esc(curCas.main||"未选择")}</span></div>
+      <div class="set-row"><label>驱动块 ${drvList.length} 件</label><span style="white-space:normal">${drvTxt}</span></div>
+      <div class="muted" style="margin-top:6px;font-size:12px">记录在「空幕」页维护；BIS 建议不会自动写入。</div></div>`;
+    const sugCol=`<div style="min-width:0">
+      ${arcs?`<table><tr><th style="width:80px">弧盘档位</th><th>弧盘</th></tr>${arcs}</table>`:`<div class="banner warn" style="margin:0 0 8px">弧盘分档：无数据</div>`}
+      <div class="card" style="margin-top:8px"><h3>卡带 / 驱动块（建议）</h3>
+        ${row("卡带组合",tri(b.console&&b.console.cartridge))}
+        ${row("套装特性",tri(b.console&&b.console.trait))}
+        <div style="margin-top:6px;font-size:13px;color:var(--acc)">驱动块（必需）</div>
+        <div class="muted" style="white-space:normal;margin:2px 0 6px">${esc(tri(b.console&&b.console.driveReq)||"（无数据）")}</div>
+        <div style="font-size:13px;color:var(--acc)">驱动块（可选）</div>
+        <div class="muted" style="white-space:normal;margin:2px 0 6px">${esc(tri(b.console&&b.console.driveOpt)||"（无数据）")}</div>
+        ${row("主词条优先级",tri(b.console&&b.console.mainstats))}
+        ${row("副词条优先级",tri(b.console&&b.console.substats))}</div>
+      <div class="card" style="margin-top:8px"><h3>养成优先级</h3>
+        ${row("属性",tri(b.train&&b.train.stats))}
+        ${row("技能",tri(b.train&&b.train.skill))}
+        ${row("觉醒",tri(b.train&&b.train.awk))}
+        ${row("弧盘",tri(b.train&&b.train.arc))}
+        ${row("卡带",tri(b.train&&b.train.mod))}</div></div>`;
+    // 建议左 / 现有右 分列对照（窄幅自动换行单列）
+    body.innerHTML=`<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:10px;align-items:start">
+      ${sugCol}${curCol}</div>`;
+    ov.querySelector("#bisCopy").onclick=()=>{
+      const text=bisPlainText(b);
+      (navigator.clipboard?navigator.clipboard.writeText(text):Promise.reject())
+        .then(()=>toast("BIS 建议文本已复制"))
+        .catch(()=>{ // 剪贴板不可用（非安全上下文等）：降级为选中文本提示
+          toast("复制失败——请手动选择下方文本","err");
+          const pre=document.createElement("pre");
+          pre.textContent=text; pre.style.cssText="white-space:pre-wrap;font-size:12px";
+          body.prepend(pre);
+        });
+    };
+  };
+  render();
+  ov.querySelector("#bisChar").onchange=render;
 }
 
 /* ---------- 配队（4 人小队；跨队可重复、队内唯一） ---------- */
@@ -1415,13 +2488,21 @@ async function renderTeams(){
   };
   bindTeamRows(teams,charNames);
 }
+function teamAvCell(name){
+  /* 成员头像预览格（2026-11-10 工作包3 图3）：有名字走 avatarImg（未映射自动回落
+     首字母占位），空位灰虚线占位 .av-empty。data-avi 下标与 .t-member 一一对应。 */
+  return name?avatarImg(name):`<span class="avatar-ph av-empty"></span>`;
+}
 function teamCardHTML(t,ti,charNames){
+  /* 2026-11-10 工作包3 图3：头像行移到名字行之后、成员下拉之前，4 等分 grid 与
+     下拉行（同为 4 等分）同宽——每格头像居中于对应下拉列正上方，与名字行等长 */
   return `<div class="card team-card" data-ti="${ti}">
     <div class="row" style="justify-content:space-between">
       <input class="t-name" value="${esc(t.name||`队伍${ti+1}`)}" style="width:170px">
       <button class="btn sec mini t-del">删除队伍</button></div>
-    <div class="row" style="gap:6px;margin:8px 0">
-      ${[0,1,2,3].map(i=>`<select class="t-member" style="width:170px">
+    <div class="team-avrow">${[0,1,2,3].map(i=>`<span data-avi="${i}">${teamAvCell(t.members?.[i]||"")}</span>`).join("")}</div>
+    <div class="team-memrow">
+      ${[0,1,2,3].map(i=>`<select class="t-member">
         <option value="">（空位）</option>
         ${charNames.map(n=>`<option ${t.members?.[i]===n?"selected":""}>${esc(n)}</option>`).join("")}</select>`).join("")}
     </div></div>`;
@@ -1430,9 +2511,22 @@ function bindTeamRows(teams,charNames){
   document.querySelectorAll(".team-card").forEach(card=>{
     const ti=+card.dataset.ti;
     card.querySelector(".t-del").onclick=()=>{ teams.splice(ti,1); renderTeamsList(teams,charNames); };
-    card.querySelectorAll(".t-member").forEach(sel=>sel.onchange=()=>{
-      const picked=[...card.querySelectorAll(".t-member")].map(x=>x.value).filter(Boolean);
-      if(new Set(picked).size!==picked.length){ sel.value=""; toast("同一队伍内角色不可重复","err"); }});
+    card.querySelectorAll(".t-member").forEach((sel,mi)=>{
+      sel.onchange=()=>{
+        const picked=[...card.querySelectorAll(".t-member")].map(x=>x.value).filter(Boolean);
+        if(new Set(picked).size!==picked.length){ sel.value=""; toast("同一队伍内角色不可重复","err"); }
+        const av=card.querySelector(`.team-avrow [data-avi="${mi}"]`);  // 选人即换头像（联动刷新该格）
+        if(av) av.innerHTML=teamAvCell(sel.value);
+      };
+      const avCell=card.querySelector(`.team-avrow [data-avi="${mi}"]`);
+      if(avCell){  // 点头像=开对应下拉选人（showPicker 不可用时退化为聚焦）
+        avCell.style.cursor="pointer";
+        avCell.title="点击选择该位置角色";
+        avCell.onclick=()=>{
+          try{ sel.showPicker(); }catch(_){ sel.focus(); sel.click(); }
+        };
+      }
+    });
   });
 }
 function renderTeamsList(teams,charNames){
@@ -1450,12 +2544,11 @@ function renderTeamsList(teams,charNames){
 let OCR_CURRENT=null;  // 最近获知的绑定窗口 {process,title}（来自窗口列表或手动选择）
 let OCR_LAYOUT=null;   // 已存网格布局缓存（标定沿用 / 背包识别等待上限估算用）
 let OCR_RUN=null;      // 进行中的背包 OCR 等待 {ctl,timedOut}；识别中再点一次按钮=取消等待
-let OCR_LVL_RUN=null;  // 进行中的角色等级 OCR 等待 {ctl,timedOut}；同上，再点一次=取消
 /* 尽力叫停后端遍历（发后即忘）：POST /api/ocr/cancel 置 _OCR_CANCEL，页间生效——
    当前页的 PS 点击序列点完即停、不再翻页/下一个目标；请求失败（旧后端 404 等）
    静默忽略，不影响主流程。等待超时/用户取消/「放弃」都会调用 */
 function ocrFireCancel(){
-  try{ fetch("/api/ocr/cancel",{method:"POST",headers:{"Content-Type":"application/json"},
+  try{ fetch("/api/ocr/cancel",{method:"POST",headers:{...AUTH_HEADERS,"Content-Type":"application/json"},
     body:"{}",signal:AbortSignal.timeout(3000)}).catch(()=>{}); }catch(_e){}
 }
 function ocrLayoutSummary(l){
@@ -1534,6 +2627,7 @@ async function ocrCalibrate(){
   ov.innerHTML=`<div class="modal" style="max-width:880px">
     <h3 style="margin:0 0 6px;font-size:14px">背包网格标定（三点）<span class="h-sub">依次点击 ①第一格(0,0)中心 → ②同行相邻格(1,0)中心 → ③第一格正下方格(0,1)中心（百分比记录，与分辨率无关）</span></h3>
     <div class="muted" style="margin-bottom:8px">当前布局：${esc(ocrLayoutSummary(layout)||"未保存")}</div>
+    <div class="muted" style="margin-bottom:8px">自动翻页步距（scroll.notches，存于 data/ocr_layout.json 可热调）：翻页后<b>少了半行/漏行</b> → notches +1；<b>多了/跳行</b> → notches -1（默认 6，由游戏灵敏度决定、与网格行高不成整数倍，需按实测微调）</div>
     <div id="calWrap" style="position:relative;display:inline-block;max-width:100%;line-height:0;overflow:hidden">
       <img id="calImg" alt="游戏窗口截图" src="data:image/png;base64,${cr.image}"
         style="max-width:100%;max-height:62vh;display:block;cursor:crosshair;border:1px solid var(--line2)">
@@ -1624,8 +2718,14 @@ async function ocrCalibrate(){
 function renderInv(){
   const inv=BOOT.state.inventory||{};
   const st=BOOT.state.settings||{};
+  // 手动录入置顶组（四页调整⑦）：这 5 项仅手动更新——OCR 应用/「以本次识别为准
+  // 清 0」都不触碰（fillChecked 两处按 PIN_SET 跳过）。id 已实读 data/materials.json
+  // 核对（2026-11-11）：coin=甲硬币（targets）、fons=方斯 / huan_stone=环石 /
+  // niefu_dice=捏造骰子 / zhishi_dice=质实骰子（extra_materials）
+  const PIN_IDS=["coin","fons","huan_stone","niefu_dice","zhishi_dice"];
+  const PIN_SET=new Set(PIN_IDS);
   const cats={};
-  allMaterials().forEach(m=>{(cats[m.category]=cats[m.category]||[]).push(m);});
+  allMaterials().forEach(m=>{ if(PIN_SET.has(m.id)) return; (cats[m.category]=cats[m.category]||[]).push(m); });  // 手动录入组从原分类剔除
   // 分档族标注（同族跨档等价折算：白:蓝:紫=1:3:9，经验按每本点数；tiers 数据驱动）
   const tierInfo=BOOT.tables.materials.tiers||{};
   const tierOf={};
@@ -1637,6 +2737,19 @@ function renderInv(){
     if(itemNames[m.id]&&itemNames[m.id][0]) return itemNames[m.id][0];
     return String(m.display||m.id).split("（")[0];
   };
+  // 材料格渲染（手动录入组与原分类共用同一份条目标记，字段/输入完全一致）
+  const matItem=m=>{
+    const tier=tierOf[m.id];
+    const tag=tier?(tier.f===1?`<span class="tag acc" title="基行=白档/当量口径；同族蓝/紫档按系数折算">分档</span>`
+                          :`<span class="tag warn" title="折算系数 ×${tier.f}">×${tier.f}</span>`):"";
+    return `<div class="mat-item">
+    <label title="${esc(m.source)}">${esc(invLabel(m))}</label>${obtainTag(m.obtain)}${tag}
+    <input type="number" min="0" data-inv="${m.id}" value="${inv[m.id]??0}"></div>`;
+  };
+  const pinned=PIN_IDS.map(id=>allMaterials().find(m=>m.id===id)).filter(Boolean);
+  const pinnedBlock=`<div style="font-size:13px;color:var(--faint);margin:12px 0 8px">手动录入
+      <span class="tag warn" title="这 ${pinned.length} 项仅手动更新：OCR 应用与「以本次识别为准清 0」都不会改动">仅手动更新</span></div>
+    <div class="mat-grid">${pinned.map(matItem).join("")}</div>`;
   $("#main").innerHTML=`
     <div class="row save-bar"><button class="btn big" id="saveInv">保存库存</button></div>
     <div class="card"><h3>材料库存<span class="h-sub">全量材料：体力本 + BOSS掉落/周本/小怪等外部来源；先按背包实际填写，之后规划器自动累加。带「分档」的材料按 白/蓝/紫 分开录入，保存后按官方系数折算抵扣缺口</span></h3>
@@ -1648,17 +2761,10 @@ function renderInv(){
       <span class="tag warn" id="ocrGameHint" style="display:none">未发现游戏窗口——先启动游戏</span></div>
     <div class="muted" style="margin-bottom:10px">自动绑定 HTGame.exe 游戏窗口（可「选择窗口」手动指定）→ 自动逐格点击背包格子 → 从右侧详情面板识别名称与数量 → 可选自动翻页（≤${st.ocr_max_pages??5} 页）。首次使用建议先「网格标定」；命中预览确认后预填，识别不了就手填。<span id="ocrLayoutInfo" style="margin-left:8px"></span></div>
     <div id="ocrPreview" style="display:none"></div>
+    ${pinnedBlock}
     ${Object.entries(cats).map(([cat,items])=>`
       <div style="font-size:13px;color:var(--faint);margin:12px 0 8px">${esc(cat)}</div>
-      <div class="mat-grid">
-      ${items.map(m=>{
-        const tier=tierOf[m.id];
-        const tag=tier?(tier.f===1?`<span class="tag acc" title="基行=白档/当量口径；同族蓝/紫档按系数折算">分档</span>`
-                              :`<span class="tag warn" title="折算系数 ×${tier.f}">×${tier.f}</span>`):"";
-        return `<div class="mat-item">
-        <label title="${esc(m.source)}">${esc(invLabel(m))}</label>${obtainTag(m.obtain)}${tag}
-        <input type="number" min="0" data-inv="${m.id}" value="${inv[m.id]??0}"></div>`;}).join("")}
-      </div>`).join("")}
+      <div class="mat-grid">${items.map(matItem).join("")}</div>`).join("")}
     </div>`;
   $("#btnOcr").onclick=async()=>{
     const btn=$("#btnOcr");
@@ -1681,7 +2787,7 @@ function renderInv(){
       // 长/可取消等待，不走通用 15s api()。取消/超时只中断前端等待；catch 里会
       // POST /api/ocr/cancel 叫停服务端（_OCR_CANCEL 页间生效：当前页点完、不再翻页；
       // 旧后端无此端点时请求静默失败，handler 继续到自然结束）
-      const res=await fetch("/api/inventory/ocr",{method:"POST",headers:{"Content-Type":"application/json"},
+      const res=await fetch("/api/inventory/ocr",{method:"POST",headers:{...AUTH_HEADERS,"Content-Type":"application/json"},
         body:"{}",signal:ctl.signal});
       const r=await res.json();
       // 502=游戏未运行/找不到窗口等：直接展示后端 error 文案，不再包一层「操作失败」
@@ -1694,16 +2800,42 @@ function renderInv(){
       // 契约 v3：window 为 {process,title}|null（兼容旧的字符串口径）
       const winTxt=!r.window?"未绑定":(typeof r.window==="object"
         ?`${esc(r.window.process||"?")}${r.window.title?`（${esc(r.window.title)}）`:""}`:esc(r.window));
+      // 判 0 安全门（默认关，纯前端判定；库存数据安全第一——宁可保留旧值也不误清）：
+      // 仅当本次识别可视为「背包完整扫完」才允许勾选「未出现的已收录材料清 0」——
+      //   a) pages>0 且 pages<ocr_max_pages：后端翻页触顶是静默 break（main.py
+      //      「if pages >= max_pages: break」不写 warning），只能靠页数比较发现；
+      //      触顶=背包可能没扫完，绝不判 0。pages 与下面的等待上限同源同钳位
+      //      （1-20，默认 5），与后端 _clamp_int 口径一致；
+      //   b) warnings 仅含良性判停（本页未发现新道具/翻页内容相同/连续空白）：
+      //      用户取消、窗口关闭等非良性终止一律禁用；
+      //   c) unknown_items 与 unmatched_lines 均为空：没有识别不了的东西。
+      // 任一不满足 → 勾选框禁用并在下方注明原因
+      const OCR_BENIGN_STOPS=["本页未发现新道具","翻页后内容与之前页相同","连续 3 格空白"];
+      const zeroGate=(()=>{
+        const pg=r.pages??0;
+        if(pg<=0) return "本次识别没有产出任何页面";
+        if(pg>=pages) return `翻页已达上限（${pg}/${pages} 页）——背包可能尚未扫完`;
+        const bad=(r.warnings||[]).filter(w=>!OCR_BENIGN_STOPS.some(s=>String(w).includes(s)));
+        if(bad.length) return "遍历非正常结束："+bad.join("；");
+        if(unknownItems.length) return `有 ${unknownItems.length} 项未识别材料——先映射或确认`;
+        const unmatched=(r.unmatched_lines||[]).length;
+        if(unmatched) return `有 ${unmatched} 行未命中原文`;
+        return "";
+      })();
       // 命中预览表（材料实名 ×数量，可改数后应用）；有未识别材料时也渲染空命中表，
       // 映射成功的行要落到这里参与同一条「应用预填」通道
       prev.style.display="block";
-      prev.innerHTML=`<div class="card"><h3>OCR 识别结果<span class="h-sub">${r.pages??0} 页 · 已点 ${r.cells_scanned??0} 格 · 窗口：${winTxt} · 命中 ${ids.length} 项${(r.warnings||[]).length?` · ${(r.warnings||[]).map(esc).join("；")}`:""}</span></h3>
+      prev.innerHTML=`<div class="card"><h3>OCR 识别结果<span class="h-sub">${r.pages??0} 页 · 已点 ${r.cells_scanned??0} 格 · 窗口：${winTxt} · 命中 ${ids.length} 项${(r.warnings||[]).length?` · ${(r.warnings||[]).map(esc).join("；")}`:""}（按识别顺序列出；同名材料多格合并为一条，取最大值）</span></h3>
         ${(ids.length||unknownItems.length)?`<div class="grid" id="ocrHitGrid">${ids.map(id=>{
           const label=matAllName(id);
           return `<div class="row" style="gap:6px"><input type="checkbox" data-hit checked title="勾选=参与应用/保存；取消勾选=跳过该行（识别错的材料可排除）">
             <span class="chip acc" style="max-width:260px">${esc(label)}</span>
-            <input type="number" min="0" data-ocr="${esc(id)}" value="${matches[id]}" style="width:90px"> <span class="muted">个</span></div>`;}).join("")
+            <input type="number" min="0" data-ocr="${esc(id)}" value="${matches[id]}" style="width:110px" title="识别数量，默认=OCR 值，可直接改正"> <span class="muted">个</span></div>`;}).join("")
           ||`<div class="muted">暂无命中——映射下方未识别材料后会出现在这里</div>`}</div>
+          <label class="row" style="margin-top:10px;gap:6px;align-items:center" title="${esc(zeroGate?"清 0 暂不可用："+zeroGate:"勾选后，「应用勾选项」和「应用并保存」会把库存中不在本次命中集内的已收录材料清 0（红框标记，保存前可肉眼复核）；取消勾选的命中行不受影响，仍保留旧值")}">
+            <input type="checkbox" id="ocrZeroMissing" ${zeroGate?"disabled":""}>
+            <span style="font-size:13px">以本次识别为准：未出现的已收录材料清 0（默认关）</span></label>
+          ${zeroGate?`<div class="muted" style="font-size:12px">ⓘ 清 0 未启用：${esc(zeroGate)}</div>`:""}
           <div class="row" style="margin-top:10px"><button class="btn" id="ocrApply">应用勾选项（黄色边框）</button>
           <button class="btn" id="ocrApplySave">应用并保存库存</button>
           <button class="btn sec" id="ocrDismiss">放弃</button></div>`
@@ -1727,7 +2859,26 @@ function renderInv(){
       });
       const fillChecked=()=>{
         let hits=0;
+        // 判 0（默认关，安全门见上方 zeroGate）：勾选后把库存表单里不在本次识别集
+        // 的已收录材料置 0 并加 inv-zeroed 红框（提交前肉眼复核）。识别集=预览里
+        // 全部 data-ocr 行，含已取消勾选的命中行——取消勾选=跳过=保留旧值，绝不判 0；
+        // 未勾选时清掉残留红框。提交链零改动：/api/inventory 为整表替换，前端
+        // v>0 过滤省略键=缺键=0（applySave 的 POST 构建原样承接）
+        const zeroCb=$("#ocrZeroMissing");
+        if(zeroCb&&zeroCb.checked){
+          const recognized=new Set([...prev.querySelectorAll("[data-ocr]")].map(i=>i.dataset.ocr));
+          document.querySelectorAll("[data-inv]").forEach(inp=>{
+            if(PIN_SET.has(inp.dataset.inv)) return;  // 手动录入组（四页调整⑦）：仅手动更新，判 0 永不触碰
+            if(recognized.has(inp.dataset.inv)){ inp.classList.remove("inv-zeroed"); return; }
+            inp.classList.add("inv-zeroed");  // 本次提交后必为 0：红框标出供肉眼复核
+            if(+inp.value!==0){ inp.value=0; hits++; }
+          });
+        }else{
+          document.querySelectorAll("[data-inv].inv-zeroed")
+            .forEach(inp=>inp.classList.remove("inv-zeroed"));
+        }
         checkedRows().forEach(inp=>{
+          if(PIN_SET.has(inp.dataset.ocr)) return;  // 手动录入组（四页调整⑦）：OCR 写入跳过，数量仅手动改
           const target=document.querySelector(`[data-inv="${inp.dataset.ocr}"]`);
           if(!target) return;
           const v=+inp.value||0;
@@ -1743,22 +2894,24 @@ function renderInv(){
       });
       const apply=$("#ocrApply");
       if(apply) apply.onclick=()=>{
-        const hits=fillChecked();   // 只填充勾选行
-        toast(hits?`已预填 ${hits} 项（黄色边框），请核对后点「保存库存」`:"数值无变化", hits?"ok":"ok");
+        const hits=fillChecked();   // 填充勾选行 +（勾选判 0 时）未命中材料置 0
+        const z=!!$("#ocrZeroMissing")?.checked;
+        toast(hits?`已更新 ${hits} 项（${z?"黄/红边框":"黄色边框"}），请核对后点「保存库存」`:"数值无变化", "ok");
         prev.style.display="none";
       };
       // 一键两步（修正「应用预填≠保存」两步流丢数据）：勾选行黄框预填 → 立即
       // POST /api/inventory 落库 → 更新 BOOT.state.inventory 并收起预览
       const applySave=$("#ocrApplySave");
       if(applySave) applySave.onclick=async()=>{
-        const hits=fillChecked();   // 勾选行填充
+        const hits=fillChecked();   // 勾选行填充 +（勾选判 0 时）未命中材料置 0
+        const z=!!$("#ocrZeroMissing")?.checked;
         const inventory={};
         document.querySelectorAll("[data-inv]").forEach(inp=>{const v=+inp.value||0; if(v>0)inventory[inp.dataset.inv]=v;});
         applySave.disabled=true;
         try{
           const r=await api("/api/inventory",{inventory});
           BOOT.state.inventory=r.inventory||inventory;  // 与「保存库存」同口径回填
-          toast(hits?`已预填 ${hits} 项（黄色边框）并保存库存`:"库存已保存");
+          toast(hits?`已更新 ${hits} 项（${z?"黄/红边框":"黄色边框"}）并保存库存`:"库存已保存");
           prev.style.display="none";
         }catch(e){ alertErr(e); applySave.disabled=false; }  // 保存失败不收起预览，可修正后重试
       };
@@ -1788,7 +2941,7 @@ function renderInv(){
             grid.insertAdjacentHTML("beforeend",
               `<div class="row" style="gap:6px"><input type="checkbox" data-hit checked title="勾选=参与应用/保存；取消勾选=跳过该行（识别错的材料可排除）">
               <span class="chip acc" style="max-width:260px">${esc(matAllName(matId))}</span>
-              <input type="number" min="0" data-ocr="${esc(matId)}" value="${cnt}" style="width:90px"> <span class="muted">个</span></div>`);
+              <input type="number" min="0" data-ocr="${esc(matId)}" value="${cnt}" style="width:110px" title="识别数量，默认=OCR 值，可直接改正"> <span class="muted">个</span></div>`);
             inp=grid.querySelector(`[data-ocr="${matId}"]`);
           }
           if(inp) inp.style.borderColor="var(--warn)";  // 黄框=预填待核对，与其它 OCR 预填一致
@@ -1852,7 +3005,7 @@ async function renderUpgradeBlock(host){
       <div class="row" style="margin-top:8px"><button class="btn sec mini" id="btnUpgFetch">🌐 从 wiki 拉取全部角色数据（约 1 分钟）</button></div>`;
     const btn=document.getElementById("btnUpgFetch");
     btn.onclick=async()=>{ btn.disabled=true; btn.textContent="拉取中…（27 个角色，约 1 分钟）";
-      try{ const fr=await fetch("/api/wiki/fetch-upgrades",{method:"POST",signal:AbortSignal.timeout(180000)});
+      try{ const fr=await fetch("/api/wiki/fetch-upgrades",{method:"POST",headers:AUTH_HEADERS,signal:AbortSignal.timeout(180000)});
         const d=await fr.json();
         toast(d.ok?`已抓取 ${d.count} 个角色`:(d.error||"拉取失败"), d.ok?"ok":"err");
         UPGRADES_CACHE = undefined; renderUpgradeBlock(host);
@@ -1922,7 +3075,7 @@ function renderTables(){
       <div id="upgBody"><div class="muted">加载中…</div></div></div>
     <div class="card"><h3>每轮产出<span class="h-sub">体力本 40 体力/轮，务必校准：掉落随世界等级变化；填小=多刷，填大=少刷</span></h3>
       <div class="mat-grid">
-      ${M.targets.map(t=>`<div class="mat-item"><label title="${esc(t.source||"")}">${esc(t.display_name||t.name)}</label>
+      ${M.targets.map(t=>`<div class="mat-item"><label title="${esc(t.source||"")}">${esc((t.concrete_names&&t.concrete_names.purple)||t.display_name||t.name)}</label>
         <input type="number" min="0" data-y="${t.id}" value="${y[t.id]??1}"></div>`).join("")}
       </div>
       <div class="row" style="margin-top:10px"><button class="btn" id="saveYields">保存产量表</button>
@@ -1944,6 +3097,10 @@ function renderTables(){
         <span style="width:44px;text-align:center">${obtainTag(m.obtain)}</span></div>`).join("")}
       </div>
       <button class="btn" id="saveNames" style="margin-top:10px">保存名称与来源</button>
+    </div>
+    <div class="card"><h3>攻略站数据同步<span class="h-sub">手动触发（绝不自动/定时）：ntestrategy + wiki.mysqil.com 公共目录 → 合并进角色库/武器库；不覆盖已有实名，单站失败不影响另一站</span></h3>
+      <div class="row"><button class="btn sec mini" id="btnSitesSync">🌐 同步攻略站数据</button></div>
+      <div class="banner info" id="sitesSyncResult" style="display:none;margin-top:8px"></div>
     </div>
     <div class="card"><h3>养成需求表<span class="h-sub">等级段 → 材料数量，表单编辑</span></h3>
       <div id="reqEditor"></div>
@@ -1988,6 +3145,41 @@ function renderTables(){
         max:+card.querySelector(".t-max").value||999, ladder};
     });
     try{await api("/api/tables/requirements",obj);BOOT.tables.requirements=obj;toast("需求表已保存");renderTables();}catch(e){alertErr(e);}
+  };
+  // 攻略站手动同步（同 wiki 拉取按钮链路：POST 长超时 → toast → 刷新本地状态）
+  $("#btnSitesSync").onclick=async()=>{
+    const btn=$("#btnSitesSync"); btn.disabled=true; btn.textContent="同步中…（抓取两站约 10~30 秒）";
+    try{
+      const fr=await fetch("/api/sites/sync-guide",{method:"POST",headers:AUTH_HEADERS,signal:AbortSignal.timeout(120000)});
+      const d=await fr.json();
+      if(!d.ok){ toast(d.error||"同步失败","err"); }
+      else{
+      if(typeof d.rev==="number") BOOT.rev=d.rev;  // 本端点合并库会 bump rev；裸 fetch 不走 api()，须手动跟进基线（复审阻断 #1）
+      BOOT.state.char_library=d.char_library; BOOT.state.weapon_library=d.weapon_library;
+      if(d.avatars) BOOT.avatars=d.avatars;          // 头像映射刷新
+      if(d.guide_slug_names) window.__GUIDE_SLUG_NAMES__=d.guide_slug_names;
+      if(d.builds) window.__BIS_BUILDS__=d.builds;   // builds 缓存通路（套组推荐下拉用）
+      const srcTxt=Object.entries(d.sources||{}).map(([k,v])=>v.ok
+        ?`${k}：角色 ${v.characters||0} · 弧盘 ${v.arcs||v.weapons||0}`
+        :`${k}：失败（${v.error}）`).join("，");
+      // 显式 display:block（复审 #11a）：.banner 类是 display:flex，回落到类样式会把
+      // <br> 与内联 <b> 切成并排 flex item——两个「行」不真换行；块级排版才能按 <br> 分行
+      $("#sitesSyncResult").style.display="block";
+      $("#sitesSyncResult").innerHTML=
+        `${esc(d.fetched_at)}　${esc(srcTxt)}<br>`+
+        `角色库新增 <b>${d.chars.added_count}</b>（已有 ${d.chars.existing}）· `+
+        `弧盘库新增 <b>${d.weapons.added_count}</b>（已有 ${d.weapons.existing}）· `+
+        `材料：已收录 ${d.materials.known}/${d.materials.candidates}，`+
+        `无法安全映射 ${d.materials.unmapped_count} 项（存快照待人工核对）· `+
+        `跨源异译归并 ${d.alt_names_count} 项`+
+        (d.avatars_dl?`<br>头像：本次补下 <b>${d.avatars_dl.downloaded}</b> 张`+
+         (d.avatars_dl.failed&&d.avatars_dl.failed.length
+           ?`，失败 <b>${d.avatars_dl.failed.length}</b> 个（${esc(d.avatars_dl.failed.join("、"))}）——下次同步自动补齐`
+           :""):"");
+      toast(`攻略站数据已同步：角色 +${d.chars.added_count}，弧盘 +${d.weapons.added_count}`,"ok");
+    }}
+    catch(e){alertErr(e);}
+    btn.disabled=false; btn.textContent="🌐 同步攻略站数据";
   };
 }
 function buildReqEditor(){
@@ -2080,10 +3272,13 @@ async function renderCommon(){
     <td>${edited?`<span class="tag warn">已改（默认 ${JSON.stringify(def)}）</span>`:`<span class="tag">默认</span>`}</td></tr>`;
   }).join("");
   /* 技能书系/罐头系显示名统一走 materials targets（display_name），杜绝 ability_N 裸 ID：
-     旧硬编码字典只覆盖 ability_1..3，ability_4/5（相/魂系角色）曾直接显示内部 ID */
+     旧硬编码字典只覆盖 ability_1..3，ability_4/5（相/魂系角色）曾直接显示内部 ID；
+     系列材料优先具体道具紫名（concrete_names.purple），console_N 等无该字段的
+     维持原 display_name 去括号逻辑 */
   const matDisplayName=id=>{
     const t=((BOOT.tables.materials||{}).targets||[]).find(x=>x.id===id);
-    return t?((t.display_name||t.name).split("（")[0]):id;
+    const purple=t&&t.concrete_names&&t.concrete_names.purple;
+    return purple||(t?((t.display_name||t.name).split("（")[0]):id);
   };
   const skillName=matDisplayName;
   const canName=matDisplayName;
@@ -2167,9 +3362,11 @@ function renderSettings(){
     </div>
     <div class="card"><h3>背包 OCR（实验·v3）<span class="h-sub">自动绑定 HTGame.exe 窗口 → 逐格点击 → 右侧详情识别 → 可选自动翻页</span></h3>
       ${setRow("游戏窗口关键词",`<input id="s_gwkw" value="${esc(s.game_window_keywords||"异环,Neverness")}" style="flex:1;min-width:220px">`,
-        "逗号分隔；标题兜底匹配（主绑定靠进程名，用库存页「选择窗口」写入）。背包 OCR 找不到游戏窗口直接报错、不再回退全屏；角色等级 OCR 仍会回退")}
+        "逗号分隔；标题兜底匹配（主绑定靠进程名，用库存页「选择窗口」写入）。背包 OCR 找不到游戏窗口直接报错、不再回退全屏")}
       ${setRow("自动翻页页数上限",`<input type="number" id="s_opages" value="${s.ocr_max_pages??5}" min="1" max="20">`,
         "识别一页后自动向游戏窗口发滚轮翻下一页，识别文本与上一页相同即提前停止；背包识别的前端等待上限会随页数自动放大")}
+      ${setRow("紧急停止热键（Ctrl+Alt+Q）",`<label class="switch"><input type="checkbox" id="s_hotkey" ${s.ocr_stop_hotkey!==false?"checked":""}></label>`,
+        "开启后面板常驻监听：人在游戏里出问题时按 Ctrl+Alt+Q，1~2 个循环内停止 OCR 遍历（提权面板可收到游戏焦点下的按键）")}
     </div>
     <div class="card"><h3>体力恢复模型<span class="h-sub">用于估计与未来预览，不影响执行逻辑</span></h3>
       ${setRow("体力上限",`<input type="number" id="s_cap" value="${s.stamina_cap??320}" min="1" max="999">`,
@@ -2191,6 +3388,11 @@ function renderSettings(){
     const snowRaw=$("#s_snow").value.trim();
     // 空值不提交（undefined 会被 JSON 丢弃→后端保留当前值），杜绝 ||默认值 把 0/空误回退
     const numVal=id=>{const v=document.getElementById(id).value.trim(); return v===""?undefined:+v;};
+    // oknte_root 变更二次确认（SEC-05 登记 建议③，与后端指纹闸配套）：错误的
+    // 目录将无法驱动任务且面板以管理员权限运行其内程序；取消即不发请求
+    if($("#s_root").value.trim() !== (s.oknte_root||"")){
+      if(!(await qConfirm("将修改 ok-nte 安装目录，错误的目录将无法驱动任务且面板以管理员权限运行其内程序。确认修改？")))return;
+    }
     try{await api("/api/settings",{
       oknte_root:$("#s_root").value, daily_stamina_limit:numVal("s_limit"),
       daily_reset_hour:numVal("s_reset"), max_run_minutes:numVal("s_maxmin"),
@@ -2199,6 +3401,7 @@ function renderSettings(){
       anomaly_hunter_stamina:numVal("s_hsta"), anomaly_hunter_target:$("#s_htgt").value,
       stamina_cap:numVal("s_cap"), stamina_regen_per_hour:numVal("s_regen"),
       game_window_keywords:$("#s_gwkw").value, ocr_max_pages:numVal("s_opages"),
+      ocr_stop_hotkey:$("#s_hotkey").checked,
       stamina_now:snowRaw===""?null:+snowRaw});
       toast("设置已保存"); await boot(); renderSettings();}catch(e){alertErr(e);}
   };
@@ -2550,7 +3753,7 @@ async function viewLog(idx, lines){
 async function downloadLog(idx){
   const f=LOGS_CURRENT.files[idx]; if(!f)return;
   try{
-    const res=await fetch(`/api/logs/download?i=${idx}`);
+    const res=await fetch(`/api/logs/download?i=${idx}`,{headers:AUTH_HEADERS});
     if(!res.ok){ toast("日志导出失败","err"); return; }
     const text=await res.text();
     const blob=new Blob([text],{type:"text/plain;charset=utf-8"});
@@ -2562,18 +3765,83 @@ async function downloadLog(idx){
   }catch(e){alertErr(e);}
 }
 
+/* ---------- 材料副本（2026-11-08 新增页签）：缺口按体力副本分块（只读聚合） ---------- */
+async function renderDungeons(){
+  /* 数据=GET /api/dungeon-gaps（纯读，planner.dungeon_gaps 聚合 stamina_blocks
+     六块 + 外部来源区）。每副本卡片：入口/体力/掉落材料统计块（2026-11-08 迭代，
+     .dmat/.dstat 样式：材料 chip + 需/持/差 三格 + 约 N 轮 · N 体力 pill）；
+     块合计=总轮数/总体力；空幕带双通道标注；巡礼展示周次数口径（面板不追踪
+     本周已刷次数，只标注每周上限口径——不编造「本周剩余次数」数值）。 */
+  $("#main").innerHTML=`
+    <div class="card"><h3>🗡️ 材料副本<span class="h-sub">体力缺口 → 副本轮数换算 · 只读聚合（/api/dungeon-gaps），不写计划不改数据</span></h3>
+      <div id="dgBody" class="muted">加载中…</div></div>`;
+  let d;
+  try{ d=await (await fetch("/api/dungeon-gaps",{headers:AUTH_HEADERS})).json(); }
+  catch(e){ const b=$("#dgBody"); if(b) b.textContent="加载失败："+e.message; return; }
+  const body=$("#dgBody");
+  if(!body) return;  // 加载期间切页：#main 已重建，不写旧节点
+  body.className="";
+  // 材料统计块（2026-11-08 迭代，替代原 chip+纯文本行）：左=材料 chip（title=mat_id）/
+  // 中=需·持·差 三格（差 gap>0 时 err 大字，=0 弱化「已齐」）/ 右=「约 N 轮 · N 体力」
+  // pill（N 体力=runs×本块 stamina_per_run，与块合计 total_stamina 同口径）；runs=0 且
+  // 缺口>0 → 「无产量数据」（周本材料后端不下发每轮产量，planner.dungeon_gaps）；
+  // gap=0 → pill 不显示。
+  const dstat=(label,val)=>`<div class="dstat"><span class="ds-label">${label}</span><span class="ds-val num">${val}</span></div>`;
+  const gapCell=m=>m.gap>0
+    ?`<div class="dstat dstat-gap"><span class="ds-label">差</span><span class="ds-val num">${m.gap}</span></div>`
+    :`<div class="dstat dstat-gap gap-zero"><span class="ds-label">差</span><span class="ds-val">已齐</span></div>`;
+  const runPill=(m,perRun)=>m.runs>0
+    ?`<span class="tag acc num" style="margin-left:auto">约 ${m.runs} 轮 · ${m.runs*perRun} 体力</span>`
+    :(m.gap>0?`<span class="muted" style="margin-left:auto">无产量数据</span>`:"");
+  const gapRow=(m,perRun)=>`<div class="dmat">
+    <span class="chip acc" style="max-width:220px" title="${esc(m.mat_id)}">${esc(m.name)}</span>
+    ${dstat("需",m.need)}${dstat("持",m.have)}${gapCell(m)}${runPill(m,perRun)}</div>`;
+  const cards=(d.blocks||[]).map(b=>{
+    const weekly=b.weekly_times?`<div class="row" style="gap:8px;margin-top:6px">
+        <span class="tag acc">周本口径</span>
+        <span class="muted">每周限 ${b.weekly_times} 次 × ${b.stamina_per_run} 体力 = ${b.weekly_stamina} 体力/周（用户口径；面板未追踪本周已刷次数，材料缺口无每轮产量，不计入轮数合计）</span></div>`:"";
+    const dual=b.dual_channel?`<div class="row" style="gap:8px;margin-top:6px">
+        <span class="tag warn">双通道</span>
+        <span class="muted">${esc(b.note||"")}</span></div>`:"";
+    return `<div class="card">
+      <h3>${esc(b.block||"—")}<span class="h-sub">${esc(b.entry||"—")} · ${b.stamina_per_run} 体力/轮${b.limits?` · ${esc(b.limits)}`:""}</span></h3>
+      ${(b.mats||[]).map(m=>gapRow(m,b.stamina_per_run)).join("")||`<div class="muted">本块无材料</div>`}
+      <div class="row" style="gap:14px;margin-top:4px;padding-top:9px;border-top:1px dashed var(--line)">
+        <b>合计</b><span class="num">约 ${b.total_runs} 轮 / ${b.total_stamina} 体力</span>
+        ${(b.mats||[]).filter(m=>m.runs>0).length>1?`<span class="muted">各材料轮数直和——每轮只产出所选的一个系列/对应 boss，需按材料分别执行</span>`:""}
+        ${b.task_type?`<span class="tag">${esc(b.task_type)}</span>`:""}
+      </div>
+      ${weekly}${dual}
+      ${b.note&&!b.dual_channel?`<div class="muted" style="margin-top:6px">${esc(b.note)}</div>`:""}
+    </div>`;}).join("");
+  const ext=(d.external||[]);
+  const extCard=ext.length?`<div class="card">
+      <h3>外部来源材料<span class="h-sub">不在六块体力副本内——无法按轮数规划，仅展示缺口</span></h3>
+      ${ext.map(m=>`<div class="dmat">
+        <span class="chip ${m.extra?"warn":"acc"}" style="max-width:220px" title="${esc(m.mat_id)}">${esc(m.name)}</span>
+        ${dstat("需",m.need)}${dstat("持",m.have)}${gapCell(m)}
+        <span style="display:flex;gap:8px;align-items:center;justify-content:flex-end;flex-wrap:wrap;min-width:0"><span class="tag ${m.extra?"warn":""}">${m.extra?"外部来源":"体力本（未入块）"}</span>${m.source?`<span class="muted">${esc(m.source)}</span>`:""}</span></div>`).join("")}
+    </div>`
+    :`<div class="card"><h3>外部来源材料</h3><div class="muted">当前无未入块的材料缺口</div></div>`;
+  body.innerHTML=cards+extCard
+    +`<div class="muted" style="margin-top:4px">口径：轮数=缺口÷每轮产量向上取整（与当日计划 make_plan 同口径）；追猎块按每局掉落（yields.json hunter_yield，默认 8）折算；周本材料无每轮产量，只展示缺口与周次数口径。体力本入口/掉落为调研观测值，以 data/materials.json stamina_blocks 各块 note 为准。</div>`;
+}
+
 /* ---------- 框架 ---------- */
 const PAGE_TITLES={overview:["总览","当日计划 · 执行控制 · 推演"],chars:["角色","养成目标与直接材料需求"],
   arc:["弧盘","按名字选择 · 物态适配过滤 · 材料按目标计算"],
   nullmux:["空幕","卡带 × 驱动块 · 词条记录"],
+  dungeons:["材料副本","体力缺口 → 副本轮数 · 六块分组 · 只读聚合"],
   teams:["配队","4 人队伍 · 跨队可复用 · 队内唯一"],
   codex:["图鉴数据","手动录入新角色/武器 + wiki 拉取预填"],
   common:["通用材料","每角色通用数量 → 具体材料映射"],inv:["库存","全量材料持有量"],
   tables:["数据表","产量 · 需求表 · 材料名校准"],settings:["设置","执行策略 · 体力模型 · 导入导出"],
-  history:["历史","执行记录与产量校准闭环"],logs:["日志","ok-nte 任务/应用日志 · 面板日志"]};
+  history:["历史","执行记录与产量校准闭环"],logs:["日志","ok-nte 任务/应用日志 · 面板日志"],
+  gacha:["抽卡分析","塔吉多官方抽卡记录 · 手动同步 · 本地累积"]};
 async function boot(){
   BOOT=await api("/api/bootstrap");
   window.__A2S__ = BOOT.attr_map||{};  // 属性→书系映射（技能书适配过滤用）
+  window.__GUIDE_SLUG_NAMES__ = BOOT.guide_slug_names||{};  // slug↔实名表（BIS 别名归一用）
   const tags=[];
   const c = BOOT.compat;
   if (c.status === "incompatible")
@@ -2583,6 +3851,10 @@ async function boot(){
   else
     tags.push(`<span class="tag ok">ok-nte ${esc(c.version||"?")}</span>`);
   tags.push(BOOT.admin?`<span class="tag ok">管理员</span>`:`<span class="tag warn">非管理员</span>`);
+  // 复审阻断⑤：DXGI 采集探测失败常驻警示（内嵌 Python 缺 d3dshot → capture_method
+  // 回落 BitBlt_RenderFull 卡死路径）；tooltip 带修复命令
+  if (BOOT.capture_warning)
+    tags.push(`<span class="tag warn" title="${esc(BOOT.capture_warning)}">DXGI 未生效</span>`);
   tags.push(BOOT.oknte_running?`<span class="tag warn">ok-nte 运行中</span>`:`<span class="tag ok">ok-nte 已关闭</span>`);
   tags.push(`<span class="tag" title="构建标识：若与你刚安装的版本不符，说明浏览器开的是旧面板页面（关掉重开即可）">构建 ${esc((BOOT.build||{}).built_at||"dev")}</span>`);
   $("#envTags").innerHTML=tags.join("");
@@ -2596,12 +3868,35 @@ function switchPage(t){
   $("#pageSub").textContent=title[1];
   clearInterval(TIMER);
   if(!BOOT) return;  // bootstrap 未完成（兼容检测约需数秒）：先记下目标页，boot 完成后按 CURRENT 渲染
-  ({overview:renderOverview,chars:renderChars,arc:renderArc,nullmux:renderNullmux,teams:renderTeams,
-    codex:renderCodex,common:renderCommon,inv:renderInv,
-    tables:renderTables,settings:renderSettings,history:renderHistory,logs:renderLogs})[t]();
+  // 返回渲染函数的 Promise（各 renderX 为 async）：跨页跳转（如抽卡页「去绑定」→
+  // 角色页 #tjdStatus）需要等渲染完成后再 scrollIntoView，否则滚的是旧骨架。
+  // 先渲染、再设 timer、最后 return：勿把 return 放中间——那会让下面的 overview
+  // 2s 轮询（总览页唯一的自动刷新，refreshStatus 不自调度）变成死代码（复审①）
+  const p=({overview:renderOverview,chars:renderChars,arc:renderArc,nullmux:renderNullmux,teams:renderTeams,
+    codex:renderCodex,common:renderCommon,inv:renderInv,dungeons:renderDungeons,
+    tables:renderTables,settings:renderSettings,history:renderHistory,logs:renderLogs,gacha:renderGacha})[t]();
   if(t==="overview") TIMER=setInterval(refreshStatus,2000);
+  return p;
 }
 document.querySelectorAll("#nav button").forEach(b=>b.onclick=()=>switchPage(b.dataset.t));
+
+/* ---------- 明亮/暗色主题（四页调整④）：documentElement[data-theme] 驱动 CSS
+   变量覆盖块（见样式区 [data-theme="light"]），localStorage('theme') 持久化，
+   启动恢复；缺省=暗色（:root 默认变量集）。存不进（隐私模式等）静默跳过 ---------- */
+function applyTheme(t){
+  document.documentElement.dataset.theme=t;
+  const b=$("#btnTheme");
+  if(b){ b.textContent=t==="light"?"☀️ 明亮":"🌙 暗色";
+    b.title="切换到"+(t==="light"?"暗色":"明亮")+"主题"; }
+  try{ localStorage.setItem("theme",t); }catch(_e){}
+}
+(function(){
+  let t="dark";
+  try{ if(localStorage.getItem("theme")==="light") t="light"; }catch(_e){}
+  applyTheme(t);
+})();
+$("#btnTheme").onclick=()=>applyTheme(document.documentElement.dataset.theme==="light"?"dark":"light");
+
 boot().then(()=>switchPage(CURRENT)).catch(e=>{
   $("#main").innerHTML=`<div class="card"><div class="banner warn">加载失败：${esc(e.message)}</div></div>`;
 });

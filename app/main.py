@@ -5,12 +5,14 @@ import ctypes
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 import webbrowser
+from pathlib import Path
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -18,9 +20,12 @@ from app import planner
 from app import game_data
 from app import growth
 from app import wiki_fetch
-from app.oknte_adapter import OkNte, OkNteError
+from app import sites_fetch
+from app import tajiduo_client
+from app.oknte_adapter import (OkNte, OkNteError, load_oknte_plan_overrides,
+                               oknte_plan_target_ids, save_oknte_plan_overrides)
 from app.runner import RUNNER
-from app.state import (DATA_DIR, ROOT, STATE, STATE_SCHEMA, load_json,
+from app.state import (DATA_DIR, ROOT, STATE, STATE_SCHEMA,
                        new_character, save_json_atomic as _save_json_atomic)
 
 if getattr(sys, "frozen", False):
@@ -33,6 +38,118 @@ if getattr(sys, "frozen", False):
 else:
     WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 INT_RE = re.compile(r"^-?\d+$")
+# 角色头像（2026-11-09 工作包2；2026-11-10 起源站改 wiki.mysqil.com）：头像经
+# sites_fetch.download_avatars 落 data/avatars/（手动同步攻略站时顺带下载），本路由只读本机文件
+AVATARS_DIR = os.path.join(DATA_DIR, "avatars")
+AVATAR_FNAME_RE = re.compile(r"^[a-z0-9-]+\.(?:webp|avif)$")
+AVATAR_CONTENT_TYPES = {"webp": "image/webp", "avif": "image/avif"}
+
+
+def _avatar_file_path(fname):
+    r"""URL 里的头像文件名 → 本机绝对路径；不合法/越界返回 None。
+
+    白名单双闸：①文件名严格 ^[a-z0-9-]+\.(webp|avif)$（无点无斜杠，路径拼接
+    天然无从逃逸）；②realpath 归属校验（防 symlink/大小写等文件系统层绕过，
+    与 sites_fetch._ensure_under 同款）。"""
+    fname = str(fname or "")
+    if not AVATAR_FNAME_RE.fullmatch(fname):
+        return None
+    root = os.path.realpath(AVATARS_DIR)
+    target = os.path.realpath(os.path.join(AVATARS_DIR, fname))
+    if os.path.commonpath([target, root]) != root:
+        return None
+    return target
+
+
+def _guide_slug_names():
+    """攻略站快照 → {slug: [中文名…]}（跨源同名实体多名并存；BIS 实名别名归一与
+    bootstrap 头像映射共用）。快照含 ntestrategy（英文名 slug，BIS 归并用）与
+    mysqil（拼音 slug，头像文件名口径）两源——头像落盘名 = mysqil 拼音 slug，
+    ntestrategy 条目查不到本机文件时自然跳过。无快照返回空表（前端回退实名精确匹配）。"""
+    snap = sites_fetch.load_snapshot() or {}
+    out = {}
+    for c in snap.get("characters") or []:
+        if not isinstance(c, dict):
+            continue
+        slug = str(c.get("slug") or "").strip().lower()
+        name = str(c.get("name") or "").strip()
+        if slug and name:
+            out.setdefault(slug, [])
+            if name not in out[slug]:
+                out[slug].append(name)
+    return out
+
+
+# 显式别名覆盖表（2026-11-10 工作包3 建，同日随头像源切换 mysqil 全面重写）：
+# 中文名 → mysqil 拼音 slug（头像文件名 = <mysqil slug>.webp，与
+# sites_fetch.MYSQIL_SLUG_NAMES 的官方实名逐一对应）。mysqil 名表进快照后多数实名
+# 可直接精确命中，本表兜底两类场景：①快照尚未同步（离线/首次启动）；②用户侧写法
+# 与站方实名存在异体字差。生效仍走 files.get(slug)——该 slug 无本机已下载头像时
+# 自然回落首字母占位，绝不造 URL。
+AVATAR_NAME_ALIASES = {
+    "安魂曲": "anhunqu",
+    "白藏": "baizang",
+    "残虹": "canhong",
+    "达芙蒂尔": "dafutier",
+    "埃德嘉": "edjia",
+    "法帝娅": "fadiya",
+    "哈尼娅": "haniya",
+    "海月": "haiyue",
+    "哈索尔": "hasuoer",
+    "黑羽": "heiyu",
+    "九原": "jiuyuan",
+    "卡厄斯": "kaesi",
+    "零": "ling",
+    "灵可": "lingke",
+    "明音凛": "mingyin",
+    "娜娜莉": "nanali",
+    "塔吉多": "tajiduo",
+    "小吱": "xiaozhi",
+    "浔": "xun",
+    "翳": "yi",
+    "伊洛伊": "yiluoyi",
+    "早雾": "zaowu",
+    "真红": "zhenhong",
+    "薄荷": "bohe",
+    "阿德勒": "adeler",
+    # 曳尔沐：mysqil/ntestrategy 均未收录（1.5 上半新角色，2026-11-11 复验）——
+    # 预留 yeermu slug（与 mysqil 拼音命名法一致）：手动投放 data/avatars/yeermu.webp
+    # 即亮（avatar_files 已改磁盘枚举）；站方日后收录同名 slug 时同步自动接管。
+    "曳尔沐": "yeermu",
+}
+
+
+def _avatar_map():
+    """角色实名 → 本地头像路径（bootstrap 下发；仅本机已下载文件）。
+    跨源多名（法帝娅/法蒂亚 等）都指向同一 slug 的头像；去括号基名（零（男）→零）
+    仅在无歧义时登记（零（男）/零（女）同基名 → 不登记，避免错配）——该歧义守卫
+    不放行「零」，由 AVATAR_NAME_ALIASES 显式放行（别名表优先级高于守卫，且只在
+    精确匹配失败时 setdefault 应用，不覆盖任何已有映射）。"""
+    files = sites_fetch.avatar_files()
+    out = {}
+    base_names = {}
+    for slug, names in _guide_slug_names().items():
+        fname = files.get(slug)
+        if not fname:
+            continue
+        url = f"/avatars/{fname}"
+        for name in names:
+            out.setdefault(name, url)
+            stripped = re.sub(r"（[^）]*）$", "", name)
+            if stripped and stripped != name:
+                if stripped in base_names and base_names[stripped] != url:
+                    base_names[stripped] = None  # 同基名多头像：歧义，不登记
+                else:
+                    base_names[stripped] = url
+    for name, url in base_names.items():
+        if url:
+            out.setdefault(name, url)
+    # 显式别名覆盖（2026-11-10）：精确匹配失败才应用；歧义守卫不登记的基名由本表放行
+    for name, slug in AVATAR_NAME_ALIASES.items():
+        fname = files.get(slug)
+        if fname:
+            out.setdefault(name, f"/avatars/{fname}")
+    return out
 
 
 def is_admin():
@@ -101,10 +218,11 @@ def _sanitize_character(raw):
     for key, levels in tracks.items():
         if key not in char["tracks"] or not isinstance(levels, dict):
             continue
-        clean_tracks[key] = {
-            "cur": _clamp_int(levels.get("cur"), 0, 999, 1),
-            "tgt": _clamp_int(levels.get("tgt"), 0, 999, 1),
-        }
+        cur_v = _clamp_int(levels.get("cur"), 0, 999, 1)
+        tgt_v = _clamp_int(levels.get("tgt"), 0, 999, 1)
+        # 不变式：目标≥当前（用户偏好）。陈旧标签页/旧客户端提交 cur>tgt 时兜底抬目标线；
+        # 塔吉多同步写入（_tajiduo_apply_rows）已按同规则维护 tgt
+        clean_tracks[key] = {"cur": cur_v, "tgt": max(tgt_v, cur_v)}
     char["tracks"].update(clean_tracks)
     extra = raw.get("extra_needs") or {}
     char["extra_needs"] = {
@@ -128,8 +246,10 @@ def _sanitize_character(raw):
     entry_skills = {}
     for k in growth.SKILL_KEYS:
         block = skills.get(k) if isinstance(skills.get(k), dict) else {}
-        entry_skills[k] = {"cur": _clamp_int(block.get("cur"), 0, skill_top, 0),
-                           "tgt": _clamp_int(block.get("tgt"), 0, skill_top, 0)}
+        cur_v = _clamp_int(block.get("cur"), 0, skill_top, 0)
+        tgt_v = _clamp_int(block.get("tgt"), 0, skill_top, 0)
+        entry_skills[k] = {"cur": cur_v,
+                           "tgt": max(tgt_v, cur_v)}  # 目标≥当前（与 tracks 兜底同规则）
     char["skills"] = entry_skills
     # 天赋解锁（wiki talentUnlock 两档，角色可选开启；参与技能材料计算）
     raw_unlocks = raw.get("talent_unlocks")
@@ -220,11 +340,29 @@ def _sanitize_settings(raw):
         current["oknte_root"] = raw["oknte_root"].strip()[:200]
     if "anomaly_hunter_target" in raw and isinstance(raw["anomaly_hunter_target"], str):
         current["anomaly_hunter_target"] = raw["anomaly_hunter_target"].strip()[:32]
-    for key in ("reserve_anomaly_hunter", "notify_enabled", "continuous_mode"):
+    for key in ("reserve_anomaly_hunter", "notify_enabled", "continuous_mode",
+                "ocr_stop_hotkey"):
         if key in raw:
             current[key] = bool(raw[key])
     current["daily_reset_hour"] = _clamp_int(current["daily_reset_hour"], 0, 23, 4)
     return current
+
+
+def _validate_oknte_root_change(old_value, new_value):
+    """oknte_root 指纹闸（SEC-05 登记 BUG-REGISTER 建议②，配置健全性闸非安全边界）：
+    仅在新值≠当前值时校验——整包回写同值（selftest DEFAULT_SETTINGS 回写）零开销。
+    校验只用 compat_check（纯文件存在性/JSON 结构检查）；绝不触碰
+    capture_probe_warning/dxgi_available（后者会在本进程执行 root 下 python.exe，
+    否则 POST /api/settings 自身成为执行触发点）。incompatible 抛 ValueError，
+    调用处（POST /api/settings）转 400 整体拒绝，state 原值不动。"""
+    if new_value == old_value:
+        return
+    if not new_value:
+        raise ValueError("ok-nte 安装目录不能为空")
+    report = OkNte(new_value).compat_check()
+    if report.get("status") == "incompatible":
+        raise ValueError("ok-nte 安装目录缺少必需结构："
+                         + "；".join(report.get("problems") or []))
 
 
 def _sanitize_custom_character(raw):
@@ -416,6 +554,282 @@ def _sanitize_libraries(raw):
         return out[:200]
     return {"char_library": _clean(raw.get("char_library")),
             "weapon_library": _clean(raw.get("weapon_library"), dedupe=False)}
+
+
+def _read_json_robust(path, retries=3, delay=0.3):
+    """带重试的 JSON 读取：最多尝试 retries 次（间隔 delay 秒，time.sleep），任一次
+    成功即返回；最终仍失败抛 ValueError（带完整路径与最后一次异常原文）。
+
+    背景（真机反馈「有时候读取错误」→ 瞬态 502 实锤）：ok-nte GUI 运行中会写自己的
+    配置文件，面板并发 open() 可读到半截 JSON/撞上写锁——单次读取的瞬态失败由短间隔
+    重试吸收。调用方（GET /api/oknte/plan-options、GET /api/oknte/plan）捕获 ValueError
+    转 502 展示。只捕 OSError/ValueError（open 失败与 JSON 解析失败），其他异常如实外抛。"""
+    last = None
+    attempts = max(1, int(retries))
+    for attempt in range(1, attempts + 1):
+        try:
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, ValueError) as e:
+            last = e
+            if attempt < attempts:
+                time.sleep(delay)
+    raise ValueError(
+        f"ok-nte 配置读取失败（重试 {attempts} 次后放弃）：{path}；"
+        f"最后一次异常 {last.__class__.__name__}: {last}") from None
+
+
+def _plan_options(oknte):
+    """GET /api/oknte/plan-options 的取数逻辑（纯只读，不写任何配置/状态）。
+
+    读 working/configs 的 DailyRoutineTaskConfigs.json 当前 daily_anomaly 键值，
+    对照下一步执行时 prepare_daily_profile 将写入配置副本的值（runner._execute_step
+    同款口径：首个计划步骤的 mat config + 本地已耗体力+步骤体力 + 循环模式=停用），
+    产出 {changes:[{key,cur,new}], restarts, restarts_reason}。
+    restarts 语义：ok-nte 运行中=1（GUI 占用采集与配置，无头任务进 busy 等待，
+    须完全退出后才生效）；否则 0——headless 用独立配置副本（configs_planner）且
+    每步重读配置，面板与用户 configs 均无需重启。
+    读取健壮化：_read_json_robust 带重试；daily_anomaly 缺失/非 dict 显式报错
+    （此前静默空 changes 会误导用户「无差异」）；make_plan 生成失败同样转 ValueError
+    （端点统一 502，不再 500）。配置不可读抛 ValueError。"""
+    cfg = _read_json_robust(oknte.routine_config)
+    daily = cfg.get("daily_anomaly")
+    if not isinstance(daily, dict):
+        raise ValueError(f"ok-nte 配置缺少 daily_anomaly 段：{oknte.routine_config}")
+    try:
+        plan = planner.make_plan(oknte, plan_targets=oknte_plan_target_ids())
+    except Exception as e:  # noqa: BLE001  生成失败转 502 文案（预览端点不 500）
+        raise ValueError(f"生成执行计划失败：{e.__class__.__name__}: {e}") from None
+    steps = plan.get("steps") or []
+    changes, intended = [], {}
+    if steps:
+        mat = planner.TARGETS.get(steps[0]["mat_id"]) or {}
+        intended = dict(mat.get("config") or {})
+        used_now = int(STATE.today.get("used_stamina", 0) or 0)
+        intended["目标消耗体力"] = used_now + int(steps[0]["stamina"])
+        intended["循环模式"] = "停用"
+        for key, new in intended.items():
+            cur = daily.get(key)
+            if cur != new:
+                changes.append({"key": str(key)[:32], "cur": cur, "new": new})
+    running = oknte.is_running_cached()
+    return {
+        "oknte_running": running,
+        "changes": changes,
+        "restarts": 1 if running else 0,
+        "restarts_reason": (
+            "ok-nte 正在运行：无头任务会等待其完全退出（busy 等待重试），"
+            "退出后下一步拉起即以新值生效——无需重启面板"
+            if running else
+            "headless 使用独立配置副本（working\\configs_planner），"
+            "每步拉起时重读配置即生效，无需重启面板与 ok-nte"),
+        "steps_count": len(steps),
+        "plan_reason": plan.get("reason") or "",
+        "first_step": ({"mat_id": steps[0]["mat_id"], "name": steps[0]["name"],
+                        "stamina": steps[0]["stamina"]} if steps else None),
+    }
+
+
+# Routine Items 的 9 个子任务开关 id（2026-11-12 真实 configs\DailyRoutineTask.json 实读：
+# coffee/cinema_date/furniture/gift/daily_anomaly/daily_anomaly_hunter/daily_claim/
+# fountain/store_purchase + 顶层「存在失败时发送 BOT 通知」/「Exit After Task」）
+OKNTE_ROUTINE_ITEM_IDS = ("coffee", "cinema_date", "furniture", "gift", "daily_anomaly",
+                          "daily_anomaly_hunter", "daily_claim", "fountain",
+                          "store_purchase")
+# 覆盖可写的 misc 段（DailyRoutineTaskConfigs.json 同文件内的段名；按任务口径六段）
+OKNTE_PLAN_MISC_SECTIONS = ("coffee", "cinema_date", "fountain", "furniture",
+                            "store_purchase", "gift")
+OKNTE_PLAN_OVERRIDE_PATH = Path(DATA_DIR) / "oknte_plan.json"
+
+
+def oknte_cycle_options():
+    """循环序列 19 项全集具名（2026-11-12 总览页总计划）：materials.json targets
+    全部带 config 的目标（exp_char/exp_arc/coin + ability_1-5 + arc_1-5 + console_1-6）
+    派生 {entry, label}。entry 格式与 ok-nte 真实 configs\\DailyRoutineTaskConfigs.json
+    循环序列实样一致（半角冒号+空格，如「异能升级材料: 3」；经验族=具体奖励目标
+    原词，如「角色经验」——2026-11-12 实读确认）；label=任务类型·序号（具体名）/
+    任务类型·具体奖励目标，派生逻辑在 planner.cycle_entry/cycle_label（来源注释
+    与分隔符常量 CYCLE_SEQ_SEPARATOR 同处）。写死映射表=TARGETS（materials.json
+    targets 19 项），不新增任何数据源。"""
+    out = []
+    for mat_id in planner.TARGET_ORDER:
+        item = planner.cycle_item_of(mat_id)
+        if item:
+            out.append({"entry": item["entry"], "label": item["label"]})
+    return out
+
+
+def _oknte_plan_tree(oknte):
+    """GET /api/oknte/plan 取数逻辑（纯只读，绝不写任何 ok-nte 配置）。
+
+    读真实 configs 全选项树：{routine_items: 9 开关 bool + bot_notify + exit_after_task,
+    daily_anomaly: 全键含循环序列, hunter: {追猎目标, 领取奖励次数},
+    misc: {coffee 全键, cinema_date, fountain, furniture, store_purchase, gift},
+    cycle_options: 循环序列 19 项具名全集（oknte_cycle_options）,
+    source_paths}，并合并 data/oknte_plan.json 现值为 overrides 段。
+    读取经 _read_json_robust（重试吸收 ok-nte GUI 运行中的写冲突）；失败抛
+    ValueError（带完整路径，端点转 502）。AnomalyHunter.json 缺失按 warning 返回
+    （compat 口径：首次追猎执行时自动创建），不算读取失败。"""
+    cfg = _read_json_robust(oknte.routine_config)
+    daily = cfg.get("daily_anomaly")
+    if not isinstance(daily, dict):
+        raise ValueError(f"ok-nte 配置缺少 daily_anomaly 段：{oknte.routine_config}")
+    items_file = _read_json_robust(oknte.routine_items)
+    items = items_file.get("Routine Items")
+    if not isinstance(items, list):
+        raise ValueError(f"ok-nte 配置缺少 Routine Items 段：{oknte.routine_items}")
+    routine_items = {}
+    for entry in items:
+        if isinstance(entry, dict) and entry.get("id"):
+            routine_items[str(entry["id"])] = bool(entry.get("enabled"))
+    routine_items["bot_notify"] = bool(items_file.get("存在失败时发送 BOT 通知"))
+    routine_items["exit_after_task"] = bool(items_file.get("Exit After Task"))
+    warnings = []
+    hunter = {}
+    if os.path.isfile(oknte.hunter_config):
+        hunter_file = _read_json_robust(oknte.hunter_config)
+        if isinstance(hunter_file, dict):
+            hunter = {"追猎目标": hunter_file.get("追猎目标"),
+                      "领取奖励次数": hunter_file.get("领取奖励次数")}
+        else:
+            warnings.append(f"AnomalyHunter.json 不是对象：{oknte.hunter_config}")
+    else:
+        warnings.append("AnomalyHunter.json 不存在（首次追猎执行时会自动创建）："
+                        + oknte.hunter_config)
+    misc = {}
+    for section in OKNTE_PLAN_MISC_SECTIONS:
+        value = cfg.get(section)
+        misc[section] = dict(value) if isinstance(value, dict) else {}
+    return {
+        "routine_items": routine_items,
+        "daily_anomaly": daily,
+        "hunter": hunter,
+        "misc": misc,
+        "cycle_options": oknte_cycle_options(),
+        "source_paths": {"routine_configs": oknte.routine_config,
+                         "routine_items": oknte.routine_items,
+                         "hunter": oknte.hunter_config},
+        "overrides": load_oknte_plan_overrides() or {},
+        "overrides_path": str(OKNTE_PLAN_OVERRIDE_PATH),
+        "warnings": warnings,
+    }
+
+
+def _sanitize_oknte_plan_overrides(body):
+    """POST /api/oknte/plan 覆盖对象校验：键白名单 + 类型约束，非法即抛 ValueError
+    （端点转 400，绝不静默丢弃——静默丢会让用户以为保存成功实则无效）。
+
+    与 GET /api/oknte/plan 的选项树同构。仅落 data/oknte_plan.json；消费发生在
+    执行链构建配置副本时（prepare_daily_profile）与计划生成时（make_plan.plan_targets）。
+    不新增任何写 ok-nte 真实配置的通路。"""
+    if not isinstance(body, dict):
+        raise ValueError("覆盖对象必须是 JSON 对象")
+    allowed_top = {"routine_items", "daily_anomaly", "hunter", "misc", "plan_targets"}
+    unknown_top = sorted(set(body) - allowed_top)
+    if unknown_top:
+        raise ValueError(f"未知键：{unknown_top}（允许的键：{sorted(allowed_top)}）")
+    clean = {}
+
+    ri = body.get("routine_items")
+    if ri is not None:
+        if not isinstance(ri, dict):
+            raise ValueError("routine_items 必须是对象")
+        allowed_ri = set(OKNTE_ROUTINE_ITEM_IDS) | {"bot_notify", "exit_after_task"}
+        bad = sorted(set(ri) - allowed_ri)
+        if bad:
+            raise ValueError(f"routine_items 未知键：{bad}（允许：{sorted(allowed_ri)}）")
+        for key, value in ri.items():
+            if not isinstance(value, bool):
+                raise ValueError(f"routine_items『{key}』必须是布尔值")
+        clean["routine_items"] = dict(ri)
+
+    daily = body.get("daily_anomaly")
+    if daily is not None:
+        if not isinstance(daily, dict):
+            raise ValueError("daily_anomaly 必须是对象")
+        allowed_daily = {"任务类型", "具体奖励目标", "异能材料序号", "弧盘材料序号",
+                         "空幕序号", "目标消耗体力", "循环序列"}
+        bad = sorted(set(daily) - allowed_daily)
+        if bad:
+            raise ValueError(f"daily_anomaly 未知键：{bad}"
+                             "（循环模式由规划器强制为「停用」，不可覆盖）")
+        out = {}
+        for key, value in daily.items():
+            if key == "循环序列":
+                if not isinstance(value, list) or \
+                        not all(isinstance(v, str) for v in value):
+                    raise ValueError("循环序列必须是字符串数组")
+                seq = [v.strip()[:32] for v in value if v.strip()]
+                if len(seq) > 64:
+                    raise ValueError("循环序列最多 64 项")
+                out[key] = seq
+            elif key in ("异能材料序号", "弧盘材料序号", "空幕序号", "目标消耗体力"):
+                if not isinstance(value, int) or isinstance(value, bool):
+                    raise ValueError(f"daily_anomaly『{key}』必须是整数")
+                if key == "目标消耗体力" and value < 0:
+                    raise ValueError("目标消耗体力不能为负")
+                out[key] = value
+            else:  # 任务类型 / 具体奖励目标
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(f"daily_anomaly『{key}』必须是非空字符串")
+                out[key] = value.strip()[:32]
+        clean["daily_anomaly"] = out
+
+    hunter = body.get("hunter")
+    if hunter is not None:
+        if not isinstance(hunter, dict):
+            raise ValueError("hunter 必须是对象")
+        bad = sorted(set(hunter) - {"追猎目标", "领取奖励次数"})
+        if bad:
+            raise ValueError(f"hunter 未知键：{bad}（允许：['领取奖励次数', '追猎目标']）")
+        out = {}
+        if "追猎目标" in hunter:
+            value = hunter["追猎目标"]
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError("追猎目标必须是非空字符串")
+            out["追猎目标"] = value.strip()[:32]
+        if "领取奖励次数" in hunter:
+            value = hunter["领取奖励次数"]
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ValueError("领取奖励次数必须是非负整数")
+            out["领取奖励次数"] = value
+        clean["hunter"] = out
+
+    misc = body.get("misc")
+    if misc is not None:
+        if not isinstance(misc, dict):
+            raise ValueError("misc 必须是对象")
+        bad = sorted(set(misc) - set(OKNTE_PLAN_MISC_SECTIONS))
+        if bad:
+            raise ValueError(f"misc 未知段：{bad}（允许：{list(OKNTE_PLAN_MISC_SECTIONS)}）")
+        out = {}
+        for section, section_patch in misc.items():
+            if not isinstance(section_patch, dict):
+                raise ValueError(f"misc『{section}』必须是对象")
+            for key, value in section_patch.items():
+                scalar = isinstance(value, (bool, int, float, str))
+                list_ok = (isinstance(value, list) and value and
+                           all(isinstance(v, (bool, int, float, str)) for v in value))
+                if not (scalar or list_ok):
+                    raise ValueError(f"misc『{section}.{key}』值类型不支持（仅标量或标量数组）")
+            out[section] = {str(k)[:32]: v for k, v in section_patch.items()}
+        clean["misc"] = out
+
+    targets = body.get("plan_targets")
+    if targets is not None:
+        if not isinstance(targets, list):
+            raise ValueError("plan_targets 必须是字符串数组")
+        ids = [str(v).strip() for v in targets if str(v).strip()]
+        bad = sorted({m for m in ids if m not in planner.TARGETS})
+        if bad:
+            raise ValueError(f"plan_targets 含未知材料 id：{bad}"
+                             f"（可规划材料：{sorted(planner.TARGETS)}）")
+        uniq = list(dict.fromkeys(ids))
+        if len(uniq) > 32:
+            raise ValueError("plan_targets 最多 32 项")
+        clean["plan_targets"] = uniq
+
+    return clean
 
 
 def _common_costs():
@@ -685,6 +1099,11 @@ _OCR_LAYOUT_DEFAULT = {
     "step": {"dx": 0.0854, "dy": 0.1843},
     "detail_roi": {"x": 0.682, "y": 0.139, "w": 0.297, "h": 0.713},
     "page_wait_ms": 800,
+    # 滚轮翻页步距（2026-11-08 实测：硬编码 5 格×-480 每页少半个材料身位=欠量，
+    # 默认提到 6 格补偿）。滚轮每格推进像素由游戏灵敏度决定、与网格行高不成整数
+    # 倍 → 偏移随页数漂移，无自动标定手段；用户可经 data/ocr_layout.json 热调：
+    # 翻页少了（下一页开头漏行）→ notches +1，翻页多了（跳行）→ notches -1。
+    "scroll": {"notches": 6, "wheel_delta": 480},
 }
 _OCR_GAME_WINDOW_CLASS = "UnrealWindow"  # UE 主窗口类名（ok-nte 同款绑定依据）
 _OCR_WINDOWS_PREFIX = "__OCR_WINDOWS__:"
@@ -751,12 +1170,8 @@ Function New-OcrEngine {
   }
   return $eng
 }
-Function Invoke-Ocr($rect, $engine) {
-  # 截 $rect 屏幕区域 → WinRT 识别 → 文本（截屏与识别的唯一实现，各脚本段共用）
-  $bmp = New-Object System.Drawing.Bitmap($rect.Width, $rect.Height)
-  $g = [System.Drawing.Graphics]::FromImage($bmp)
-  $g.CopyFromScreen($rect.X, $rect.Y, 0, 0, (New-Object System.Drawing.Size($rect.Width, $rect.Height)))
-  $g.Dispose()
+Function Invoke-OcrBitmap($bmp, $engine) {
+  # Bitmap → PNG → WinRT 识别 → 文本（识别公共尾段，截屏/放大变体共用）
   $ms = New-Object System.IO.MemoryStream
   $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
   $bmp.Dispose()
@@ -770,6 +1185,27 @@ Function Invoke-Ocr($rect, $engine) {
   $soft = Await ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
   $result = Await ($engine.RecognizeAsync($soft)) ([Windows.Media.Ocr.OcrResult])
   return $result.Text
+}
+Function Invoke-Ocr($rect, $engine) {
+  # 截 $rect 屏幕区域 → WinRT 识别 → 文本（截屏与识别的唯一实现，各脚本段共用）
+  $bmp = New-Object System.Drawing.Bitmap($rect.Width, $rect.Height)
+  $g = [System.Drawing.Graphics]::FromImage($bmp)
+  $g.CopyFromScreen($rect.X, $rect.Y, 0, 0, (New-Object System.Drawing.Size($rect.Width, $rect.Height)))
+  $g.Dispose()
+  return Invoke-OcrBitmap $bmp $engine
+}
+Function Invoke-Ocr2x($rect, $engine) {
+  # 截屏后 2x 放大再识别：异能页倾斜卡片小字号 1x 数字误读（实测 "1/10"→"7/70"、
+  # "普通攻击"→"通玟击"），放大后笔画可辨。注意 PS5.1 坑：New-Object 括号内
+  # 禁止内联算术——宽高先落标量
+  $bmp = New-Object System.Drawing.Bitmap($rect.Width, $rect.Height)
+  $g = [System.Drawing.Graphics]::FromImage($bmp)
+  $g.CopyFromScreen($rect.X, $rect.Y, 0, 0, (New-Object System.Drawing.Size($rect.Width, $rect.Height)))
+  $g.Dispose()
+  $bw = $rect.Width * 2
+  $bh = $rect.Height * 2
+  $big = New-Object System.Drawing.Bitmap($bmp, (New-Object System.Drawing.Size($bw, $bh)))
+  return Invoke-OcrBitmap $big $engine
 }
 '''
 
@@ -834,6 +1270,29 @@ def _ocr_run_ps(script, replacements, timeout=90):
     return out, err, r.returncode
 
 
+def _run_ps_file(ps, timeout):
+    """把 PS 脚本落临时文件用 -File 执行（返回 (stdout 字节, stderr 字节, returncode)）。
+
+    -EncodedCommand 把 UTF-16LE+base64（≈1.37×膨胀）塞进命令行，受 Win32 32767
+    字符上限——角色遍历脚本变大后撞线（WinError 206"文件名或扩展名过长"，2026-11-06
+    实机）。-File 无此限制。文件必须 UTF-8 **带 BOM**：PS 5.1 对无 BOM 文件按 ANSI
+    解析，中文注释/字符串会乱码。用完即删（含超时/异常路径）。"""
+    fd, ps_path = tempfile.mkstemp(prefix="oknte_ocr_", suffix=".ps1")
+    os.close(fd)
+    try:
+        Path(ps_path).write_text(ps, encoding="utf-8-sig")
+        r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                            "-File", ps_path],
+                           capture_output=True, timeout=timeout,
+                           creationflags=0x08000000)
+        return r.stdout, r.stderr, r.returncode
+    finally:
+        try:
+            os.remove(ps_path)
+        except OSError:
+            pass
+
+
 def _ocr_check_errors(out, err, returncode):
     """OCR PS 输出的公共错误标记：语言包缺失 → ValueError（message 带可用语言）；
     脚本失败 → OSError。"""
@@ -868,6 +1327,7 @@ def _sanitize_ocr_layout(raw):
     first = raw.get("first_cell") if isinstance(raw.get("first_cell"), dict) else {}
     step = raw.get("step") if isinstance(raw.get("step"), dict) else {}
     roi = raw.get("detail_roi") if isinstance(raw.get("detail_roi"), dict) else {}
+    scroll = raw.get("scroll") if isinstance(raw.get("scroll"), dict) else {}
     d = _OCR_LAYOUT_DEFAULT
     cols = _clamp_int(raw.get("cols"), 1, 20, d["cols"])
     rows = _clamp_int(raw.get("rows"), 1, 20, d["rows"])
@@ -891,6 +1351,12 @@ def _sanitize_ocr_layout(raw):
                        "h": _ratio01(roi.get("h"), d["detail_roi"]["h"])},
         "page_wait_ms": _clamp_int(raw.get("page_wait_ms"), 100, 10000,
                                    d["page_wait_ms"]),
+        # 滚轮翻页步距：notches 1-20（0/负数会变成"不翻页"，过大一次跳过多页
+        # 直接触发判停）、wheel_delta 120-960（游戏 WHEEL_DELTA 标准值域内）
+        "scroll": {"notches": _clamp_int(scroll.get("notches"), 1, 20,
+                                         d["scroll"]["notches"]),
+                   "wheel_delta": _clamp_int(scroll.get("wheel_delta"), 120, 960,
+                                             d["scroll"]["wheel_delta"])},
     }
 
 
@@ -1130,11 +1596,26 @@ def _ocr_traverse_page(hwnd, layout, win_size):
     return [cells[k] for k in sorted(cells)]
 
 
-def _ocr_scroll(hwnd, safe_kw):
-    """滚轮下翻一页：游戏窗口保持前台 + 滚轮下滚 5 格。hwnd 失效时 PS 内回退
-    标题关键词查找（v2 行为）。失败静默——翻不动由"滚后文本与之前页相同"判停。"""
-    ps = _OCR_PS_SCROLL.replace("__HWND__", str(int(hwnd or 0))).replace(
-        "__KEYWORDS__", safe_kw)
+def _ocr_scroll(hwnd, safe_kw, layout=None):
+    """滚轮下翻一页：游戏窗口保持前台 + 光标锚到网格列表区首格（按标定
+    first_cell 比例，保证滚轮落在列表上而非右侧详情面板）+ 按 layout.scroll
+    步距下滚（notches×wheel_delta；2026-11-08 实测硬编码 5 格每页欠半个材料
+    身位 → 默认 6 格，data/ocr_layout.json 可热调：翻页少了加 notches、
+    多了减）。layout 缺省时内部现读（_ocr_layout 每次读盘 → 热生效）。
+    hwnd 失效时 PS 内回退标题关键词查找（v2 行为）。失败静默——翻不动由
+    "滚后文本与之前页相同"判停。"""
+    lay = layout if isinstance(layout, dict) and layout else _ocr_layout()
+    sc = lay.get("scroll") if isinstance(lay.get("scroll"), dict) else {}
+    fc = lay.get("first_cell") if isinstance(lay.get("first_cell"), dict) else {}
+    ps = (_OCR_PS_SCROLL
+          .replace("__HWND__", str(int(hwnd or 0)))
+          .replace("__KEYWORDS__", safe_kw)
+          .replace("__SCROLL_NOTCHES__", str(_clamp_int(sc.get("notches"), 1, 20,
+                                                        _OCR_LAYOUT_DEFAULT["scroll"]["notches"])))
+          .replace("__SCROLL_WDELTA__", str(_clamp_int(sc.get("wheel_delta"), 120, 960,
+                                                        _OCR_LAYOUT_DEFAULT["scroll"]["wheel_delta"])))
+          .replace("__SCROLL_X_RATIO__", f"{_ratio01(fc.get('x'), 0.5):.4f}")
+          .replace("__SCROLL_Y_RATIO__", f"{_ratio01(fc.get('y'), 0.5):.4f}"))
     encoded = base64.b64encode(ps.encode("utf-16-le")).decode("ascii")
     try:
         subprocess.run(["powershell", "-NoProfile", "-EncodedCommand", encoded],
@@ -1190,14 +1671,48 @@ def _ocr_badge_count(text):
     return None
 
 
+_OCR_NUMNOISE_SEP_RE = re.compile(r"[\d.,，。：:；;、·×xX*＊+\-－~～／/%]+")
+
+
+def _ocr_numeric_noise(text):
+    """OCR 数字噪声判定（纯函数，selftest 覆盖；2026-11-08 用户实测："1519" 这类
+    纯数字被 OCR 误读成道具首行后，可被映射成永久别名/收进 unknown_items 持续污染）：
+    - 有汉字（CJK）一律放行——"哇塞1号"、"1269 道具" 可能是合法实名/带字文本；
+    - 无汉字且剥掉数字与分隔符（半/全角逗号句点冒号顿号、×x*＊ 等乘号变体、
+      加减斜杠百分号）后不剩内容 → 纯数字/数字+分隔符（"1519"、"1,234"、"×42"）；
+    - 无汉字且数字占比 > 0.6（"86/1269" 形态）。
+    消费方：_ocr_map_unknown 拒绝映射（端点转 400）、_inventory_candidates 跳过
+    别名（纵深防御，挡手改 materials.json）、traverse 的 unknown 收集（首行纯
+    数字不进 unknown_items，仍进 unmatched_lines 保可见）。"""
+    t = _ocr_norm(text)
+    if not t:
+        return False
+    if any("\u4e00" <= ch <= "\u9fff" for ch in t):
+        return False
+    if not _OCR_NUMNOISE_SEP_RE.sub("", t):
+        return True
+    digits = sum(ch.isdigit() for ch in t)
+    return digits / len(t) > 0.6
+
+
 def _inventory_candidates():
     """库存实名候选表（match_inventory_text/_parse_cell_item 共用的单一逻辑源）：
-    item_names 别名 + display_name（含去括号前缀），归一化去重后最长优先。"""
-    inv = {m["id"]: m for m in planner.MATERIALS.get("targets", [])}
+    item_names 别名 + display_name（含去括号前缀），归一化去重后最长优先；
+    跨材料同名按归一化键（_ocr_norm 口径）去重——首个归属者胜，防同一实名被
+    两个 mat_id 认领（无梦果核回归：targets dreamless_core 与 extra
+    city_ability_up 曾双键并存，命中行会出两份）。
+    manual_only:true 的材料（2026-11-10 手动项机制：甲硬币/方斯/环石/捏造骰子/
+    质实骰子）不参与 OCR 自动识别——库存只能经 /api/inventory 手动录入（该端点
+    的全量过滤白名单 planner.ALL_ORDER 仍含这 5 个 id，extra 登记自动带入）；
+    不进 tiers，折算/缺口链（equivalent_inventory 走 tiers）天然不涉及。"""
+    inv = {m["id"]: m for m in planner.MATERIALS.get("targets", [])
+           if not m.get("manual_only")}
     for e in planner.MATERIALS.get("extra_materials", []):
-        inv[e["id"]] = e
+        if not e.get("manual_only"):
+            inv[e["id"]] = e
     item_names = planner.MATERIALS.get("item_names") or {}
     candidates = []  # (norm_alias, mat_id)
+    claimed = set()  # 跨材料已认领的归一化实名（首个归属者胜，与 _ocr_norm 同键）
     for mat_id, entry in inv.items():
         aliases = list(item_names.get(mat_id) or [])
         disp = entry.get("display_name") or entry.get("name") or ""
@@ -1207,10 +1722,15 @@ def _inventory_candidates():
         for a in aliases:
             if not a or len(a) < 2:
                 continue
+            if _ocr_numeric_noise(a):  # 纯数字别名（如手改 materials.json 写入
+                continue               # "1519"）不得成为候选——OCR 数字噪声会永久误命中
             na = _ocr_norm(a)
             if na in seen:
                 continue
+            if na in claimed:  # 跨材料同名：跳过（保留首个归属者，避免遮蔽/双份命中行）
+                continue
             seen.add(na)
+            claimed.add(na)
             candidates.append((na, mat_id))
     candidates.sort(key=lambda x: -len(x[0]))  # 最长优先：先匹配更具体的实名
     return candidates
@@ -1266,7 +1786,7 @@ def _parse_cell_item(text, candidates=None):
 
 # ---- OCR 遍历取消（代数令牌，评审 2026-11-05）与单飞 ----
 # 旧方案「每轮遍历入口无条件 clear」存在竞态：取消 set 后旧 handler 线程仍在 PS
-# 页内（背包单页上限 ~86s / 角色 240s），用户立刻再点识别，新一轮入口 clear 会把
+# 页内（背包单页上限 ~86s），用户立刻再点识别，新一轮入口 clear 会把
 # 发给旧轮的取消吞掉——旧遍历继续点满所有页，与新轮同时用全局鼠标点击互相污染。
 # 改为代数令牌：每轮遍历入口代数 +1，取消只对「登记时的当前代数」生效——旧轮的
 # 取消绝不泄漏进新一轮，也无需入口 clear，从根上消除该竞态。
@@ -1274,8 +1794,8 @@ _OCR_CANCEL = threading.Event()   # 取消事件（配合 _OCR_CANCEL_GEN 代数
 _OCR_GEN_LOCK = threading.Lock()  # 代数推进与取消定向的登记锁（判定处 int 读 GIL 原子）
 _OCR_GEN = 0                      # 遍历代数计数器（每轮遍历入口 +1，永不复用）
 _OCR_CANCEL_GEN = 0               # 取消针对的代数（无活跃遍历时指向最近一代=等效无操作）
-# OCR 单飞锁：背包/角色遍历共用全局 SetCursorPos/mouse_event，绝不并发（并发会互相
-# 污染点击与识别结果）——两个遍历端点非阻塞抢占，抢不到即 409。
+# OCR 单飞锁：背包遍历独占全局 SetCursorPos/mouse_event（并发会互相
+# 污染点击与识别结果）——遍历端点非阻塞抢占，抢不到即 409。
 # /api/ocr/capture 只截屏不点击，不占用该锁。
 _OCR_RUN_LOCK = threading.Lock()
 
@@ -1304,31 +1824,36 @@ def _ocr_cancel_active():
     return gen
 
 
-def _ocr_cancel_file(gen):
-    """gen 代角色遍历的取消哨兵文件路径：角色遍历的"每头像循环"在 PS 子进程里
-    跑，Python Event 传不进去 → 取消时落哨兵文件，PS 脚本每头像循环头 Test-Path
-    探测到即提前收尾（已点击头像的结果照常输出）。路径按代数区分——旧轮哨兵与
-    新轮互不可见（与代数令牌同一竞态防线）；纯标准库零依赖。"""
-    return os.path.join(tempfile.gettempdir(), "oknte_ocr_cancel_%d.flag" % gen)
+_HOTKEY_STOP = threading.Event()
 
 
-def _ocr_cancel_file_write(gen):
-    """gen 代取消哨兵落盘（/api/ocr/cancel 调用）。写失败不报错：Event 侧取消
-    仍生效，角色遍历退化为跑满子进程超时。"""
-    try:
-        with open(_ocr_cancel_file(gen), "w", encoding="utf-8") as f:
-            f.write("cancel")
-    except OSError:
-        pass
-
-
-def _ocr_cancel_file_clear(gen):
-    """清除 gen 代取消哨兵（该代遍历收尾自清；子进程超时路径的残留亦无害——
-    该代数永不复用，文件不会再被任何一轮引用）。"""
-    try:
-        os.remove(_ocr_cancel_file(gen))
-    except OSError:
-        pass
+def _hotkey_loop():
+    """全局紧急停止热键（默认 Ctrl+Alt+Q）：提权面板与游戏同完整性级别，游戏持
+    焦点时按键依然可见（GetAsyncKeyState 读全局异步键态，不经消息路由）。触发即
+    复用 /api/ocr/cancel 的取消原语（代数令牌定向），背包遍历在格间检查点 1~2 个
+    循环内停。设置开关 ocr_stop_hotkey 可关（设置页）。轮询 80ms：CPU 可忽略；
+    边沿触发，按住只算一次。注册冲突不存在（不注册，只读键态）。"""
+    user32 = ctypes.windll.user32
+    vk_ctrl, vk_menu, vk_q = 0x11, 0x12, 0x51
+    armed = False
+    while not _HOTKEY_STOP.is_set():
+        try:
+            if not STATE.settings.get("ocr_stop_hotkey", True):
+                _HOTKEY_STOP.wait(0.25)
+                continue
+            if (user32.GetAsyncKeyState(vk_ctrl) & 0x8000
+                    and user32.GetAsyncKeyState(vk_menu) & 0x8000
+                    and user32.GetAsyncKeyState(vk_q) & 0x8000):
+                if not armed:
+                    armed = True
+                    gen = _ocr_cancel_active()
+                    print(f"[热键] Ctrl+Alt+Q → OCR 遍历紧急停止（取消代数 {gen}）",
+                          flush=True)
+            else:
+                armed = False
+        except OSError:
+            pass
+        _HOTKEY_STOP.wait(0.08)
 
 
 def _run_backpack_ocr(mode="traverse"):
@@ -1436,10 +1961,14 @@ def _run_backpack_ocr(mode="traverse"):
                     matches[mat_id] = max(matches.get(mat_id, 0), count)  # 同名跨格取最大
                 else:
                     # c) 未收录：不判停，收集待映射清单（同时进 unmatched_lines
-                    # 供前端「未命中原文」折叠展示——前端契约不变）
+                    # 供前端「未命中原文」折叠展示——前端契约不变）。
+                    # 首行纯数字（无 CJK 的 OCR 数字噪声，如 "1519"）不进
+                    # unknown_items——否则会在映射界面被误登记成实名；仍进
+                    # unmatched_lines 保可见
                     first_line = cell_text.strip().splitlines()[0][:80]
                     key = _ocr_norm(first_line)
-                    if key not in unknown_seen and len(unknown_items) < 60:
+                    if not _ocr_numeric_noise(first_line) \
+                            and key not in unknown_seen and len(unknown_items) < 60:
                         unknown_seen.add(key)
                         unknown_items.append({"name_text": first_line,
                                               "count": _ocr_badge_count(cell_text)})
@@ -1464,8 +1993,8 @@ def _run_backpack_ocr(mode="traverse"):
             break
         if pages >= max_pages:
             break
-        # 滚轮翻页（占位符修复后滚动脚本恢复生效）+ 等待渲染
-        _ocr_scroll(hwnd, safe_kw)
+        # 滚轮翻页（占位符修复后滚动脚本恢复生效；步距/锚点经 layout 注入）+ 等待渲染
+        _ocr_scroll(hwnd, safe_kw, layout)
         time.sleep(max(0.1, layout.get("page_wait_ms", 800)) / 1000.0)
     if stop_reason:
         warnings.append(stop_reason)
@@ -1498,6 +2027,11 @@ def _ocr_map_unknown(name_text, mat_id):
     norm = _ocr_norm(name_text)
     if not 2 <= len(norm) <= 24:
         raise ValueError("name_text 归一化后须为 2-24 字（当前 " + str(len(norm)) + " 字）")
+    # 纯数字/数字占比过高（无 CJK）→ 拒绝（2026-11-08 用户实测："1519" 这类数字
+    # 被 OCR 误读成道具名后被映射成永久别名，此后每轮识别持续污染库存）。端点
+    # 自动转 400，提示用户填写材料的具体名称
+    if _ocr_numeric_noise(norm):
+        raise ValueError("纯数字不是道具实名，请填写材料的具体名称")
     with _MATERIALS_LOCK:  # 读-改-写整体持锁：与图鉴/display 写者互斥（防并发丢更新）
         item_names = planner.MATERIALS.get("item_names") or {}
         aliases = [a for a in (item_names.get(mat_id) or []) if isinstance(a, str)]
@@ -1579,55 +2113,6 @@ def _ocr_norm(s, keep_space=False):
     for a, b in _OCR_VARIANT_MAP.items():
         s = s.replace(a, b)
     return s
-
-
-def match_character_text(text):
-    """角色列表 OCR 文本 → 等级表（纯函数，selftest 覆盖）。
-
-    用户确认的行格式：每行 = 角色名 + 等级 + 异能等级（两个数字）。
-    角色名候选 = 本系统角色名 + 游戏目录角色名（归一化后最长优先）；
-    行内按顺序取前两个数字：第 1 个=角色等级，第 2 个=异能等级（只有一个数字时
-    只给 level）。返回 {"characters": [{name, level, ability}], "unmatched_lines"}；
-    同名多行取首次出现（列表页不会重复）。角色等级 1-999、异能 0-99 越界丢弃。
-    """
-    names = {}
-    for c in STATE.characters:
-        if c.get("name"):
-            names[_ocr_norm(c["name"])] = c["name"]
-    try:
-        data = game_data.load()
-    except (OSError, ValueError):
-        data = {}
-    for entry in data.get("characters", []):
-        if isinstance(entry, dict) and entry.get("name"):
-            names.setdefault(_ocr_norm(entry["name"]), entry["name"])
-    candidates = sorted(((k, v) for k, v in names.items() if len(k) >= 1),
-                        key=lambda x: -len(x[0]))  # 单字名（浔/零/翳）合法；最长优先防误配
-    out, seen, unmatched_lines = [], set(), []
-    for raw in (text or "").splitlines():
-        line = _ocr_norm(raw, keep_space=True)  # 保留空格：等级/异能两个数字靠空格分隔
-        if not line or line in seen:
-            continue
-        seen.add(line)
-        hit_key = next((k for k, v in candidates if k in line), None)
-        if not hit_key:
-            if len(unmatched_lines) < 60:
-                unmatched_lines.append(raw.strip())
-            continue
-        name = names[hit_key]
-        if name in [x["name"] for x in out]:
-            continue  # 同名取首次出现（列表页不重复）
-        after = line[line.find(hit_key) + len(hit_key):]
-        nums = re.findall(r"\d{1,3}", after)
-        level = int(nums[0]) if nums and 1 <= int(nums[0]) <= 999 else None
-        ability = (int(nums[1]) if len(nums) > 1 and 0 <= int(nums[1]) <= 99
-                   else None)
-        if level is None:
-            if len(unmatched_lines) < 60:
-                unmatched_lines.append(raw.strip())
-            continue
-        out.append({"name": name, "level": level, "ability": ability})
-    return {"characters": out, "unmatched_lines": unmatched_lines}
 
 
 _OCR_PS_CAPTURE = r'''
@@ -1750,427 +2235,6 @@ foreach ($pt in $Points) {
 Write-Output ("__OCR_META__" + "`t" + $meta.window + "`t" + "window")
 '''
 
-# ---- 角色等级 OCR v2：真实 UI 遍历（2026-11-04 用户截图取证；2026-11-06 实机重定标，
-#      新增"弧盘"导航与弧盘页 ROI：左导航竖排 信息/弧盘/异能/觉醒；2026-11-06 实机
-#      反馈二轮：300ms 等待截到过渡帧致全空+误判停 → 等待可配置 800ms；点头像后显式
-#      点"信息"导航兜底；头像列滚轮下滚遍历整列，按信息页文本去重、整列无新角色 2 轮自停）----
-_CHAR_OCR_FILE = os.path.join(DATA_DIR, "char_ocr_layout.json")
-_CHAR_OCR_DEFAULT = {
-    "avatars": {"x": 0.9572, "y": 0.182, "dy": 0.1468, "count": 5},
-    "info_nav": {"x": 0.058, "y": 0.229},
-    "ability_nav": {"x": 0.058, "y": 0.57},
-    "arc_nav": {"x": 0.058, "y": 0.322},
-    "info_roi": {"x": 0.655, "y": 0.14, "w": 0.17, "h": 0.24},
-    "arc_roi": {"x": 0.63, "y": 0.13, "w": 0.17, "h": 0.125},
-    "ability_roi": {"x": 0.24, "y": 0.315, "w": 0.56, "h": 0.545},
-    "page_wait_ms": 800,
-    "scroll": {"x": 0.9572, "y": 0.5, "notches": 3},
-}
-
-
-def _sanitize_char_ocr_layout(raw):
-    """角色等级 OCR 布局消毒：比例钳位 0-1、头像数 1-10、页等待 200-2000ms；
-    缺失/非法回落默认。"""
-    if not isinstance(raw, dict):
-        raise ValueError("char layout 必须是对象")
-    d = _CHAR_OCR_DEFAULT
-    av = raw.get("avatars") if isinstance(raw.get("avatars"), dict) else {}
-    inn = raw.get("info_nav") if isinstance(raw.get("info_nav"), dict) else {}
-    nav = raw.get("ability_nav") if isinstance(raw.get("ability_nav"), dict) else {}
-    an = raw.get("arc_nav") if isinstance(raw.get("arc_nav"), dict) else {}
-    ir = raw.get("info_roi") if isinstance(raw.get("info_roi"), dict) else {}
-    ac = raw.get("arc_roi") if isinstance(raw.get("arc_roi"), dict) else {}
-    ar = raw.get("ability_roi") if isinstance(raw.get("ability_roi"), dict) else {}
-    sc = raw.get("scroll") if isinstance(raw.get("scroll"), dict) else {}
-
-    def _r(value, default):
-        try:
-            return max(0.0, min(1.0, round(float(value), 4)))
-        except (TypeError, ValueError):
-            return default
-
-    return {
-        "avatars": {"x": _r(av.get("x"), d["avatars"]["x"]),
-                    "y": _r(av.get("y"), d["avatars"]["y"]),
-                    "dy": _r(av.get("dy"), d["avatars"]["dy"]),
-                    "count": _clamp_int(av.get("count"), 1, 10, d["avatars"]["count"])},
-        "info_nav": {"x": _r(inn.get("x"), d["info_nav"]["x"]),
-                     "y": _r(inn.get("y"), d["info_nav"]["y"])},
-        "ability_nav": {"x": _r(nav.get("x"), d["ability_nav"]["x"]),
-                        "y": _r(nav.get("y"), d["ability_nav"]["y"])},
-        "arc_nav": {"x": _r(an.get("x"), d["arc_nav"]["x"]),
-                    "y": _r(an.get("y"), d["arc_nav"]["y"])},
-        "info_roi": {"x": _r(ir.get("x"), d["info_roi"]["x"]),
-                     "y": _r(ir.get("y"), d["info_roi"]["y"]),
-                     "w": _r(ir.get("w"), d["info_roi"]["w"]),
-                     "h": _r(ir.get("h"), d["info_roi"]["h"])},
-        "arc_roi": {"x": _r(ac.get("x"), d["arc_roi"]["x"]),
-                    "y": _r(ac.get("y"), d["arc_roi"]["y"]),
-                    "w": _r(ac.get("w"), d["arc_roi"]["w"]),
-                    "h": _r(ac.get("h"), d["arc_roi"]["h"])},
-        "ability_roi": {"x": _r(ar.get("x"), d["ability_roi"]["x"]),
-                        "y": _r(ar.get("y"), d["ability_roi"]["y"]),
-                        "w": _r(ar.get("w"), d["ability_roi"]["w"]),
-                        "h": _r(ar.get("h"), d["ability_roi"]["h"])},
-        "page_wait_ms": _clamp_int(raw.get("page_wait_ms"), 200, 2000,
-                                   d["page_wait_ms"]),
-        "scroll": {"x": _r(sc.get("x"), d["scroll"]["x"]),
-                   "y": _r(sc.get("y"), d["scroll"]["y"]),
-                   "notches": _clamp_int(sc.get("notches"), 1, 10,
-                                         d["scroll"]["notches"])},
-    }
-
-
-def _char_ocr_layout():
-    """读取角色等级 OCR 布局：data/char_ocr_layout.json 优先（每次读取 → 热生效）；
-    缺失时落盘默认值。"""
-    layout = load_json(_CHAR_OCR_FILE)
-    if not isinstance(layout, dict):
-        layout = {}
-    clean = _sanitize_char_ocr_layout(layout)
-    if not layout:
-        # 缺失时落盘默认布局（自愈）：必须用别名 _save_json_atomic——本模块只以
-        # 别名导入（见 import 区），裸名不存在，真机曾每次点击必抛 NameError
-        _save_json_atomic(_CHAR_OCR_FILE, clean)
-    return clean
-
-
-_CHAR_SKILL_ANCHORS = (("普通攻击", "normal"), ("变轨技能", "variable"),
-                       ("极轨终结", "orbit"), ("援护技", "assist"))
-
-
-def _parse_char_info_text(text):
-    """角色信息页 OCR → {name, level, level_cap}（纯函数，selftest 覆盖）。
-
-    名字 = 已知角色名（本系统角色 + 游戏目录，归一化后最长优先）在文本中出现；
-    等级 = "Lv.70/70" 或 "70/70" 的当前值（斜杠前）；level_cap = 斜杠后的上限段
-    （仅识别展示，不参与应用）。名字识别失败时 name=None（前端标注"未识别"，
-    不可应用）。"""
-    norm_ns = _ocr_norm(text)                       # 去空白：名字子串匹配用
-    norm_sp = _ocr_norm(text, keep_space=True)      # 保留空格：Lv 数字提取用
-    names = {}
-    for c in STATE.characters:
-        if c.get("name"):
-            names.setdefault(_ocr_norm(c["name"]), c["name"])
-    try:
-        data = game_data.load()
-    except (OSError, ValueError):
-        data = {}
-    for entry in data.get("characters", []):
-        if isinstance(entry, dict) and entry.get("name"):
-            names.setdefault(_ocr_norm(entry["name"]), entry["name"])
-    name = None
-    for key, value in sorted(names.items(), key=lambda x: -len(x[0])):
-        if len(key) >= 1 and key in norm_ns:
-            name = value
-            break
-    level = None
-    level_cap = None
-    # 斜杠对优先（当前值/上限值都取）；仅 "Lv.70" 无斜杠时退回单数（不编造上限）。
-    # 2026-11-06 实机 OCR：字符间带空格（"L v ： 75 / 80"，L 还会误读成"廴"）——
-    # 故 l\s*v 容忍 L/v 分离，斜杠两侧容忍空格，且回退对不依赖 Lv 前缀。
-    m = (re.search(r"l\s*v[.:．]?\s*(\d{1,3})\s*/\s*(\d{1,3})", norm_sp, re.I)
-         or re.search(r"(\d{1,3})\s*/\s*(\d{1,3})", norm_sp)
-         or re.search(r"l\s*v[.:．]?\s*(\d{1,3})", norm_sp, re.I))
-    if m:
-        value = int(m.group(1))
-        if 1 <= value <= 999:
-            level = value
-        if m.lastindex and m.lastindex >= 2:
-            cap = int(m.group(2))
-            if 1 <= cap <= 999:
-                level_cap = cap
-    return {"name": name, "level": level, "level_cap": level_cap}
-
-
-def _parse_char_ability_text(text):
-    """异能页 OCR → 四技能与都市特技当前等级（纯函数，selftest 覆盖）。
-
-    锚定技能实名（普通攻击/变轨技能/极轨终结/援护技）后取首个 N/10 的分子；
-    都市特技两档按分母区分：N/5 → talent1、N/2 → talent2（2026-11-03 截图实证
-    安魂曲为 0/5 与 0/2）。锚点缺失的键保持 None（不编造）。
-    2026-11-06 实机 OCR 字符间带空格（"普 通 攻 击 6 / 10"）→ 锚点匹配与技能数字
-    用去空格文本；档位间空格是 "0/5 0/2" 两档的唯一分隔（并成 "0/50/2" 无法分档），
-    故斜杠紧凑化（"6 / 10"→"6/10"）但保留其余空格，特技在紧凑文本上提取。"""
-    norm = _ocr_norm(text, keep_space=True)
-    compact = re.sub(r"\s*[/／]\s*", "/", norm)
-    stripped = compact.replace(" ", "")
-    out = {"normal": None, "variable": None, "orbit": None, "assist": None,
-           "talent1": None, "talent2": None}
-    for anchor, key in _CHAR_SKILL_ANCHORS:
-        pos = stripped.find(anchor)
-        if pos < 0:
-            continue
-        m = re.search(r"(\d{1,2})/\d{1,2}", stripped[pos + len(anchor):])
-        if m and 0 <= int(m.group(1)) <= 99:
-            out[key] = int(m.group(1))
-    for m in re.finditer(r"(\d{1,2})/([52])(?!\d)", compact):
-        num, den = int(m.group(1)), int(m.group(2))
-        key = "talent1" if den == 5 else "talent2"
-        if out[key] is None and 0 <= num <= 5:
-            out[key] = num
-    return out
-
-
-def _parse_char_arc_text(text):
-    """弧盘页 OCR → {arc_name, arc_level, arc_level_cap}（纯函数，selftest 覆盖）。
-
-    弧盘实名 = 已知弧盘名（游戏目录 weapons + 本系统角色已绑 weapon，归一化后
-    最长优先）在文本中出现（2026-11-06 截图口径："漆黑青春妄想 Lv: 60/60"）；
-    arc_level = "Lv: 60/60" 斜杠前当前值（clamp 0-999），arc_level_cap = 斜杠后
-    上限值（缺失 None）。实名未收录时 arc_name=None（前端用 data-arcmap 下拉
-    手动指定，不可直接应用）。"""
-    norm_ns = _ocr_norm(text)                       # 去空白：实名子串匹配用
-    norm_sp = _ocr_norm(text, keep_space=True)      # 保留空格：Lv 数字提取用
-    weapons = {}
-    try:
-        data = game_data.load()
-    except (OSError, ValueError):
-        data = {}
-    for entry in data.get("weapons", []):
-        if isinstance(entry, dict) and entry.get("name"):
-            weapons.setdefault(_ocr_norm(entry["name"]), entry["name"])
-    for c in STATE.characters:
-        w = c.get("weapon")
-        if isinstance(w, str) and w.strip():
-            weapons.setdefault(_ocr_norm(w), w.strip())
-    arc_name = None
-    for key, value in sorted(weapons.items(), key=lambda x: -len(x[0])):
-        if len(key) >= 1 and key in norm_ns:
-            arc_name = value
-            break
-    arc_level = None
-    arc_level_cap = None
-    # 2026-11-06 实机 OCR 空格形态（同 _parse_char_info_text）：l\s*v 容忍分离、
-    # 斜杠两侧容忍空格、回退对不依赖 Lv 前缀
-    m = (re.search(r"l\s*v[:.．]?\s*(\d{1,3})\s*/\s*(\d{1,3})", norm_sp, re.I)
-         or re.search(r"(\d{1,3})\s*/\s*(\d{1,3})", norm_sp))
-    if m:
-        value = int(m.group(1))
-        if 0 <= value <= 999:  # 弧盘等级允许 0（未升级），上限与角色等级一致
-            arc_level = value
-        cap = int(m.group(2))
-        if 1 <= cap <= 999:
-            arc_level_cap = cap
-    return {"arc_name": arc_name, "arc_level": arc_level,
-            "arc_level_cap": arc_level_cap}
-
-
-def _run_chars_ocr():
-    """角色等级遍历（实验）：逐个点头像 → 信息 ROI（名字+Lv）→ "弧盘"导航 →
-    弧盘 ROI（实名+等级）→ "异能"导航 → 异能 ROI（四技能/都市特技）→ 解析。
-    系统组件零第三方依赖。
-
-    返回 {characters, window, warnings}；
-    失败 raise OSError/TimeoutExpired/ValueError/_OcrWindowNotFound。"""
-    gen = _ocr_gen_begin()  # 代数登记：取消按代数定向，旧轮的取消绝不泄漏进新一轮
-    cancel_file = _ocr_cancel_file(gen)  # 本轮专属哨兵路径（按代区分，旧轮互不可见）
-    keywords = str(STATE.settings.get("game_window_keywords") or "异环,Neverness")
-    hwnd, meta, _wins = _bind_game_window()
-    if not hwnd:
-        raise _OcrWindowNotFound("未找到游戏窗口（" + _default_game_process()
-                                 + "）——请先启动游戏，或在设置/窗口列表中手动选择")
-    win_w = _clamp_int(meta.get("w"), 1, 100000, 1)
-    win_h = _clamp_int(meta.get("h"), 1, 100000, 1)
-    layout = _char_ocr_layout()
-    av, nav = layout["avatars"], layout["ability_nav"]
-    arc_nav = layout["arc_nav"]
-    info_nav = layout["info_nav"]
-    scroll_cfg = layout["scroll"]
-    safe_kw = keywords.replace("'", "''")
-    points = [[int(round(av["x"] * win_w)),
-               int(round((av["y"] + av["dy"] * i) * win_h))]
-              for i in range(int(av["count"]))]
-    nav_px = [int(round(nav["x"] * win_w)), int(round(nav["y"] * win_h))]
-    arc_nav_px = [int(round(arc_nav["x"] * win_w)),
-                  int(round(arc_nav["y"] * win_h))]
-    info_nav_px = [int(round(info_nav["x"] * win_w)),
-                   int(round(info_nav["y"] * win_h))]
-    scroll_px = {"x": int(round(scroll_cfg["x"] * win_w)),
-                 "y": int(round(scroll_cfg["y"] * win_h)),
-                 "notches": int(scroll_cfg["notches"])}
-    page_wait = int(layout["page_wait_ms"])
-    info_px = [int(round(layout["info_roi"]["x"] * win_w)),
-               int(round(layout["info_roi"]["y"] * win_h)),
-               int(round(layout["info_roi"]["w"] * win_w)),
-               int(round(layout["info_roi"]["h"] * win_h))]
-    arc_px = [int(round(layout["arc_roi"]["x"] * win_w)),
-              int(round(layout["arc_roi"]["y"] * win_h)),
-              int(round(layout["arc_roi"]["w"] * win_w)),
-              int(round(layout["arc_roi"]["h"] * win_h))]
-    abil_px = [int(round(layout["ability_roi"]["x"] * win_w)),
-               int(round(layout["ability_roi"]["y"] * win_h)),
-               int(round(layout["ability_roi"]["w"] * win_w)),
-               int(round(layout["ability_roi"]["h"] * win_h))]
-    ps = (_OCR_PS_COMMON + "\n" + _OCR_PS_WINDOW + "\n" + _OCR_PS_TRAVERSE_CHAR)
-    ps = ps.replace("__HWND__", str(int(hwnd))).replace(
-        "__KEYWORDS__", safe_kw).replace(
-        "__POINTS__", json.dumps(points)).replace(
-        "__NAV__", json.dumps(nav_px)).replace(
-        "__NAV_ARC__", json.dumps(arc_nav_px)).replace(
-        "__NAV_INFO__", json.dumps(info_nav_px)).replace(
-        "__PAGE_WAIT__", str(page_wait)).replace(
-        "__SCROLL__", json.dumps(scroll_px)).replace(
-        "__ROI_INFO_PX__", ",".join(str(v) for v in info_px)).replace(
-        "__ROI_ARC_PX__", ",".join(str(v) for v in arc_px)).replace(
-        "__ROI_ABIL_PX__", ",".join(str(v) for v in abil_px)).replace(
-        # 哨兵路径注入 PS：/api/ocr/cancel 落盘 → 每头像循环头 Test-Path 提前收尾
-        # （PS 字符串单引号转义，防路径含单引号时脚本崩坏）
-        "__CANCEL_FILE__", cancel_file.replace("'", "''"))
-    encoded = base64.b64encode(ps.encode("utf-16-le")).decode("ascii")
-    # timeout 300→240（2026-11-05 用户实测：远程会话下前端 120s 就超时断开，
-    # 后端"failed to fetch"仍在跑数分钟）——后端进一步收紧，前端超时放宽到 300s
-    r = subprocess.run(["powershell", "-NoProfile", "-EncodedCommand", encoded],
-                       capture_output=True, timeout=240,
-                       creationflags=0x08000000)
-    _ocr_cancel_file_clear(gen)  # PS 已退出，本轮哨兵即时清理（超时路径的残留亦无害：
-    # 该代数永不复用——文件不会再被任何一轮引用，见 _ocr_cancel_file_clear）
-    out = (r.stdout or b"").decode("utf-8", errors="replace").replace("\r\n", "\n")
-    err = (r.stderr or b"").decode("utf-8", errors="replace").strip()
-    if "__OCR_NOLANG__" in out:
-        raise ValueError("本机没有可用的 Windows OCR 中文语言包（请在系统设置中添加）。")
-    if "__OCR_ERR__" in out or "__OCR_NOWIN__" in out or (
-            r.returncode not in (0, None) and not out.strip()):
-        raise OSError(f"OCR 脚本执行失败：{(err or out).strip()[-200:]}")
-    m = re.search(r"__OCR_META__\t([^\t\r\n]*)", out)
-    warnings = []
-    if not m or not m.group(1):
-        warnings.append("未能确认游戏窗口标题，识别结果可能来自全屏")
-    characters = []
-    for line in out.splitlines():
-        if not line.startswith("__OCR_CHAR__:"):
-            continue
-        try:
-            payload = json.loads(line.split(":", 2)[2])
-        except ValueError:
-            continue
-        info = _parse_char_info_text(payload.get("info") or "")
-        abil = _parse_char_ability_text(payload.get("ability") or "")
-        arc = _parse_char_arc_text(payload.get("arc") or "")
-        characters.append({"index": len(characters), **info, **abil, **arc})
-    if not characters:
-        warnings.append("未识别到任何角色（确认游戏停留在角色信息页，且窗口未被遮挡）")
-    if _ocr_cancel_hit(gen):  # PS 内每头像循环头探测哨兵提前收尾：已识别的角色保留
-        warnings.append("用户取消，遍历提前结束")
-    return {"characters": characters, "window": (m.group(1) if m else ""),
-            "warnings": warnings}
-
-
-_OCR_PS_TRAVERSE_CHAR = r'''
-# ---- 角色等级遍历：逐个点击右侧头像列（滚轮下滚遍历整列直到停滞自停）→
-#      点"信息"导航兜底 → 信息 ROI（名字+Lv）→ 点"弧盘"导航 → 弧盘 ROI（实名+
-#      Lv: 60/60）→ 点"异能"导航 → 异能 ROI（四技能 N/10 + 都市特技 N/5、N/2）
-#      → 输出 __OCR_CHAR__:<i>:<json{info,ability,arc}>。
-#      去重：信息页 OCR 文本去全部空白为键（WinRT OCR 字符间插空格）；点头像未
-#      切换时读到的是上一角色 → 命中已见键自动跳过；无效读（过渡帧/点击落空，
-#      无数字）不记不输出，下轮整列重扫再试。自停：整列无新角色连续 2 轮 → 列表
-#      到底（或滚动无效）。
-#      2026-11-06 实机反馈：300ms 渲染等待截到过渡帧 → 三页全空且"双空判停"误
-#      触发（只跑 2 个头像全未识别）→ 等待改可配置 $PageWait（默认 800ms），
-#      并在点头像后显式点"信息"导航兜底（点头像不保证回到信息页签）。----
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-if ($meta.fallback) {
-  Write-Output "__OCR_NOWIN__"
-  exit 1
-}
-$Points = @()
-try {
-  $parsed = ConvertFrom-Json '__POINTS__'
-  if ($parsed) { $Points = @($parsed) }
-} catch {}
-if (-not $Points) {
-  Write-Output "__OCR_ERR__ 头像坐标为空"
-  exit 1
-}
-$NavP = @()
-try {
-  $nv = ConvertFrom-Json '__NAV__'
-  if ($nv) { $NavP = @($nv) }
-} catch {}
-$NavArc = @()
-try {
-  $na = ConvertFrom-Json '__NAV_ARC__'
-  if ($na) { $NavArc = @($na) }
-} catch {}
-$NavInfo = @()
-try {
-  $ni = ConvertFrom-Json '__NAV_INFO__'
-  if ($ni) { $NavInfo = @($ni) }
-} catch {}
-$ScrollCfg = $null
-try {
-  $sc = ConvertFrom-Json '__SCROLL__'
-  if ($sc) { $ScrollCfg = $sc }
-} catch {}
-$PageWait = __PAGE_WAIT__
-$engine = New-OcrEngine
-$null = [Win32OCR]::SetForegroundWindow($Hwnd)
-Start-Sleep -Milliseconds 200
-$rpI = @(); foreach ($p in ('__ROI_INFO_PX__' -split ',')) { $rpI += [int]$p }
-$rpC = @(); foreach ($p in ('__ROI_ARC_PX__' -split ',')) { $rpC += [int]$p }
-$rpA = @(); foreach ($p in ('__ROI_ABIL_PX__' -split ',')) { $rpA += [int]$p }
-$regionInfo = New-Object System.Drawing.Rectangle($win.x + $rpI[0], $win.y + $rpI[1], $rpI[2], $rpI[3])
-$regionArc = New-Object System.Drawing.Rectangle($win.x + $rpC[0], $win.y + $rpC[1], $rpC[2], $rpC[3])
-$regionAbil = New-Object System.Drawing.Rectangle($win.x + $rpA[0], $win.y + $rpA[1], $rpA[2], $rpA[3])
-function Invoke-ClickAt([int]$cx, [int]$cy) {
-  $null = [Win32OCR]::SetCursorPos($cx, $cy)
-  Start-Sleep -Milliseconds 100
-  [Win32OCR]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)   # LEFTDOWN
-  Start-Sleep -Milliseconds 60
-  [Win32OCR]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)   # LEFTUP
-}
-$idx = 0
-$seen = @{}
-$stagPasses = 0
-$maxPasses = 8   # 安全上限：滚动持续有效时最多 8 轮整列（×头像数 ≈ 40 角色）
-for ($pass = 1; $pass -le $maxPasses; $pass++) {
-  if (Test-Path -LiteralPath '__CANCEL_FILE__') { break }   # 取消哨兵：每轮循环头探测
-  $newThisPass = 0
-  foreach ($pt in $Points) {
-    if (Test-Path -LiteralPath '__CANCEL_FILE__') { break }   # 取消哨兵：每格循环头探测；
-    # 用户请求取消即停止点击下一个头像，已识别头像的输出行保留
-    Invoke-ClickAt ($win.x + [int]$pt[0]) ($win.y + [int]$pt[1])   # 点头像
-    Start-Sleep -Milliseconds $PageWait                            # 角色切换渲染等待
-    # 信息页兜底点击：点头像不保证回到"信息"页签，显式点一次（已在该页时幂等）
-    Invoke-ClickAt ($win.x + [int]$NavInfo[0]) ($win.y + [int]$NavInfo[1])
-    Start-Sleep -Milliseconds $PageWait                            # 信息页渲染等待
-    $infoText = Invoke-Ocr $regionInfo $engine
-    $key = ($infoText -replace '\s', '')       # 去重键：WinRT OCR 字符间插空格
-    if ($key.Length -lt 4 -or -not ($key -match '\d')) { continue }   # 无效读（过渡帧/
-    # 点击落空）→ 不记不输出，下轮整列重扫时再试
-    if ($seen.ContainsKey($key)) { continue }  # 已处理（含点头像未切换=仍显示上一角色）
-    $seen[$key] = 1
-    $newThisPass++
-    Invoke-ClickAt ($win.x + [int]$NavArc[0]) ($win.y + [int]$NavArc[1])   # 点"弧盘"
-    Start-Sleep -Milliseconds $PageWait                            # 弧盘页渲染等待
-    $arcText = Invoke-Ocr $regionArc $engine
-    Invoke-ClickAt ($win.x + [int]$NavP[0]) ($win.y + [int]$NavP[1])       # 点"异能"
-    Start-Sleep -Milliseconds $PageWait                            # 异能页渲染等待
-    $abilText = Invoke-Ocr $regionAbil $engine
-    Write-Output ("__OCR_CHAR__:" + $idx + ":" + (@{info = $infoText; ability = $abilText; arc = $arcText} | ConvertTo-Json -Compress))
-    $idx++
-  }
-  if (Test-Path -LiteralPath '__CANCEL_FILE__') { break }   # 取消：不再滚动
-  if ($newThisPass -eq 0) {
-    $stagPasses++
-    if ($stagPasses -ge 2) { break }   # 连续 2 整列无新角色：头像列表已到底（或滚动无效）→ 自停
-  } else {
-    $stagPasses = 0
-  }
-  # 头像列滚轮下滚：悬停列上滚 notches × 120（0x0800=MOUSEEVENTF_WHEEL，负值=向下）
-  if ($ScrollCfg) {
-    $null = [Win32OCR]::SetCursorPos($win.x + [int]$ScrollCfg.x, $win.y + [int]$ScrollCfg.y)
-    Start-Sleep -Milliseconds 150
-    for ($i = 0; $i -lt [int]$ScrollCfg.notches; $i++) {
-      [Win32OCR]::mouse_event(0x0800, 0, 0, -120, [UIntPtr]::Zero)
-      Start-Sleep -Milliseconds 80
-    }
-    Start-Sleep -Milliseconds 350      # 列表滚动动画
-  }
-}
-Write-Output ("__OCR_META__" + "`t" + $meta.window + "`t" + "window")
-'''
-
 _OCR_PS_SCROLL = r'''
 Add-Type @"
 using System;
@@ -2207,16 +2271,527 @@ if ($target -ne [IntPtr]::Zero) {
   Start-Sleep -Milliseconds 250
   $rect = New-Object Win32Scroll+RECT
   $null = [Win32Scroll]::GetWindowRect($target, [ref]$rect)
-  $cx = [int](($rect.Left + $rect.Right) / 2); $cy = [int](($rect.Top + $rect.Bottom) / 2)
+  # 滚轮锚点：网格列表区首格（按标定 first_cell 比例 × 实时窗口矩形，Python 端
+  # 注入比例占位符）。旧实现锚在窗口几何中心：宽窗口下几何中心落在右侧详情
+  # 面板上，滚轮对列表无效 → 翻页失效/欠量；与逐格点击同用一套窗口矩形口径
+  $rx = __SCROLL_X_RATIO__
+  $ry = __SCROLL_Y_RATIO__
+  $cx = [int]($rect.Left + ($rect.Right - $rect.Left) * $rx)
+  $cy = [int]($rect.Top + ($rect.Bottom - $rect.Top) * $ry)
   $null = [Win32Scroll]::SetCursorPos($cx, $cy)
   Start-Sleep -Milliseconds 120
-  # 滚轮下滚 5 格（0x0800=MOUSEEVENTF_WHEEL，负值=向下）
-  for ($i = 0; $i -lt 5; $i++) {
-    [Win32Scroll]::mouse_event(0x0800, 0, 0, -480, [UIntPtr]::Zero)
+  # 滚轮下滚（0x0800=MOUSEEVENTF_WHEEL，负值=向下）：步距占位符由 _ocr_scroll
+  # 按 layout.scroll 注入（notches×wheel_delta，ocr_layout.json 热调；
+  # 翻页少了漏行 → notches+1，翻页多了跳行 → notches-1）
+  for ($i = 0; $i -lt __SCROLL_NOTCHES__; $i++) {
+    [Win32Scroll]::mouse_event(0x0800, 0, 0, -__SCROLL_WDELTA__, [UIntPtr]::Zero)
     Start-Sleep -Milliseconds 60
   }
 }
 '''
+
+
+# ---------- 塔吉多个人数据同步（手动触发 only；协议在 app/tajiduo_client.py） ----------
+# 链路为「预览→应用」两段式：sync 拉数据+实名匹配出预览（绝不写 state），
+# 用户在预览里核对后点「应用」才走 _tajiduo_apply_rows 写入（每次同步 3~4 个
+# 请求，低频；绝无定时/自动触发；令牌过期在同步时自动续期恰一次）。
+
+_TJD_PENDING = {"phone": "", "device": None, "at": 0.0}  # 发码→绑定间的设备连续性
+_TJD_PENDING_TTL = 600  # 10 分钟内未绑定即作废（需重新发码）
+_TJD_LOCK = threading.Lock()  # send-captcha/bind/logout/sync/apply 串行（防并发绑定竞态）
+
+
+def _tajiduo_mask_uid(uid):
+    """脱敏：只给前端看后 4 位（完整 uid/令牌绝不出面板进程）。"""
+    uid = str(uid or "")
+    return ("＊＊" + uid[-4:]) if len(uid) > 4 else ("＊＊" if uid else "")
+
+
+def _tajiduo_mask_phone(phone):
+    """手机号脱敏（138****1234）：只露前 3 后 4，中间 4 位打码；非 11 位返回
+    空串（完整手机号与令牌一样绝不回传前端，只落本机凭证文件）。"""
+    phone = str(phone or "").strip()
+    if not tajiduo_client.PHONE_RE.fullmatch(phone):
+        return ""
+    return phone[:3] + "****" + phone[7:]
+
+
+def _tajiduo_check_phone(phone):
+    phone = str(phone or "").strip()
+    if not tajiduo_client.PHONE_RE.fullmatch(phone):
+        raise ValueError("手机号格式不正确（仅支持大陆 11 位手机号）")
+    return phone
+
+
+def _tajiduo_check_captcha(captcha):
+    captcha = str(captcha or "").strip()
+    if not tajiduo_client.CAPTCHA_RE.fullmatch(captcha):
+        raise ValueError("验证码格式不正确（4-8 位数字）")
+    return captcha
+
+
+def _tajiduo_send_captcha(phone):
+    """发短信验证码（手动）。设备指纹在本机生成并暂存 10 分钟，绑定须用同一台。"""
+    phone = _tajiduo_check_phone(phone)
+    with _TJD_LOCK:
+        client = tajiduo_client.LaohuClient()
+        client.send_sms_code(phone)
+        _TJD_PENDING.update({"phone": phone, "device": client.device.to_dict(),
+                             "at": time.time()})
+    return {"ok": True}
+
+
+def _tajiduo_bind(phone, captcha):
+    """验证码登录 → 换塔吉多会话 → 凭证落盘 data/tajiduo_token.json（不入 git）。
+
+    手机号必须与发码时一致（同一设备指纹）；成功后清除暂存。返回绑定摘要
+    （不含任何令牌明文）。"""
+    phone = _tajiduo_check_phone(phone)
+    captcha = _tajiduo_check_captcha(captcha)
+    with _TJD_LOCK:
+        pending = dict(_TJD_PENDING)
+        if not pending.get("device") or pending.get("phone") != phone \
+                or time.time() - float(pending.get("at") or 0) > _TJD_PENDING_TTL:
+            raise ValueError("请先获取短信验证码（10 分钟内有效），再提交绑定")
+        laohu = tajiduo_client.LaohuClient(
+            device=tajiduo_client.LaohuDevice.from_dict(pending["device"]))
+        account = laohu.login_by_sms(phone, captcha)
+        client = tajiduo_client.TajiduoClient(laohu.device.device_id)
+        session = client.user_center_login(account["token"], str(account["user_id"]))
+        bound_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        tajiduo_client.save_token_store({
+            "device_id": laohu.device.device_id,
+            "access_token": session["access_token"],
+            "refresh_token": session["refresh_token"],
+            "center_uid": session["center_uid"],
+            # laohu 根凭据随会话一并落盘（同 data/tajiduo_token.json，不入 git）：
+            # refreshToken 一次性轮换死后，恢复链②用它同 device_id 重走
+            # user_center_login 续命（NTEUID refresh_user_token 语义）。
+            # 只存本机，绝不回传前端（bind 返回只有脱敏 uid）
+            "laohu_token": account["token"],
+            "laohu_user_id": str(account["user_id"]),
+            # 手机号随凭证落本机（新键 phone；文件已在 .gitignore）：重绑时前端
+            # 只见脱敏 mask（138****1234），完整号码绝不出本机文件
+            "phone": phone,
+            "bound_at": bound_at,
+        })
+        _TJD_PENDING.update({"phone": "", "device": None, "at": 0.0})
+    return {"ok": True, "bound_at": bound_at,
+            "uid": _tajiduo_mask_uid(session["center_uid"])}
+
+
+def _tajiduo_name_index():
+    """实名索引（归一化 → 规范名）：本系统角色 + 游戏目录已实装角色。"""
+    names = {}
+    for char in STATE.characters:
+        if char.get("name"):
+            names.setdefault(_ocr_norm(char["name"]), char["name"])
+    try:
+        data = game_data.load()
+        for name in game_data.library_names(data)[0]:
+            names.setdefault(_ocr_norm(name), name)
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return names
+
+
+def _tajiduo_weapon_index():
+    """弧盘实名索引：游戏目录 weapons + 武器库 + 本系统角色已绑 weapon。"""
+    weapons = {}
+    try:
+        data = game_data.load()
+        for entry in data.get("weapons", []):
+            if isinstance(entry, dict) and entry.get("name"):
+                weapons.setdefault(_ocr_norm(entry["name"]), entry["name"])
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    for name in STATE.data.get("weapon_library") or []:
+        if isinstance(name, str) and name.strip():
+            weapons.setdefault(_ocr_norm(name), name.strip())
+    for char in STATE.characters:
+        w = char.get("weapon")
+        if isinstance(w, str) and w.strip():
+            weapons.setdefault(_ocr_norm(w), w.strip())
+    return weapons
+
+
+def _tajiduo_register_arc(raw_name):
+    """未收录弧盘实名登记进 STATE.weapon_library（2026-11-10 补洞：曳尔沐 fork
+    「静候彩铃」（payload fork id=fork_elyms）在游戏目录/武器库/已绑弧盘零命中，
+    annotate match=None → apply 侧 skip——自建角色佩戴的自定义弧盘官方目录永不再
+    收录，不登记则该角色的弧盘同步永远无法应用）。
+
+    去重幂等：归一化（_ocr_norm 口径）命中既有条目直接复用，绝不重复追加；
+    新名经 32 字消毒后追加。来源标注进 STATE.data["weapon_sources"]（{实名:
+    {source:"tajiduo", category:"arc", registered_at}}；weapon_library 本体是
+    字符串列表，口径对齐现有字段不塞结构化键，出处单列避免污染消费方）。
+    登记后 _tajiduo_weapon_index/_tajiduo_apply_rows 自然命中 → apply 可写
+    arc_weapon 绑定 + arc_level。持 STATE.lock 落盘；日志行
+    「弧盘未收录已自动登记：<名>」经 RUNNER._log 进面板日志。
+    返回 (规范名, 是否本轮新登记)。"""
+    name = str(raw_name or "").strip()[:32]
+    if not name:
+        return None, False
+    canon, registered = None, False
+    with STATE.lock:
+        lib = STATE.data.setdefault("weapon_library", [])
+        for item in lib:
+            if isinstance(item, str) and _ocr_norm(item) == _ocr_norm(name):
+                canon = item
+                break
+        if canon is None:
+            canon = name
+            lib.append(canon)
+            registered = True
+        if registered:
+            sources = STATE.data.setdefault("weapon_sources", {})
+            sources[canon] = {"source": "tajiduo", "category": "arc",
+                              "registered_at": datetime.now().strftime(
+                                  "%Y-%m-%d %H:%M:%S")}
+            STATE.save()
+            RUNNER._log(f"弧盘未收录已自动登记：{canon}（来源：塔吉多同步）")
+    return canon, registered
+
+
+def _tajiduo_match_name(raw_name, names):
+    """塔吉多实名 → 本系统规范名：归一化全等查表失败时走最长优先包含 fallback
+    （「异能者·零」须命中「零」；2026-11-07 实测前缀名全等查表落空）。
+    命中多个时取最长；最长仍有并列（同长歧义）返回 None 走手动下拉。
+    只做「候选 ⊆ 塔吉多名」单向包含：反向（塔吉多名是候选的子串）会把单字名
+    误配到长实名上（推断：塔吉多面板实名可能带「异能者·」类前缀）。"""
+    key = _ocr_norm(raw_name or "")
+    if not key:
+        return None
+    canon = names.get(key)
+    if canon:
+        return canon
+    hits = [k for k in names if k and k in key]
+    if not hits:
+        return None
+    top = max(len(k) for k in hits)
+    best = [k for k in hits if len(k) == top]
+    if len(best) != 1:
+        return None  # 同长多命中 = 歧义，绝不猜
+    return names[best[0]]
+
+
+def _tajiduo_annotate(rows):
+    """给同步行补匹配信息与现值（角色字段纯读；弧盘未收录时自动登记进
+    weapon_library——见 _tajiduo_register_arc，登记即落盘，其余绝不写 state）。
+
+    matched_name=None 的行 = 实名未匹配（前端手动映射下拉，同 OCR data-lmap 模式）；
+    弧盘：未命中且 payload fork.name 非空时登记（曳尔沐自建弧盘「静候彩铃」补洞，
+    2026-11-10），登记后 matched_name 回填规范名 → apply 可写绑定。塔吉多 payload
+    无材料库存字段 → no_data 如实标注，绝不编造。"""
+    names = _tajiduo_name_index()
+    weapons = _tajiduo_weapon_index()
+    chars_by_name = {}
+    for char in STATE.characters:
+        if char.get("name"):
+            chars_by_name.setdefault(char["name"], char)
+    out = []
+    for row in rows:
+        row = dict(row)
+        canon = _tajiduo_match_name(row.get("name") or "", names) if row.get("name") else None
+        row["matched_name"] = canon
+        char = chars_by_name.get(canon) if canon else None
+        tracks = (char.get("tracks") or {}) if char else {}
+        skills = (char.get("skills") or {}) if char else {}
+        row["cur_level"] = (tracks.get("char_level") or {}).get("cur") if char else None
+        row["cur_awakening"] = char.get("awakening") if char else None
+        row["cur_skills"] = {k: (skills.get(k) or {}).get("cur")
+                             for k in ("normal", "variable", "orbit", "assist")}
+        # 卡带现值（预览对比 cur→new 用；apply 端点写 cassette{set,main}，同链）
+        cur_cas = (char.get("cassette") or {}) if char else {}
+        row["cur_cassette"] = {"set": cur_cas.get("set"), "main": cur_cas.get("main")}
+        fork = row.get("fork") or {}
+        arc_name = str(fork.get("name") or "").strip()
+        arc_canon = weapons.get(_ocr_norm(arc_name)) if arc_name else None
+        arc_registered = False
+        if arc_name and arc_canon is None:
+            # 弧盘未收录：自动登记（幂等）→ matched_name 回填，apply 可写绑定+等级
+            arc_canon, arc_registered = _tajiduo_register_arc(arc_name)
+        row["arc"] = {
+            "name": fork.get("name"),
+            "level": fork.get("level"),
+            "matched_name": arc_canon,
+            "registered": arc_registered,
+            "cur_name": char.get("weapon") if char else None,
+            "cur_level": (tracks.get("arc_level") or {}).get("cur") if char else None,
+        }
+        out.append(row)
+    return out
+
+
+def _tajiduo_sync():
+    """手动同步：拉全部角色 → roleHome/characters → 解析 + 匹配 → 预览 payload。"""
+    client = tajiduo_client.build_client()
+    if client is None:
+        raise ValueError("尚未绑定塔吉多账号（先在下方完成手机号验证码绑定）")
+    result = tajiduo_client.sync_all(client)
+    # weapon_options：与 apply 侧同一实名索引——前端手动映射下拉只列后端认可的实名
+    weapon_options = sorted(set(_tajiduo_weapon_index().values()))
+    return {
+        "ok": True,
+        "synced_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "roles": result["roles"],
+        "role_home": result["role_home"],
+        "rows": _tajiduo_annotate(result["rows"]),
+        "weapon_options": weapon_options,
+        # 塔吉多个人数据通道实测字段面（roleHome/characters）：无材料库存、无背包、
+        # 无突破材料余额——如实标注，绝不编造
+        "no_data": ["材料库存", "背包道具", "突破材料余额", "体力/本性像素消耗记录"],
+        "warnings": result["warnings"],
+    }
+
+
+def _tajiduo_apply_rows(rows):
+    """把预览行写入 state（用户点「应用」才调用；部分字段更新，绝不整行重建）。
+
+    每行按 target 名（前端映射后的规范名）定位本系统角色，非 None 字段逐项写入并
+    clamp：tracks.char_level.cur / skills.*.cur / awakening / weapon（仅收录实名）/
+    tracks.arc_level.cur；对应轨道目标 tgt 一并抬高至 max(现有tgt, 同步值)
+    （用户偏好：目标≥当前）。cassette.set/main 仅在 payload 提供时覆盖；
+    stigma_groups/drivers 用户自维护绝不写。返回逐行应用明细；未匹配行原样跳过。"""
+    if not isinstance(rows, list):
+        raise ValueError("rows 必须是数组")
+    if len(rows) > 200:
+        raise ValueError("rows 数量超限")
+    skill_top = growth.skill_max()
+    weapons = _tajiduo_weapon_index()
+    applied, skipped = [], []
+    with STATE.lock:
+        chars_by_name = {}
+        for char in STATE.characters:
+            if char.get("name"):
+                chars_by_name.setdefault(char["name"], char)
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            target = str(row.get("target") or "").strip()
+            char = chars_by_name.get(target)
+            if char is None:
+                skipped.append({"target": target[:32], "reason": "本系统无同名角色"})
+                continue
+            changed = []
+            level = tajiduo_client._as_int(row.get("level"), 0, 999)
+            if level is not None:
+                track = char.setdefault("tracks", {}).setdefault("char_level", {})
+                if track.get("cur") != level:
+                    track["cur"] = level
+                    changed.append(f"等级→{level}")
+                # 目标≥当前（用户偏好）：同步值抬高目标线，绝不把目标压到当前之下
+                new_tgt = max(int(track.get("tgt") or 0), level)
+                if track.get("tgt") != new_tgt:
+                    track["tgt"] = new_tgt
+                    changed.append(f"等级目标→{new_tgt}")
+            awakening = tajiduo_client._as_int(row.get("awakening"), 0, 6)
+            if awakening is not None and char.get("awakening") != awakening:
+                char["awakening"] = awakening
+                changed.append(f"觉醒→{awakening}")
+            for key, value in (row.get("skills") or {}).items():
+                lv = tajiduo_client._as_int(value, 0, skill_top)
+                if lv is None or key not in ("normal", "variable", "orbit", "assist"):
+                    continue
+                cur = char.setdefault("skills", {}).setdefault(key, {"cur": 0, "tgt": 0})
+                if cur.get("cur") != lv:
+                    cur["cur"] = lv
+                    changed.append(f"{key}→{lv}")
+                new_tgt = max(int(cur.get("tgt") or 0), lv)  # 目标≥当前（同上）
+                if cur.get("tgt") != new_tgt:
+                    cur["tgt"] = new_tgt
+                    changed.append(f"{key}目标→{new_tgt}")
+            arc_name = str(row.get("arc_weapon") or "").strip()
+            if arc_name:
+                canon = weapons.get(_ocr_norm(arc_name))
+                if canon is None:
+                    skipped.append({"target": target[:32],
+                                    "reason": f"弧盘「{arc_name[:32]}」未收录，未改绑定"})
+                elif char.get("weapon") != canon:
+                    char["weapon"] = canon[:32]
+                    changed.append(f"弧盘→{canon[:32]}")
+            arc_level = tajiduo_client._as_int(row.get("arc_level"), 0, 999)
+            if arc_level is not None:
+                track = char.setdefault("tracks", {}).setdefault("arc_level", {})
+                if track.get("cur") != arc_level:
+                    track["cur"] = arc_level
+                    changed.append(f"弧盘等级→{arc_level}")
+                new_tgt = max(int(track.get("tgt") or 0), arc_level)  # 目标≥当前（同上）
+                if track.get("tgt") != new_tgt:
+                    track["tgt"] = new_tgt
+                    changed.append(f"弧盘目标→{new_tgt}")
+            # 卡带套装/主属性（塔吉多 suit 字段）：仅在拿到实名时覆盖，绝不写
+            # stigma_groups/drivers（用户自维护）；payload 缺字段不改动现有值
+            cassette = row.get("cassette") if isinstance(row.get("cassette"), dict) else {}
+            if cassette.get("set") or cassette.get("main"):
+                cur_cassette = char.setdefault("cassette", {"set": None, "main": None})
+                cur_set = str(cassette.get("set") or "").strip()
+                cur_main = str(cassette.get("main") or "").strip()
+                if cur_set and cur_cassette.get("set") != cur_set:
+                    cur_cassette["set"] = cur_set[:48]
+                    changed.append(f"卡带套装→{cur_set[:48]}")
+                if cur_main and cur_cassette.get("main") != cur_main:
+                    cur_cassette["main"] = cur_main[:24]
+                    changed.append(f"卡带主属性→{cur_main[:24]}")
+            if changed:
+                applied.append({"target": target[:32], "changed": changed})
+        STATE.save()
+    return {"ok": True, "rev": STATE.rev,  # 版本回传：apply 后前端基线跟进，再保存不误报陈旧
+            "applied": applied, "skipped": skipped,
+            "characters": STATE.characters}
+
+
+# ---------- 塔吉多抽卡分析（手动同步；协议/合并语义在 app/tajiduo_client.py） ----------
+# 塔吉多 gacha 端点只给 S 级出货明细+每池窗口统计（官方窗口 180 天），本地
+# data/gacha_history.json 并集累积保留更早记录；同步绝不自动/定时触发。
+
+_GACHA_NOTE = ("仅含已出 S 记录（垫抽数官方不返回）；官方窗口 180 天；"
+               "本地累积合并可保留更早数据")
+
+
+def _tajiduo_gacha_id_names():
+    """charid→实名映射（来源=最近一次 characters payload 诊断留存
+    data/tajiduo_last_payload.json：characters[].id→name、fork.id→fork.name——
+    即 gacha 端点同域 characters 数据的 id→name 表）。文件不存在/字段形态不符
+    → 空表；映射不到的 charid 前端显示原 ID 并标注。真实 charid 形态（数字
+    ID/fork_*）未实证，绝不编造映射。"""
+    names = {}
+    try:
+        with open(tajiduo_client.LAST_PAYLOAD_FILE, encoding="utf-8") as f:
+            dump = json.load(f)
+    except (OSError, ValueError):
+        return names
+    per_role = dump.get("per_role") if isinstance(dump, dict) else None
+    for role in (per_role or {}).values():
+        chars = role.get("characters") if isinstance(role, dict) else None
+        for item in chars if isinstance(chars, list) else []:
+            if not isinstance(item, dict):
+                continue
+            cid = str(item.get("id") or "").strip()
+            name = str(item.get("name") or "").strip()
+            if cid and name:
+                names.setdefault(cid, name)
+            fork = item.get("fork") if isinstance(item.get("fork"), dict) else {}
+            fid = str(fork.get("id") or "").strip()
+            fname = str(fork.get("name") or "").strip()
+            if fid and fname:
+                names.setdefault(fid, fname)
+    return names
+
+
+def _tajiduo_gacha_records_view(records, id_names):
+    """存档记录 → 前端行：charid 尽量映射实名（映射不到 item_name=None），
+    时间倒序（最新在前）。"""
+    rows = []
+    for rec in records or []:
+        if not isinstance(rec, dict):
+            continue
+        item_id = str(rec.get("item_id") or "")
+        rows.append({
+            "item_id": item_id,
+            "item_name": id_names.get(item_id),
+            "time": str(rec.get("time") or ""),
+            "time_ms": rec.get("time_ms"),
+            "pity": rec.get("pity"),
+            "lucky_type": rec.get("lucky_type"),
+        })
+    rows.sort(key=lambda r: (r["time_ms"] if isinstance(r["time_ms"], int) else 0),
+              reverse=True)
+    return rows
+
+
+def _tajiduo_gacha_view(archive, summary=None, new_counts=None, warnings=()):
+    """存档（+可选新快照）→ 前端抽卡分析 payload。
+
+    池卡片统计（抽数/已出S/平均出S/软保底/战胜玩家）= 官方窗口快照，仅本次
+    有新拉取（summary）才填，否则 None 由前端显示「—」；本地累积只体现在
+    s_count（存档内 S 记录数）与 S 记录表。三池按官方固定顺序在前，未识别
+    池（tab_ 前缀键）排后照常展示。"""
+    archive = archive if isinstance(archive, dict) else {}
+    summary = summary if isinstance(summary, dict) else {}
+    new_counts = new_counts if isinstance(new_counts, dict) else {}
+    id_names = _tajiduo_gacha_id_names()
+    canonical = dict(tajiduo_client.GACHA_POOL_NAMES)
+    snap = {}
+    for pool in summary.get("pools") or []:
+        tab = str(pool.get("tab") or "")
+        snap[tajiduo_client.GACHA_POOL_BY_TAB.get(tab) or ("tab_" + tab)] = pool
+    pools_out = []
+    for key, bucket in (archive.get("pools") or {}).items():
+        tab = canonical.get(key) or (key[4:] if key.startswith("tab_") else key)
+        spool = snap.get(key) or {}
+        records = bucket.get("records") if isinstance(bucket, dict) else None
+        pools_out.append({
+            "key": key,
+            "tab": tab,
+            "m": spool.get("m"),
+            "draw_count": spool.get("draw_count"),
+            "rare_count": spool.get("rare_count"),
+            "average": str(spool.get("average") or ""),
+            "player_over": str(spool.get("player_over") or ""),
+            "s_count": len(records or []),
+            "new_count": int(new_counts.get(key) or 0),
+            "records": _tajiduo_gacha_records_view(records, id_names),
+        })
+    return {
+        "ok": True,
+        "synced_at": str(archive.get("updated_at") or ""),
+        "role": {"roleid": str(archive.get("roleid") or ""),
+                 "rolename": str(summary.get("rolename")
+                                 or archive.get("rolename") or ""),
+                 "lev": summary.get("lev")},
+        "luck": {"type": summary.get("luck_type"),
+                 "title": str(summary.get("luck_title") or "")},
+        "pools": pools_out,
+        "new_total": sum(int(v or 0) for v in new_counts.values()),
+        "warnings": [str(w) for w in warnings],
+        "note": _GACHA_NOTE,
+    }
+
+
+def _tajiduo_sync_gacha():
+    """手动抽卡同步（按钮触发 only）：拉抽卡分析 → 解析 → 本地累积合并 →
+    落盘 → 展示 payload。与 _TJD_LOCK 串行（同绑定/同步链，防并发写存档竞态）。"""
+    client = tajiduo_client.build_client()
+    if client is None:
+        raise ValueError("尚未绑定塔吉多账号（先在下方完成手机号验证码绑定）")
+    with _TJD_LOCK:
+        result = tajiduo_client.sync_gacha(client)
+    return _tajiduo_gacha_view(result["archive"], summary=result["summary"],
+                               new_counts=result["new_counts"],
+                               warnings=result["warnings"])
+
+
+def _tajiduo_gacha_history():
+    """本地累积存档只读视图（窗口打开即见历史；只读本机文件，绝不触网）。"""
+    return _tajiduo_gacha_view(tajiduo_client.load_gacha_history())
+
+
+# ---- 面板令牌（SEC-05，BUG-REGISTER 建议①）：全部 /api 路由的统一鉴权闸 ----
+# 每次启动重生成（泄露 token 只在会话内有效）；文件是子进程测试通道（smoke
+# Popen / 构建探针）唯一可行的交接通道；文件与 state.json 同目录同权限。
+# 运行期生成，源码/测试零凭据字面量。
+PANEL_TOKEN_FILE = os.path.join(DATA_DIR, "panel_token.json")
+_PANEL_TOKEN = None
+
+
+def _new_panel_token():
+    """生成 256-bit 面板令牌（token_urlsafe 纯 ASCII：可安全进 HTML 占位符与请求头）。"""
+    return secrets.token_urlsafe(32)
+
+
+def _ensure_panel_token():
+    """create_server 入口的 fail-closed 不变量：任何起服务路径（生产/selftest/
+    自动化）绑定前必有令牌。_PANEL_TOKEN 为 None 时闸恒拒（401）而非放行。
+    写失败（OSError）直接抛＝启动失败进 crash.log：宁可面板起不来，
+    不给零鉴权的管理员面板。"""
+    global _PANEL_TOKEN
+    if _PANEL_TOKEN is None:
+        _PANEL_TOKEN = _new_panel_token()
+        _save_json_atomic(PANEL_TOKEN_FILE, {
+            "token": _PANEL_TOKEN,
+            "generated_at": datetime.now().isoformat(),
+        })
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -2287,20 +2862,75 @@ class Handler(BaseHTTPRequestHandler):
             return True
         return False
 
+    def _panel_token_ok(self):
+        """面板令牌闸（SEC-05）：X-Panel-Token 头必须与本次启动生成的令牌一致。
+        fail-closed：头缺失、或进程级 _PANEL_TOKEN 为 None（未生成）一律失败；
+        compare_digest 防时序侧信道。失败回 401+panel_auth 专字段——前端 api()
+        据此走「请刷新页面」分支，绝不误渲染成塔吉多重新绑定表单。"""
+        header_value = self.headers.get("X-Panel-Token")
+        ok = (header_value is not None and _PANEL_TOKEN is not None
+              and secrets.compare_digest(header_value.encode("utf-8"),
+                                         _PANEL_TOKEN.encode("utf-8")))
+        if ok:
+            return True
+        self._send(401, {"error": "面板鉴权失败：令牌缺失或不匹配"
+                          "（面板可能已重启，请刷新页面后重试）",
+                         "panel_auth": True})
+        return False
+
+    def _send_404(self, path):
+        """路由兜底 404。路由表随进程启动固化、而 index.html 每请求从磁盘重读——
+        /api/tajiduo/* 落到兜底说明当前进程早于塔吉多功能启动（新前端 + 旧后端
+        错位窗口，诊断根因①）。保留 404 状态码供前端识别，body 附 hint 给可行动
+        提示而非裸 "not found"（旧进程本身不会带此逻辑，重启后新代码才生效）。"""
+        if path.startswith("/api/tajiduo"):
+            self._send(404, {"error": "not found", "hint":
+                "面板后端进程为旧版本（缺少塔吉多接口），请完全退出面板进程"
+                "（含托盘/后台 python）后重新启动/更新面板"})
+        else:
+            self._send(404, {"error": "not found"})
+
     def _oknte(self):
         return OkNte(STATE.settings["oknte_root"])
 
     # ---- GET ----
     def do_GET(self):
         path = self.path.split("?", 1)[0]
-        if path.startswith("/api/") and self._reject_foreign():
+        # Host/Origin 闸扩展到全部路径（SEC-05：此前仅 /api/ 前缀，静态三通道零检查
+        # ——token 落 index.html 后，DNS 重绑定页可读 GET / 提取注入 token，必须补）
+        if self._reject_foreign():
+            return
+        # 全部 /api 路由的统一令牌闸（集中单挂点：新路由自动被闸，免逐路由改）。
+        # / 与 /avatars/ 免 token：页面本身是 token 载体；头像唯一消费入口是 <img>
+        # （浏览器无法为 img 附加自定义头），已有白名单双闸 + 上方 Host/Origin 闸
+        if path.startswith("/api/") and not self._panel_token_ok():
             return
         if path in ("/", "/index.html"):
             try:
                 with open(os.path.join(WEB_DIR, "index.html"), "rb") as f:
-                    self._send(200, f.read(), "text/html; charset=utf-8")
+                    html = f.read()
+                # 每请求注入启动令牌（占位符替换先例 _ocr_run_ps）；_send 已带
+                # Cache-Control: no-store，无缓存泄露面
+                html = html.replace(b"__PANEL_TOKEN__",
+                                    (_PANEL_TOKEN or "").encode("ascii"))
+                self._send(200, html, "text/html; charset=utf-8")
             except OSError:
                 self._send(404, {"error": "index.html 缺失"})
+        elif path.startswith("/avatars/"):
+            # 角色头像（2026-11-09 工作包2）：只读 data/avatars/ 下白名单文件名的
+            # 本机缓存（严格正则 + realpath 归属校验，见 _avatar_file_path）；
+            # 文件不存在按 404，前端 <img onerror> 回落首字母占位
+            target = _avatar_file_path(path[len("/avatars/"):])
+            if target is None or not os.path.isfile(target):
+                self._send(404, {"error": "not found"})
+                return
+            ext = target.rsplit(".", 1)[-1].lower()
+            try:
+                with open(target, "rb") as f:
+                    self._send(200, f.read(), AVATAR_CONTENT_TYPES.get(ext,
+                                "application/octet-stream"))
+            except OSError:
+                self._send(404, {"error": "not found"})
         elif path == "/api/bootstrap":
             oknte = self._oknte()
             STATE.ensure_today()
@@ -2318,11 +2948,20 @@ class Handler(BaseHTTPRequestHandler):
                 "tables": _tables(),
                 "game_characters": gd_chars,
                 "compat": oknte.compat_check(),
+                # 复审阻断⑤：DXGI 采集探测结果（None=可用/不适用；非 None=面板侧栏
+                # 常驻警示标签——内嵌 Python 缺 d3dshot 时 capture_method 回落
+                # BitBlt_RenderFull 卡死路径，此前探测失败完全静默）
+                "capture_warning": oknte.capture_probe_warning(),
                 "build": _build_info(),
                 "attr_map": gd_attr_map,
+                # 角色实名 → 本地头像路径（2026-11-09 工作包2；无缓存=空表，
+                # 前端 onerror 回落首字母占位）+ slug↔实名表（BIS 别名归一用）
+                "avatars": _avatar_map(),
+                "guide_slug_names": _guide_slug_names(),
                 "skill_max": growth.skill_max(),
                 "admin": is_admin(),
                 "oknte_running": oknte.is_running_cached(),
+                "rev": STATE.rev,  # 数据版本基线：前端保存角色时回传做陈旧写回比对
             })
         elif path == "/api/status":
             snap = RUNNER.snapshot()
@@ -2380,6 +3019,28 @@ class Handler(BaseHTTPRequestHandler):
                 "plan": planner.make_plan(oknte),
                 "oknte_running": oknte.is_running_cached(),
             })
+        elif path == "/api/oknte/plan-options":
+            # ok-nte 选项规划预览（纯只读，绝不写任何配置/状态）；取数逻辑在
+            # _plan_options（selftest 用例直接调用同款函数）
+            try:
+                payload = _plan_options(self._oknte())
+            except ValueError as e:
+                self._send(502, {"error": str(e)})
+                return
+            self._send(200, payload)
+        elif path == "/api/oknte/plan":
+            # ok-nte 执行计划选项树（纯只读）+ data/oknte_plan.json 覆盖现值合并；
+            # 取数逻辑在 _oknte_plan_tree（selftest 直调同款函数）。绝不写 ok-nte 配置
+            try:
+                payload = _oknte_plan_tree(self._oknte())
+            except ValueError as e:
+                self._send(502, {"error": str(e)})
+                return
+            self._send(200, payload)
+        elif path == "/api/dungeon-gaps":
+            # 材料副本缺口（纯读，仿 /api/plan）：snapshot 缺口按 stamina_blocks
+            # 六块聚合 + 未入块缺口的外部来源区；聚合逻辑在 planner.dungeon_gaps
+            self._send(200, planner.dungeon_gaps())
         elif path == "/api/logs":
             sources = _collect_log_sources(STATE.settings["oknte_root"])
             files = []
@@ -2477,6 +3138,16 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"defaults": game_data.COMMON_COST_DEFAULTS,
                              "costs": costs,
                              "mapping": _common_mapping_rows(data, costs)})
+        elif path == "/api/tajiduo/status":
+            # 只读：绑定状态摘要（不含任何令牌/完整 uid/完整手机号——手机号仅脱敏 mask）
+            store = tajiduo_client.load_token_store()
+            self._send(200, {"bound": bool(store),
+                             "bound_at": (store or {}).get("bound_at") or "",
+                             "uid": _tajiduo_mask_uid((store or {}).get("center_uid")),
+                             "phone_masked": _tajiduo_mask_phone((store or {}).get("phone"))})
+        elif path == "/api/tajiduo/gacha-history":
+            # 抽卡分析窗口打开时的本地累积存档只读视图（只读本机文件，绝不触网）
+            self._send(200, _tajiduo_gacha_history())
         elif path == "/api/ocr/windows":
             # OCR v3：枚举全部顶层可见窗口 + 当前绑定态（供窗口列表手选/诊断）
             windows = _ocr_windows()
@@ -2514,54 +3185,86 @@ class Handler(BaseHTTPRequestHandler):
                              "fallback": shot.get("fallback", False),
                              "warnings": cap_warnings})
         else:
-            self._send(404, {"error": "not found"})
+            self._send_404(path)
 
     # ---- POST ----
     def do_POST(self):
         path = self.path.split("?", 1)[0]
         if self._reject_foreign():
             return
+        # 面板令牌闸（SEC-05）：全部 POST 一律要求本次启动的令牌（覆盖
+        # /api/tajiduo/send-captcha 任意手机号短信、/api/tajiduo/logout 毁凭证
+        # 等零鉴权外部副作用面）；CSRF（无 Origin 无 token）先 403 后 401
+        if not self._panel_token_ok():
+            return
         body = self._body()
         if body is None:
             self._send(400, {"error": "请求体不是合法 JSON"})
             return
         if path not in ("/api/stop", "/api/dry-run", "/api/today/clear-blacklist",
-                        "/api/ocr/cancel") and \
+                        "/api/ocr/cancel", "/api/tajiduo/logout") and \
                 RUNNER.snapshot()["state"] in ("running", "waiting", "stopping"):
             self._send(409, {"error": "规划器运行中，请先停止再修改数据"})
             return
 
         if path == "/api/settings":
-            with STATE.lock:  # 写 STATE.data 一律持锁：与执行线程/并发请求互斥
-                clean = _sanitize_settings(body)
-                STATE.data["settings"] = clean
-                STATE.save()
-            self._send(200, {"ok": True, "settings": STATE.settings})
+            try:
+                with STATE.lock:  # 写 STATE.data 一律持锁：与执行线程/并发请求互斥
+                    clean = _sanitize_settings(body)
+                    # oknte_root 指纹闸（SEC-05 建议②）：仅变更时校验（同值整包
+                    # 回写零开销）；校验纯文件检查零执行面，400 时 state 原值不动
+                    _validate_oknte_root_change(STATE.settings["oknte_root"],
+                                                clean["oknte_root"])
+                    STATE.data["settings"] = clean
+                    STATE.save()
+            except ValueError as e:
+                self._send(400, {"error": str(e)})
+                return
+            # rev 回传（复审阻断 #1）：state.py 契约=写端点响应回传 rev，前端 api()
+            # 见 rev 跟进基线——否则本页保存设置后再保存角色被 base_rev 误判 409
+            self._send(200, {"ok": True, "rev": STATE.rev, "settings": STATE.settings})
         elif path == "/api/characters":
             if not isinstance(body.get("characters"), list):
                 self._send(400, {"error": "characters 必须是数组"})
                 return
             dupes = []
+            stale = False
             with STATE.lock:
-                chars = [_sanitize_character(c) for c in body["characters"][:50]]
-                chars = _auto_fill_extra_needs(chars)
-                # 后端重名互斥（此前只在前端拦截，绕过前端即可造出重名角色）
-                dupes = duplicate_character_names(chars)
-                if not dupes:
-                    STATE.data["characters"] = chars
-                    STATE.save()
+                # 跨标签页陈旧回写防线（乐观锁）：前端保存携带 bootstrap 下发的数据版本
+                # base_rev，与当前不一致即拒绝——否则停在旧页面的标签会把塔吉多同步/
+                # 另一窗口刚写入的轨道整行打回（诊断 item6）。旧脚本/自测不带
+                # base_rev 时跳过比对，行为不变
+                base_rev = body.get("base_rev")
+                if isinstance(base_rev, int) and not isinstance(base_rev, bool) \
+                        and base_rev != STATE.rev:
+                    stale = True
+                if not stale:
+                    chars = [_sanitize_character(c) for c in body["characters"][:50]]
+                    chars = _auto_fill_extra_needs(chars)
+                    # 后端重名互斥（此前只在前端拦截，绕过前端即可造出重名角色）
+                    dupes = duplicate_character_names(chars)
+                    if not dupes:
+                        STATE.data["characters"] = chars
+                        STATE.save()
+            if stale:
+                self._send(409, {"error": "角色数据已在其他窗口更新，请刷新页面后重试"
+                                          "（避免旧输入框把新数据覆盖回去）"})
+                return
             if dupes:
                 self._send(409, {"error": "角色名重复（互斥录入）："
                                           + "、".join(dupes) + "；请修正后再保存"})
                 return
-            self._send(200, {"ok": True, "characters": STATE.characters})
+            self._send(200, {"ok": True, "rev": STATE.rev,
+                             "characters": STATE.characters})
         elif path == "/api/characters/reorder":
             ids = body.get("ids")
             if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
                 self._send(400, {"error": "ids 必须是字符串数组"})
                 return
             reorder_characters([str(i) for i in ids])
-            self._send(200, {"ok": True})
+            # rev 回传（复审阻断 #1）：角色页每次拖拽都调本端点，不回传 rev 会让
+            # 同页「保存角色」的 base_rev 立即过期 → 误报 409
+            self._send(200, {"ok": True, "rev": STATE.rev})
         elif path == "/api/inventory":
             inv = body.get("inventory")
             if not isinstance(inv, dict):
@@ -2573,7 +3276,8 @@ class Handler(BaseHTTPRequestHandler):
                     for k, v in inv.items() if str(k) in planner.ALL_ORDER  # 全量目录
                 }
                 STATE.save()
-            self._send(200, {"ok": True, "inventory": STATE.inventory})
+            # rev 回传（复审阻断 #1）：同页随后保存角色不再被 base_rev 误判 409
+            self._send(200, {"ok": True, "rev": STATE.rev, "inventory": STATE.inventory})
         elif path == "/api/game-data/import":
             action = str(body.get("action", ""))
             data = self._game_data_or_none()
@@ -2596,7 +3300,7 @@ class Handler(BaseHTTPRequestHandler):
                     _merge("char_library", libs["char_library"])
                     _merge("weapon_library", libs["weapon_library"])
                     STATE.save()
-                self._send(200, {"ok": True,
+                self._send(200, {"ok": True, "rev": STATE.rev,
                                  "char_library": STATE.data["char_library"],
                                  "weapon_library": STATE.data["weapon_library"]})
             elif action == "character":
@@ -2614,7 +3318,7 @@ class Handler(BaseHTTPRequestHandler):
                         clean = _sanitize_character(raw)
                         STATE.data["characters"].append(clean)
                         STATE.save()
-                        payload = {"ok": True, "character": clean}
+                        payload = {"ok": True, "rev": STATE.rev, "character": clean}
                     else:
                         payload = None
                 if payload is None:
@@ -2643,6 +3347,143 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send(200, {"ok": True, "sets": len(payload.get("sets", [])),
                              "fetched_at": payload.get("fetched_at")})
+        elif path == "/api/sites/sync-guide":
+            # 手动同步攻略站公共数据（ntestrategy + wiki.mysqil.com；仅本端点触发，
+            # 无任何定时）。nteguide.com 自 2026-11-10 起全面禁用（见 AGENTS.md）。
+            # URL 由 sites_fetch 常量白名单决定，不接受前端传参；body 只作占位不读取。
+            with STATE.lock:  # 目录读-改-写与并发请求互斥（同 /api/game-data/import）
+                merge, payload = sites_fetch.sync_guide_sites(
+                    STATE.data.get("char_library") or [],
+                    STATE.data.get("weapon_library") or [], timeout=15)
+                if not payload.get("ok"):
+                    self._send(502, {"ok": False, "error": "两站均抓取失败："
+                                     + "；".join(f"{k}: {v['error']}"
+                                                for k, v in payload["sources"].items()
+                                                if v["error"]),
+                                     "sources": payload["sources"]})
+                    return
+                # 合并策略：不覆盖已有实名，缺失补录（上限与 _sanitize_libraries 对齐）
+                STATE.data["char_library"] = merge["char_library"][:200]
+                STATE.data["weapon_library"] = merge["weapon_library"][:200]
+                STATE.save()
+            # 角色头像下载（2026-11-09 工作包2；2026-11-10 起源站改 wiki.mysqil.com，
+            # 锁外执行不拖慢其他请求）：只取 mysqil 源条目（拼音 slug，立绘优先/
+            # 图标回落见 sites_fetch.download_avatars）；失败静默不阻断（头像非关键
+            # 数据，下次同步幂等补齐）。manifest 为合并语义（既往成功条目不掉出），
+            # 失败名单透出到响应供前端提示。本机落 data/avatars/，经 GET /avatars/<fname> 读取
+            try:
+                av_downloaded, av_skipped, av_failed = sites_fetch.download_avatars(
+                    [c for c in payload.get("characters") or []
+                     if isinstance(c, dict) and c.get("source") == "mysqil"])
+            except (OSError, ValueError):
+                av_downloaded = av_skipped = 0
+                av_failed = []
+            stats = payload["merge"]
+            self._send(200, {"ok": True, "rev": STATE.rev,  # rev 回传（复审阻断 #1）
+                             "fetched_at": payload["fetched_at"],
+                             # 头像/别名映射随响应刷新（前端回填 BOOT，免整页刷新）
+                             "avatars": _avatar_map(),
+                             # 头像下载结果（2026-11-10：manifest 合并语义，失败名单透出）
+                             "avatars_dl": {"downloaded": av_downloaded,
+                                            "skipped": av_skipped,
+                                            "failed": av_failed},
+                             "guide_slug_names": _guide_slug_names(),
+                             "sources": payload["sources"],
+                             "chars": stats["char_library"],
+                             "weapons": stats["weapon_library"],
+                             "materials": {"candidates": stats["materials"]["candidates"],
+                                           "known": stats["materials"]["known"],
+                                           "unmapped_count": len(stats["materials"]["unmapped"])},
+                             "alt_names_count": len(stats["alt_names"]),
+                             # BIS 建议段：仅建议展示（前端空幕页），不参与目录合并
+                             "builds": payload["builds"],
+                             "char_library": STATE.data["char_library"],
+                             "weapon_library": STATE.data["weapon_library"]})
+        elif path == "/api/tajiduo/send-captcha":
+            # 塔吉多绑定第一步：发短信验证码（手动；凭证只落本机，见 tajiduo_client）
+            try:
+                payload = _tajiduo_send_captcha(body.get("phone"))
+            except ValueError as e:
+                self._send(400, {"ok": False, "error": str(e)})
+                return
+            except tajiduo_client.TajiduoError as e:
+                self._send(502, {"ok": False, "error": f"验证码发送失败：{e}"})
+                return
+            self._send(200, payload)
+        elif path == "/api/tajiduo/bind":
+            # 塔吉多绑定第二步：验证码登录 + 换会话 + 凭证落盘（令牌绝不回传前端）
+            try:
+                payload = _tajiduo_bind(body.get("phone"), body.get("captcha"))
+            except ValueError as e:
+                self._send(400, {"ok": False, "error": str(e)})
+                return
+            except tajiduo_client.TajiduoError as e:
+                self._send(502, {"ok": False, "error": f"绑定失败：{e}"})
+                return
+            except OSError as e:
+                self._send(500, {"ok": False, "error": f"凭证保存失败：{e}"})
+                return
+            self._send(200, payload)
+        elif path == "/api/tajiduo/sync":
+            # 手动同步（按钮触发 only）：拉角色面板 → 预览（绝不写 state）。
+            # 令牌过期在 sync_all 内走三级恢复链（续期→laohu 凭据重建→耗尽）→ 401 提示重绑。
+            try:
+                payload = _tajiduo_sync()
+            except ValueError as e:
+                self._send(400, {"ok": False, "error": str(e)})
+                return
+            except tajiduo_client.TajiduoError as e:
+                code = 401 if e.auth else 502
+                hint = "；登录已过期，请重新绑定" if e.auth else ""
+                # needs_rebind：前端据此渲染重绑引导（而非只置灰按钮）
+                self._send(code, {"ok": False, "error": f"塔吉多同步失败：{e}{hint}",
+                                  "needs_rebind": e.auth})
+                return
+            except OSError as e:
+                # 兜底（HTTPError 已在 tajiduo_client._http 转 TajiduoError）：
+                # 剩余 OSError = URLError（DNS/拒连）等网络层错误，不再伪装 500 系
+                # 未分类错误，也绝不冒充「登录过期」
+                self._send(502, {"ok": False, "error": f"塔吉多同步网络失败：{e}"})
+                return
+            self._send(200, payload)
+        elif path == "/api/tajiduo/sync-gacha":
+            # 手动抽卡同步（按钮触发 only，绝不自动/定时）：拉抽卡分析 → 解析 →
+            # 本地并集累积合并 → 落盘 data/gacha_history.json。令牌过期在
+            # sync_gacha 内走三级恢复链（续期→laohu 凭据重建→耗尽）→ 401 提示重绑。
+            try:
+                payload = _tajiduo_sync_gacha()
+            except ValueError as e:
+                self._send(400, {"ok": False, "error": str(e)})
+                return
+            except tajiduo_client.TajiduoError as e:
+                code = 401 if e.auth else 502
+                hint = "；登录已过期，请重新绑定" if e.auth else ""
+                # needs_rebind：前端据此渲染重绑引导（而非只置灰按钮）
+                self._send(code, {"ok": False, "error": f"抽卡同步失败：{e}{hint}",
+                                  "needs_rebind": e.auth})
+                return
+            except OSError as e:
+                # HTTPError 已在 _http 转 TajiduoError：此处剩余 OSError =
+                # URLError（网络层）或本地存档读写失败——文案不再单指存档
+                self._send(500, {"ok": False, "error": f"抽卡同步失败（网络/存档读写）：{e}"})
+                return
+            self._send(200, payload)
+        elif path == "/api/tajiduo/apply":
+            # 预览确认后的写入：按 target 名部分更新角色（等级/技能/觉醒/弧盘）
+            try:
+                payload = _tajiduo_apply_rows(body.get("rows"))
+            except ValueError as e:
+                self._send(400, {"ok": False, "error": str(e)})
+                return
+            self._send(200, payload)
+        elif path == "/api/tajiduo/logout":
+            # 登出（手动）：删本机凭证文件 + 清发码暂存（在运行中白名单内——登出
+            # 不写 state，规划器运行中也可用）。本地抽卡累积存档保留不删，
+            # 重新绑定即可恢复同步
+            with _TJD_LOCK:
+                tajiduo_client.clear_token_store()
+                _TJD_PENDING.update({"phone": "", "device": None, "at": 0.0})
+            self._send(200, {"ok": True})
         elif path == "/api/ocr/select":
             # 手动选择窗口：进程名写 game_process_name、标题写 game_window_keywords（标题兜底）
             try:
@@ -2660,7 +3501,8 @@ class Handler(BaseHTTPRequestHandler):
                 STATE.settings["game_process_name"] = selected["process"]
                 STATE.settings["game_window_keywords"] = selected["title"]
                 STATE.save()
-            self._send(200, {"ok": True, "selected": selected})
+            self._send(200, {"ok": True, "rev": STATE.rev,  # rev 回传（复审阻断 #1）
+                             "selected": selected})
         elif path == "/api/ocr/layout":
             # OCR 网格布局保存（校验后写 data/ocr_layout.json，读取即热生效）
             try:
@@ -2675,7 +3517,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/inventory/ocr":
             # 实验性 v3：窗口绑定 + 网格逐格点击遍历识别（mode=page 只识别当前页）。
             # 绝不直接写库存：返回命中表由用户核对后预填保存。
-            # OCR 单飞锁（评审 2026-11-05）：背包/角色遍历共用全局鼠标点击，绝不
+            # OCR 单飞锁（评审 2026-11-05）：背包遍历独占全局鼠标点击，绝不
             # 并发——上一轮还在 PS 页内时新识别请求立即 409，杜绝双遍历互相污染
             # （也堵死「新一轮入口清掉旧轮取消」的时序窗口）。
             if not _OCR_RUN_LOCK.acquire(blocking=False):
@@ -2698,12 +3540,10 @@ class Handler(BaseHTTPRequestHandler):
             finally:
                 _OCR_RUN_LOCK.release()
         elif path == "/api/ocr/cancel":
-            # 取消正在进行的 OCR 遍历（背包 + 角色）：代数令牌定向——只对发起时
-            # 登记的当前代数生效（旧轮的取消绝不泄漏进新一轮）；角色遍历的每头像
-            # 循环在 PS 子进程内，Event 传不进去 → 同时落当前代数的取消哨兵文件，
-            # PS 每头像循环头 Test-Path 探测后提前收尾（已识别角色保留）。
+            # 取消正在进行的 OCR 遍历（背包）：代数令牌定向——只对发起时登记的
+            # 当前代数生效（旧轮的取消绝不泄漏进新一轮）。
             # 运行中白名单放行——遍历挂起时规划器可能恰好启动，取消必须可用。
-            _ocr_cancel_file_write(_ocr_cancel_active())
+            _ocr_cancel_active()
             self._send(200, {"ok": True, "cancelled": True})
         elif path == "/api/ocr/map-unknown":
             # 未收录道具实名映射：OCR unknown_items 的人工确认结果 → item_names 别名。
@@ -2718,34 +3558,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, {"ok": False, "error": f"实名映射保存失败：{e}"})
                 return
             self._send(200, {"ok": True, "item_names": item_names})
-        elif path == "/api/characters/ocr":
-            # 实验性 v2（2026-11-04 真实 UI 遍历；2026-11-06 增弧盘页）：逐个点头像 →
-            # 信息页（名字+Lv）→ "弧盘"页（实名+等级）→ "异能"页（四技能+都市特技）；
-            # 不直接写角色。
-            # OCR 单飞锁：与背包遍历互斥（共用全局鼠标点击），抢不到即 409。
-            if not _OCR_RUN_LOCK.acquire(blocking=False):
-                self._send(409, {"ok": False,
-                                 "error": "已有 OCR 遍历进行中，请等待完成或先点取消"})
-                return
-            try:
-                try:
-                    result = _run_chars_ocr()
-                except _OcrWindowNotFound as e:
-                    self._send(502, {"ok": False, "error": str(e)})
-                    return
-                except ValueError as e:
-                    self._send(502, {"ok": False, "error": str(e)})
-                    return
-                except (OSError, subprocess.TimeoutExpired) as e:
-                    self._send(502, {"ok": False, "error": f"OCR 执行失败：{e}"})
-                    return
-                except Exception as e:  # noqa: BLE001 —— 兜底：漏网异常也必须回 HTTP，
-                    # 否则连接无响应 → 前端只会看到 Failed to fetch（真机 NameError 即此形态）
-                    self._send(500, {"ok": False, "error": f"内部错误：{e}"})
-                    return
-                self._send(200, {"ok": True, **result})
-            finally:
-                _OCR_RUN_LOCK.release()
         elif path == "/api/game-data/custom":
             action = str(body.get("action", ""))
             try:
@@ -2784,7 +3596,8 @@ class Handler(BaseHTTPRequestHandler):
                 STATE.data["common_costs"] = {**(STATE.data.get("common_costs") or {}),
                                               **clean}
                 STATE.save()
-            self._send(200, {"ok": True, "costs": _common_costs()})
+            self._send(200, {"ok": True, "rev": STATE.rev,  # rev 回传（复审阻断 #1）
+                             "costs": _common_costs()})
         elif path == "/api/common-costs/apply":
             data = self._game_data_or_none()
             if data is None:
@@ -2815,7 +3628,8 @@ class Handler(BaseHTTPRequestHandler):
                 STATE.save()
             notes = [f"{r['name']}：{'、'.join(r['skipped'])}" for r in rows.values()
                      if r["skipped"] and (name == "全部" or r["name"] == name)]
-            self._send(200, {"ok": True, "applied": applied, "skipped": skipped,
+            self._send(200, {"ok": True, "rev": STATE.rev,  # rev 回传（复审阻断 #1）
+                             "applied": applied, "skipped": skipped,
                              "notes": notes})
         elif path == "/api/libraries":
             libs = _sanitize_libraries(body)
@@ -2826,7 +3640,7 @@ class Handler(BaseHTTPRequestHandler):
                 if "weapon_library" in body:
                     STATE.data["weapon_library"] = libs["weapon_library"]
                 STATE.save()
-            self._send(200, {"ok": True,
+            self._send(200, {"ok": True, "rev": STATE.rev,  # rev 回传（复审阻断 #1）
                              "char_library": STATE.data["char_library"],
                              "weapon_library": STATE.data["weapon_library"]})
         elif path == "/api/tables/materials":
@@ -2889,6 +3703,18 @@ class Handler(BaseHTTPRequestHandler):
                 "plan": planner.make_plan(oknte),
                 "oknte_running": oknte.is_running_cached(),
             })
+        elif path == "/api/oknte/plan":
+            # 保存执行计划覆盖 → data/oknte_plan.json（pathlib + save_json_atomic，
+            # 被覆盖时自动 .bak）。不写 ok-nte 真实配置；消费在执行链构建配置副本与
+            # make_plan.plan_targets。运行中落 do_POST 统一拦截（409）：覆盖影响
+            # 执行链，与「运行中禁改数据」既有口径一致。
+            try:
+                clean = _sanitize_oknte_plan_overrides(body)
+            except ValueError as e:
+                self._send(400, {"error": str(e)})
+                return
+            saved = save_oknte_plan_overrides(clean)
+            self._send(200, {"ok": True, "saved_path": saved})
         elif path == "/api/dry-run":
             # 纯读预演：运行中也不修改任何数据，故豁免"运行中禁改"拦截
             self._send(200, perform_dry_run(self._oknte()))
@@ -2912,13 +3738,15 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"ok": ok, "message": msg})
         elif path == "/api/today/clear-blacklist":
             cleared = clear_today_blacklist()
-            self._send(200, {"ok": True, "cleared": cleared})
+            self._send(200, {"ok": True, "rev": STATE.rev,  # rev 回传（复审阻断 #1）
+                             "cleared": cleared})
         elif path == "/api/teams/save":
             clean = _sanitize_teams(body)
             with STATE.lock:
                 STATE.data["teams"] = clean
                 STATE.save()
-            self._send(200, {"ok": True, "teams": clean})
+            self._send(200, {"ok": True, "rev": STATE.rev,  # rev 回传（复审阻断 #1）
+                             "teams": clean})
         elif path == "/api/history/confirm":
             day = str(body.get("day", ""))[:10]
             time_str = str(body.get("time", ""))[:8]
@@ -2935,14 +3763,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, {"error": "actual_gain 不能为负"})
                 return
             ok, msg = confirm_history_entry(day, time_str, mat_id, actual)
-            self._send(200 if ok else 404, {"ok": ok, "message": msg})
+            self._send(200 if ok else 404,
+                       {"ok": ok, "rev": STATE.rev,  # rev 回传（复审阻断 #1）
+                        "message": msg})
         elif path == "/api/import":
             try:
                 summary = apply_import(body)
             except ValueError as e:
                 self._send(400, {"error": f"导入失败：{e}"})
                 return
-            self._send(200, {"ok": True, **summary})
+            self._send(200, {"ok": True, "rev": STATE.rev,  # rev 回传（复审阻断 #1）
+                             **summary})
         elif path == "/api/backups/restore":
             name = str(body.get("name", ""))
             try:
@@ -2961,7 +3792,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200 if ok else 409, {
                 "ok": ok, "message": msg, "pending": RUNNER.snapshot()["pending"]})
         else:
-            self._send(404, {"error": "not found"})
+            self._send_404(path)
 
 
 def _port_candidates(port, auto_range):
@@ -2988,6 +3819,7 @@ def create_server(port, auto_range=20):
     错误信息区分"被占用"与"WinError 10013（Windows 端口排除区，Hyper-V/WSL
     重启后常见）"两种形态，后者给出 netsh 排查与管理员 winnat 重启两个解法。
     """
+    _ensure_panel_token()  # fail-closed 不变量：绑定前必有令牌（SEC-05）
     last_error = None
     saw_access_denied = False
     for candidate in _port_candidates(port, auto_range):
@@ -3194,6 +4026,7 @@ def _backfill_characters_from_catalog():
 
 def _graceful_shutdown(server):
     """窗口关闭后的优雅退出：先停执行器并给记账留时间，避免留下未决执行。"""
+    _HOTKEY_STOP.set()  # 热键监听线程收尾（daemon 本就随进程退出，这里求干净）
     print("窗口已关闭，正在退出…")
     try:
         RUNNER.stop()
@@ -3252,6 +4085,8 @@ def _run_panel():
 
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
+    # 全局紧急停止热键（Ctrl+Alt+Q）：提权面板监听，游戏持焦点也可见；详见 _hotkey_loop
+    threading.Thread(target=_hotkey_loop, daemon=True, name="oknte-hotkey").start()
     # 预热进程检测缓存：面板打开时 bootstrap/计划接口直接命中缓存，省 2~3s 首屏等待
     threading.Thread(
         target=lambda: OkNte(STATE.settings["oknte_root"]).is_running_cached(),

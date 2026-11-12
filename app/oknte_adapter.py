@@ -26,7 +26,49 @@ LAUNCHER_SRC = (
     "import src.config as src_config\n"
     "cfg = dict(src_config.config)\n"
     "cfg['config_folder'] = os.environ['OKNTE_PLANNER_PROFILE']\n"
+    "# 截图方式注入（键路径核对自 ok-nte working\\src\\config.py 的 windows.capture_method，\n"
+    "# 注释明示支持 BitBlt/WGC/BitBlt_RenderFull/DXGI）。2026-11-10 真机事故修订：\n"
+    "# 旧序列 ['DXGI','BitBlt_RenderFull'] 把 DXGI 放首位——本机（Win10 19045）ok-nte\n"
+    "# 内部 DXGI 初始化 E_INVALIDARG（ok-script.log:34 update_capture_method exception\n"
+    "# return None: (-2147024809,'参数错误。')），DeviceManager 直接 \"cant find a usable\n"
+    "# windows capture\"（:35），LauncherTask 10s connect False 后 DailyRoutineTask 整轮\n"
+    "# 跳过并每 15s 死循环；同日 16:53 GUI 手动启动用默认 ['WGC','BitBlt_RenderFull']\n"
+    "# 一次成功（ok-script.log:759 use BitBlt_RenderFull capture render_full: True）。\n"
+    "# 新序列与 GUI 已验证可用形态对齐：WGC 首位（ok-nte 按 Windows 版本自检，\n"
+    "# 19045 < 20348 自动跳过，见 ok-script.log:758）、BitBlt_RenderFull 第二（本机\n"
+    "# 实际生效的采集路径）、DXGI 末位（探测通过才放行——门控必须真实初始化 d3dshot，\n"
+    "# 只 import 能过而 create 失败时 DXGI 构造仍会抛异常并被\n"
+    "# ok\\device\\capture_methods\\update.py 的 except 整体吞掉返回 None，连 BitBlt\n"
+    "# 兜底一起丢；放末位即使真机初始化失败也不挡 BitBlt 生效）。\n"
+    "_capture_methods = ['WGC', 'BitBlt_RenderFull']\n"
+    "try:\n"
+    "    import d3dshot\n"
+    "    _dd = d3dshot.create(capture_output='numpy')\n"
+    "    _dd.stop()\n"
+    "    _capture_methods.append('DXGI')\n"
+    "    print(\"[capture-probe] DXGI 可用（Desktop Duplication 初始化成功），\"\n"
+    "          \"capture_method=\" + str(_capture_methods))\n"
+    "except Exception as _probe_err:\n"
+    "    # 复审阻断⑤：探测失败必须可观测（此前完全静默——capture_method 恒为\n"
+    "    # BitBlt_RenderFull 即 PrintWindow 同步截图卡死路径，运维无从知晓卡死\n"
+    "    # 防护未生效）。此行经面板 runner 的 stdout 泵进「最新日志」与\n"
+    "    # ok-nte-live.log（runner._launch_and_monitor._pump）\n"
+    "    print(f\"[capture-probe] DXGI 不可用（d3dshot 导入/初始化失败: \"\n"
+    "          f\"{_probe_err.__class__.__name__}: {_probe_err}），采集回落 \"\n"
+    "          \"BitBlt_RenderFull（PrintWindow 同步截图，存在卡死风险；\"\n"
+    "          \"建议在内嵌 Python 执行 -m pip install d3dshot）\")\n"
+    "cfg['windows'] = dict(cfg.get('windows') or {})\n"
+    "cfg['windows']['capture_method'] = _capture_methods\n"
     "run_task(cfg, task=os.environ['OKNTE_PLANNER_TASK'])\n"
+)
+
+# DXGI 采集探测片段（内嵌解释器实跑；与 LAUNCHER_SRC 的探测段同口径——门控必须
+# 真实 create 而非仅 import，见 LAUNCHER_SRC 注释）。成功输出 __DXGI_PROBE_OK__
+_DXGI_PROBE_SNIPPET = (
+    "import d3dshot\n"
+    "_dd = d3dshot.create(capture_output='numpy')\n"
+    "_dd.stop()\n"
+    "print('__DXGI_PROBE_OK__')\n"
 )
 
 ROUTINE_CONFIG_NAME = "DailyRoutineTaskConfigs.json"
@@ -46,6 +88,55 @@ INTENDED_DAILY_KEYS = frozenset({
 
 class OkNteError(Exception):
     pass
+
+
+# ---- 面板侧执行计划覆盖（data/oknte_plan.json；POST /api/oknte/plan 写入） ----
+# 用户在面板保存的「执行计划选项覆盖」：执行链构建配置副本时消费（prepare_daily_profile
+# 的①②③④），计划生成时消费（planner.make_plan 的 plan_targets）。
+# ok-nte 真实 configs\ 依旧零写入——覆盖只落 data/ 与配置副本。
+OKNTE_PLAN_FILE = Path(DATA_DIR) / "oknte_plan.json"
+
+
+def load_oknte_plan_overrides():
+    """读 data/oknte_plan.json 的 overrides 段（有效 dict 返回；否则 None）。
+
+    无文件 → None（=现有行为，零覆盖）；损坏/结构不对 → 打印警告返回 None 不中断：
+    覆盖是增强功能，读不出时回退现有行为比中断执行更安全（告警经 stdout 泵进
+    面板「最新日志」）。"""
+    if not OKNTE_PLAN_FILE.is_file():
+        return None
+    try:
+        with OKNTE_PLAN_FILE.open(encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError) as e:
+        print(f"[oknte-plan] 覆盖文件无法解析，忽略（{OKNTE_PLAN_FILE}）："
+              f"{e.__class__.__name__}: {e}")
+        return None
+    overrides = data.get("overrides") if isinstance(data, dict) else None
+    return overrides if isinstance(overrides, dict) and overrides else None
+
+
+def oknte_plan_target_ids():
+    """overrides.plan_targets → 去重保序的材料 id 字符串列表（无覆盖返回 []）。
+
+    是否为可规划材料（TARGETS）由 planner.make_plan 校验并对未知 id 告警，
+    本函数不做目录校验（避免 oknte_adapter 反向依赖 planner）。"""
+    overrides = load_oknte_plan_overrides()
+    raw = (overrides or {}).get("plan_targets")
+    if not isinstance(raw, list):
+        return []
+    ids = [str(item).strip() for item in raw if str(item).strip()]
+    return list(dict.fromkeys(ids))
+
+
+def save_oknte_plan_overrides(overrides):
+    """覆盖对象 → data/oknte_plan.json（pathlib + save_json_atomic；被覆盖时
+    save_json_atomic 自动把上一版复制为 .bak）。返回落盘路径字符串。"""
+    payload = {"schema": 1, "version": 1,
+               "fetched_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+               "overrides": overrides}
+    save_json_atomic(str(OKNTE_PLAN_FILE), payload)
+    return str(OKNTE_PLAN_FILE)
 
 
 def _detection_patterns(working, apps_dir):
@@ -157,6 +248,49 @@ class OkNte:
                   else "compatible")
         return {"status": status, "version": self.version(),
                 "problems": problems, "warnings": warnings}
+
+    # ---- DXGI 采集可用性探测（复审阻断⑤：探测失败必须对用户可见） ----
+    # 进程级缓存（root → 探测结果）：真探测要在内嵌解释器里拉起一次 Desktop
+    # Duplication（秒级），每次 bootstrap 重探不可接受；装/卸 d3dshot 后需重启
+    # 面板进程重探（capture 可用性在会话期内视为不变）。
+    _DXGI_PROBE_CACHE = {}
+
+    def dxgi_available(self):
+        """内嵌 Python 能否真实初始化 DXGI 采集（d3dshot import + create + stop，
+        与 launcher 探测段同口径）。解释器缺失/执行失败/超时一律 False。
+        结果按 root 进程级缓存——面板进程生命周期内只探测一次。"""
+        cached = OkNte._DXGI_PROBE_CACHE.get(self.root)
+        if cached is not None:
+            return cached
+        ok = False
+        if os.path.isfile(self.python_exe):
+            try:
+                proc = subprocess.run(
+                    [self.python_exe, "-c", _DXGI_PROBE_SNIPPET],
+                    cwd=self.working, capture_output=True, timeout=30,
+                    creationflags=CREATE_NO_WINDOW)
+                ok = proc.returncode == 0 and b"__DXGI_PROBE_OK__" in proc.stdout
+            except (OSError, subprocess.TimeoutExpired):
+                ok = False
+        OkNte._DXGI_PROBE_CACHE[self.root] = ok
+        return ok
+
+    def capture_probe_warning(self):
+        """DXGI 采集不可用时的面板可见警告（None = 可用/不适用）。
+
+        复审阻断⑤第二防线：launcher 的 DXGI 探测失败此前完全静默——capture_method
+        恒回落 BitBlt_RenderFull（PrintWindow 同步截图=两次卡死实证路径），卡死防护
+        只剩 90s 看门狗兜底且运维无从知晓。本警告经 /api/bootstrap → 前端侧栏警示
+        标签常驻展示；launcher 运行时的成败 print 是任务启动时的第二处可见信号。
+        解释器缺失时返回 None（compat problems 首条已告警，不重复）。"""
+        if not os.path.isfile(self.python_exe):
+            return None
+        if self.dxgi_available():
+            return None
+        return ("内嵌 Python 缺少 d3dshot（或桌面复制不可用）——DXGI 采集未生效，"
+                "无头截图回落 BitBlt_RenderFull（PrintWindow 同步截图，存在卡死风险，"
+                "看门狗 90s 自动重启兜底）。修复：" + self.python_exe
+                + " -m pip install d3dshot，装完重启面板")
 
     @staticmethod
     def _daily_type_problems(daily):
@@ -389,8 +523,15 @@ class OkNte:
         """构建日常无界面运行的独立配置副本 working\\configs_planner\\：
         - configs 全量拷贝（框架配置 _ok.json/devices 等随行，窗口绑定不丢失）；
         - DailyRoutineTask.json 只启用 daily_anomaly（咖啡/领奖/影院/喷泉/家具/礼物
-          等与体力计划无关的子任务不再执行）；
-        - DailyRoutineTaskConfigs.json 的 daily_anomaly 段写入本步目标体力。
+          等与体力计划无关的子任务不再执行）；有 data/oknte_plan.json 覆盖时按覆盖
+          设置 enabled（①不再强制只开 daily_anomaly，顶层 BOT 通知/任务后退出同样
+          只在覆盖给出时写入，且仅当键已存在于副本——结构变更防护）；
+        - DailyRoutineTaskConfigs.json 的 daily_anomaly 段写入本步目标体力；有覆盖
+          时其键再覆盖（②循环序列=用户多选列表，任务类型/奖励目标/序号/目标体力
+          同理；循环模式仍强制「停用」），misc 各段若覆盖含键则副本同段 update（④）；
+        - 有 overrides.hunter 时副本 AnomalyHunter.json 写 {追猎目标, 领取奖励次数}
+          （③：覆盖可启用 daily_anomaly_hunter 子任务，其配置随副本生效）。
+        覆盖缺失/损坏 = 现有行为（load_oknte_plan_overrides 损坏时告警返回 None）。
         用户原 configs\\ 全程零写入；返回启动器脚本路径。"""
         src_cfg = os.path.join(self.working, "configs")
         profile = os.path.join(self.working, "configs_planner")
@@ -399,14 +540,29 @@ class OkNte:
         if os.path.isdir(profile):
             shutil.rmtree(profile)
         shutil.copytree(src_cfg, profile, ignore=shutil.ignore_patterns("*.tmp"))
+        overrides = load_oknte_plan_overrides()
+        if overrides:
+            print("[oknte-plan] 应用执行计划覆盖（data/oknte_plan.json）："
+                  + "、".join(sorted(overrides)))
         items_path = os.path.join(profile, ROUTINE_ITEMS_NAME)
         original = self._load_json_or(items_path, None)
         if not isinstance(original, dict) or not isinstance(original.get("Routine Items"), list):
             raise OkNteError("配置副本缺少 Routine Items（ok-nte 结构可能已变更）")
         patched = copy.deepcopy(original)
-        for entry in patched["Routine Items"]:
-            if isinstance(entry, dict) and entry.get("id"):
-                entry["enabled"] = entry["id"] == "daily_anomaly"
+        ri_override = overrides.get("routine_items") if overrides else None
+        if isinstance(ri_override, dict) and ri_override:
+            # ① 按覆盖设置 enabled：只动覆盖点名的条目，未点名条目沿用副本值
+            for entry in patched["Routine Items"]:
+                if isinstance(entry, dict) and entry.get("id") in ri_override:
+                    entry["enabled"] = bool(ri_override[entry["id"]])
+            for okey, fkey in (("bot_notify", "存在失败时发送 BOT 通知"),
+                               ("exit_after_task", "Exit After Task")):
+                if okey in ri_override and fkey in patched:
+                    patched[fkey] = bool(ri_override[okey])
+        else:
+            for entry in patched["Routine Items"]:
+                if isinstance(entry, dict) and entry.get("id"):
+                    entry["enabled"] = entry["id"] == "daily_anomaly"
         save_json_atomic(items_path, patched)
         daily_path = os.path.join(profile, ROUTINE_CONFIG_NAME)
         daily = self._load_json_or(daily_path, {})
@@ -414,9 +570,40 @@ class OkNte:
             raise OkNteError("配置副本缺少 daily_anomaly 段")
         intended = dict(target_config)
         intended["目标消耗体力"] = int(stamina_target)
+        daily_override = overrides.get("daily_anomaly") if overrides else None
+        if isinstance(daily_override, dict):
+            # ② 覆盖键后写：循环序列=用户多选列表，任务类型/奖励目标/序号/目标体力同理
+            for key, value in daily_override.items():
+                if key == "循环模式":
+                    continue  # 循环模式始终由规划器强制（见下），覆盖不放行
+                intended[key] = value
         intended["循环模式"] = "停用"  # 切换由规划器接管
         daily["daily_anomaly"].update(intended)
+        misc_override = overrides.get("misc") if overrides else None
+        if isinstance(misc_override, dict):
+            # ④ 杂项各段（coffee/cinema_date/…，同一 DailyRoutineTaskConfigs.json）：
+            # 覆盖含键则副本同段 update；段缺失/不是对象跳过并告警（结构变更防护）
+            for section, section_patch in misc_override.items():
+                if not isinstance(section_patch, dict) or not section_patch:
+                    continue
+                if not isinstance(daily.get(section), dict):
+                    print(f"[oknte-plan] 杂项段『{section}』在配置副本中缺失或不是对象，"
+                          "跳过该段覆盖")
+                    continue
+                daily[section].update(section_patch)
         save_json_atomic(daily_path, daily)
+        hunter_override = overrides.get("hunter") if overrides else None
+        if isinstance(hunter_override, dict) and hunter_override:
+            # ③ 副本 AnomalyHunter.json（合法键与 write_hunter_config 白名单一致）
+            hunter_path = os.path.join(profile, HUNTER_CONFIG_NAME)
+            hcfg = self._load_json_or(hunter_path, {})
+            if not isinstance(hcfg, dict):
+                hcfg = {}
+            if "追猎目标" in hunter_override:
+                hcfg["追猎目标"] = str(hunter_override["追猎目标"])
+            if "领取奖励次数" in hunter_override:
+                hcfg["领取奖励次数"] = max(0, int(hunter_override["领取奖励次数"]))
+            save_json_atomic(hunter_path, hcfg)
         launcher_path = os.path.join(profile, LAUNCHER_NAME)
         Path(launcher_path).write_text(LAUNCHER_SRC, encoding="utf-8")
         return launcher_path
@@ -630,6 +817,32 @@ class RunMonitor:
     MARK_IN_DUNGEON = "进入副本并等待"
     MARK_COMBAT_START = "开始执行战斗流程"
     MARK_COMBAT_END = "战斗结束，正在前往领取奖励"
+    # 窗口可见性标记（真机取证 2026-11-08：开战 30-70s 游戏窗口失焦/最小化 → 日志反复
+    # 出现 changed,visible:False → 屏幕采集死，战斗检测静默死等）。"hwnd changed" 伴随
+    # 形式（changed,visible:False）已被 visible:False 判据覆盖；无 visible:False 伴随的
+    # hwnd changed 是常规采集切换，不报警。只做展示（runner 透出 window_warning），
+    # 不参与 outcome 判定；恢复 visible:True 可清除。
+    WINDOW_MARK_INVISIBLE = "visible:False"
+    WINDOW_MARK_VISIBLE = "visible:True"
+    # 屏幕采集初始化失败标记（2026-11-10 真机取证）：无头拉起注入 ['DXGI',
+    # 'BitBlt_RenderFull'] 时本机 DXGI 初始化 E_INVALIDARG（ok-script.log:34
+    # "update_capture_method exception, return None: (-2147024809, '参数错误。')"），
+    # DeviceManager 找不到任何可用采集（:35 "cant find a usable windows capture"），
+    # LauncherTask 10s 刷新超时（:129 "try refresh timeout 10s, executor connect
+    # False"）→ DailyRoutineTask "Game launch or capture initialization is
+    # incomplete; skipping task"（:134）整轮跳过，且 ok-nte 内部每 15s 重新排队
+    # LauncherTask 死循环到 90 分钟时限。两标记在 11-08/11-09 两天正常日志中
+    # 零出现（grep 实证），是可靠的快速失败判据：出现即当轮任务直接失败返回
+    # （杀子进程止血，不再陪 ok-nte 的 15s 内部循环空转），由 _execute_step 的
+    # 失败重试（≤2 次）接管。判定置位后不复位——同一子进程内采集初始化失败
+    # 不会自行恢复，恢复只能靠重启进程。
+    CAPTURE_FAIL_MARK = "cant find a usable windows capture"
+    CONNECT_FAIL_MARK = "executor connect False"
+    # 卡死看门狗阈值：打出「开始执行战斗流程」后，超过该秒数无任何新日志行即判定
+    # 执行线程挂死。PrintWindow(PW_RENDERFULLCONTENT) 同步截图阻塞时日志完全静默，
+    # ok-nte 内置的 wait_until 超时因每轮先 next_frame()（TaskExecutor.py:651）而永不
+    # 触发（两次卡死 0 条超时日志实锤）——只能由面板侧按"日志静默时长"判定。
+    COMBAT_FREEZE_SECONDS = 90
 
     def __init__(self):
         self.started = []
@@ -644,9 +857,26 @@ class RunMonitor:
         self.failures = []
         self.in_dungeon = False   # 已进入副本
         self.combat_started = False  # 已打出"开始执行战斗流程"
+        self.window_invisible = False  # 游戏窗口不可见（visible:False），恢复 visible:True 清除
+        self.capture_fail = ""  # 屏幕采集初始化失败的首条原文（CAPTURE_FAIL_MARK/
+        # CONNECT_FAIL_MARK 命中即置位，置位后不复位；runner 据此当轮快速失败）
+        self.last_log_time = None  # 最近一条新日志行的到达时刻（卡死看门狗静默基准）
 
     def feed(self, lines):
+        if lines:
+            self.last_log_time = time.time()
         for line in lines:
+            # 窗口可见性独立判定（不走下方任务标记 elif 链：可见性行可能同时命中其他标记）
+            if self.WINDOW_MARK_INVISIBLE in line:
+                self.window_invisible = True
+            elif self.WINDOW_MARK_VISIBLE in line:
+                self.window_invisible = False
+            # 屏幕采集初始化失败（2026-11-10 真机取证，见 CAPTURE_FAIL_MARK 注释）：
+            # 命中即记首条原文（置位后不复位）；独立判定不挂可见性 elif 链，
+            # runner 轮询里立即杀子进程失败返回，不再陪 ok-nte 内部 15s 循环空转
+            if self.CAPTURE_FAIL_MARK in line or self.CONNECT_FAIL_MARK in line:
+                if not self.capture_fail:
+                    self.capture_fail = line.strip()[:160]
             if (m := self.RE_STARTED.search(line)):
                 self.started.append(m.group(1).strip())
             elif (m := self.RE_IDX.search(line)):
@@ -680,6 +910,17 @@ class RunMonitor:
                 self.failures.append(":".join(g for g in m.groups() if g))
             elif any(mark in line for mark in self.FAIL_MARKS):
                 self.failures.append(line.split(":", 1)[-1].strip()[:80])
+
+    def combat_freeze_seconds(self, now=None):
+        """战斗流程日志静默时长（秒）：已打出「开始执行战斗流程」且尚未打出「战斗结束」
+        （combat_started 为 True）以来，无任何新日志行的持续时间；未武装返回 None。
+
+        判据是"任意新日志行的到达间隔"而非等待某个特定条件：执行线程阻塞在
+        PrintWindow 同步截图（bitblt_utils.py:78）时整份日志静默，任何条件超时
+        日志都不会出现（两次卡死 0 条超时日志实证）。"""
+        if not self.combat_started or self.last_log_time is None:
+            return None
+        return max(0.0, (now if now is not None else time.time()) - self.last_log_time)
 
     def outcome(self, planned_stamina, cost_per_run):
         """返回 (状态, 实际消耗体力, 原因说明)。状态: done/short/skipped/failed"""

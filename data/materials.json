@@ -2,11 +2,134 @@
   "version": 2,
   "cost_per_run": 40,
   "note": "display_name/source 可在面板『数据表→材料名称与来源』里编辑；技能书/罐头系的 1~5 号与游戏内列的对应顺序未经证实，预填调研名，请按游戏内核对后改名（立即生效）。 | tiers=同族跨档等价折算（唯一真相）：系数取自 mysqil 养成计算器 DetailedCalc.js（枚数族9:3:1；角色经验每本20000/5000/1000点、弧盘经验10000/2500/500点）；同族之间互抵、不同族不互换。",
+  "stamina_blocks": [
+    {
+      "block": "经验及甲硬币",
+      "entry": "胡迪尼的魔术舞台（经验本）",
+      "stamina_per_run": 40,
+      "task_type": "经验与甲硬币",
+      "mat_ids": [
+        "exp_char"
+      ],
+      "drops": [
+        "猎人攻略分·新锐",
+        "猎人攻略分·资深",
+        "猎人攻略分·特级",
+        "甲硬币"
+      ],
+      "limits": "无周限；双倍扫荡 80 体力/次（2 倍奖励）",
+      "note": "观测值 40 与 ntegame 体力规划表一致；经验本与技能本严格分开（魔术舞台不出异能材料）"
+    },
+    {
+      "block": "异能升级材料",
+      "entry": "胡迪尼的诡计舞台（技能本）（观测）",
+      "stamina_per_run": 40,
+      "task_type": "异能升级材料",
+      "mat_ids": [
+        "ability_1",
+        "ability_2",
+        "ability_3",
+        "ability_4",
+        "ability_5"
+      ],
+      "drops": [
+        "异能升级材料·低阶",
+        "异能升级材料·中阶",
+        "异能升级材料·高阶（主要靠异象巡礼周本补充）"
+      ],
+      "limits": "无周限；高阶技能材料无法靠本刷满，需周本/自选箱补充",
+      "note": "技能本掉落系列实名仅部分验证（杯子图案/鸽子图案系列转述自 1.5 养成表）；materials.json targets 旧 source 记为「扑克茶会」，与本块入口名不一致，以游戏内核对为准"
+    },
+    {
+      "block": "弧盘突破材料",
+      "entry": "泡影罐头工厂（弧盘本）",
+      "stamina_per_run": 40,
+      "task_type": "弧盘突破材料",
+      "mat_ids": [
+        "arc_1",
+        "arc_2",
+        "arc_3",
+        "arc_4",
+        "arc_5"
+      ],
+      "drops": [
+        "剧芯系列·初级",
+        "剧芯系列·大师",
+        "剧芯系列·收藏家"
+      ],
+      "limits": "无周限；另有异象掉落+猎人交易所补充",
+      "note": "弧盘强化用染剂在魔术舞台刷、突破用剧芯在罐头工厂刷——两本分工；arc_5（冷点心系）按 materials.json targets 现有口径（source=泡影罐头工厂）并入本块，避免缺口落到「外部来源」区"
+    },
+    {
+      "block": "空幕",
+      "entry": "兔子洞（空幕本）",
+      "stamina_per_run": 40,
+      "task_type": "空幕",
+      "mat_ids": [
+        "console_1",
+        "console_2",
+        "console_3",
+        "console_4",
+        "console_5",
+        "console_6"
+      ],
+      "drops": [
+        "空幕突破材料·序号1-6"
+      ],
+      "limits": "无周限",
+      "note": "双通道：倒带（抽卡获取空幕材料）或花体力刷取——页内双通道标注，缺口计算只计体力通道；console_5/6 按 materials.json targets 现有口径（source=兔子洞节点5/6）并入本块",
+      "dual_channel": true
+    },
+    {
+      "block": "异象巡礼",
+      "entry": "异象巡礼（周本）",
+      "stamina_per_run": 60,
+      "mat_ids": [
+        "wk_skirt",
+        "wk_crown",
+        "wk_scepter",
+        "wk_memory",
+        "wk_stamp",
+        "wk_fluff",
+        "wk_dandelion"
+      ],
+      "drops": [
+        "周本材料（现有 EXTRA 条目）"
+      ],
+      "limits": "每周限 3 次（用户口径；体力 60/次）",
+      "weekly_times": 3,
+      "note": "materials.json EXTRA 现有 wk_* 共 7 项（以现有数据为准）；无结构化周次字段——本轮结构化；面板未追踪本周已刷次数，页内仅展示口径"
+    },
+    {
+      "block": "异象追猎",
+      "entry": "异象追猎（boss 本）",
+      "stamina_per_run": 60,
+      "mat_ids": [
+        "boss_pick_watermoon",
+        "boss_spark_plug",
+        "boss_flower_seed",
+        "boss_page_delusion",
+        "boss_sea_tear",
+        "boss_nest_fragment",
+        "boss_ticket_stub"
+      ],
+      "drops": [
+        "boss 突破材料（轮换 boss 对应）"
+      ],
+      "limits": "无周限",
+      "note": "boss 轮换与 BOSS_MAT 映射联动（planner.py:35-36）；每局掉落产量取 yields.json hunter_yield（默认 8/局）"
+    }
+  ],
   "targets": [
     {
       "id": "exp_char",
       "name": "角色经验",
       "display_name": "猎人攻略（角色经验书）",
+      "concrete_names": {
+        "base": "新锐猎人攻略",
+        "blue": "资深猎人攻略",
+        "purple": "特级猎人攻略"
+      },
       "category": "经验与甲硬币",
       "source": "异象界域·胡迪尼的魔术舞台（经验本）",
       "config": {
@@ -18,6 +141,11 @@
       "id": "exp_arc",
       "name": "弧盘经验",
       "display_name": "染剂（弧盘/武器强化）",
+      "concrete_names": {
+        "base": "淡色染剂",
+        "blue": "无彩染剂",
+        "purple": "混沌染剂"
+      },
       "category": "经验与甲硬币",
       "source": "异象界域/商店（来源未确认，可改）",
       "config": {
@@ -34,12 +162,18 @@
       "config": {
         "任务类型": "经验与甲硬币",
         "具体奖励目标": "甲硬币"
-      }
+      },
+      "manual_only": true
     },
     {
       "id": "ability_1",
       "name": "异能升级材料·壹",
       "display_name": "技能书·军衔系（新兵的怯懦→「白蔷薇」）",
+      "concrete_names": {
+        "base": "新兵的怯懦",
+        "blue": "尉官的谨慎",
+        "purple": "「白蔷薇」"
+      },
       "category": "异能升级材料",
       "source": "异象界域·扑克茶会（技能本）",
       "config": {
@@ -51,6 +185,11 @@
       "id": "ability_2",
       "name": "异能升级材料·贰",
       "display_name": "技能书·雏鸟系（雏鸟的希冀→「橄榄枝」）",
+      "concrete_names": {
+        "base": "雏鸟的希冀",
+        "blue": "白鸽的振翅",
+        "purple": "「橄榄枝」"
+      },
       "category": "异能升级材料",
       "source": "异象界域·扑克茶会（技能本）",
       "config": {
@@ -62,6 +201,11 @@
       "id": "ability_3",
       "name": "异能升级材料·叁",
       "display_name": "技能书·帽子系（初次的期许→「黑帽子」）",
+      "concrete_names": {
+        "base": "初次的期许",
+        "blue": "已知的倦怠",
+        "purple": "「黑帽子」"
+      },
       "category": "异能升级材料",
       "source": "异象界域·扑克茶会（技能本）",
       "config": {
@@ -73,6 +217,11 @@
       "id": "ability_4",
       "name": "异能升级材料·肆",
       "display_name": "技能书·同频系（思维的同频→「心跳夜」）",
+      "concrete_names": {
+        "base": "思维的同频",
+        "blue": "信仰的共鸣",
+        "purple": "「心跳夜」"
+      },
       "category": "异能升级材料",
       "source": "异象界域·扑克茶会（技能本）",
       "config": {
@@ -84,6 +233,11 @@
       "id": "ability_5",
       "name": "异能升级材料·伍",
       "display_name": "技能书·水波系（水波的迟疑→「第二人」）",
+      "concrete_names": {
+        "base": "水波的迟疑",
+        "blue": "倒悬的轻响",
+        "purple": "「第二人」"
+      },
       "category": "异能升级材料",
       "source": "异象界域·扑克茶会（技能本）",
       "config": {
@@ -95,6 +249,11 @@
       "id": "arc_1",
       "name": "弧盘突破材料·壹",
       "display_name": "弧盘突破·戏剧芯（入门→典藏）",
+      "concrete_names": {
+        "base": "入门级戏剧芯",
+        "blue": "大师级戏剧芯",
+        "purple": "典藏级戏剧芯"
+      },
       "category": "弧盘突破材料",
       "source": "异象界域·泡影罐头工厂",
       "config": {
@@ -106,6 +265,11 @@
       "id": "arc_2",
       "name": "弧盘突破材料·贰",
       "display_name": "弧盘突破·液态梦（试用→罐装）",
+      "concrete_names": {
+        "base": "液态梦试用装",
+        "blue": "液态梦旅行装",
+        "purple": "罐装液态梦"
+      },
       "category": "弧盘突破材料",
       "source": "异象界域·泡影罐头工厂",
       "config": {
@@ -117,6 +281,11 @@
       "id": "arc_3",
       "name": "弧盘突破材料·叁",
       "display_name": "弧盘突破·苹果核（铁制→金色）",
+      "concrete_names": {
+        "base": "铁制苹果核",
+        "blue": "银质苹果核",
+        "purple": "金色苹果核"
+      },
       "category": "弧盘突破材料",
       "source": "异象界域·泡影罐头工厂",
       "config": {
@@ -128,6 +297,11 @@
       "id": "arc_4",
       "name": "弧盘突破材料·肆",
       "display_name": "弧盘突破·螺旋乐（碎屑→齐奏）",
+      "concrete_names": {
+        "base": "螺旋乐碎屑",
+        "blue": "螺旋乐小节",
+        "purple": "螺旋乐齐奏"
+      },
       "category": "弧盘突破材料",
       "source": "异象界域·泡影罐头工厂",
       "config": {
@@ -139,6 +313,11 @@
       "id": "arc_5",
       "name": "弧盘突破材料·伍",
       "display_name": "弧盘突破·冷点心（无味→特制）",
+      "concrete_names": {
+        "base": "无味冷点心",
+        "blue": "原味冷点心",
+        "purple": "特制冷点心"
+      },
       "category": "弧盘突破材料",
       "source": "异象界域·泡影罐头工厂",
       "config": {
@@ -163,6 +342,7 @@
       "display_name": "空幕·雕塑长廊（兔子洞节点2）",
       "category": "空幕",
       "source": "异象界域·兔子洞",
+      "note": "独立来源标注：wiki beginner-guide 关卡表为「雕塑展馆」（掉恶魔之血·诅咒/街头拳王套装）——与本地「雕塑长廊」为命名变体，副本归属一致（https://wiki.mysqil.com/guides/beginner-guide），与本地配置不一致，以游戏内实测为准",
       "config": {
         "任务类型": "空幕",
         "空幕序号": 2
@@ -174,6 +354,7 @@
       "display_name": "空幕·经纬织机（兔子洞节点3）",
       "category": "空幕",
       "source": "异象界域·兔子洞",
+      "note": "独立来源标注：wiki beginner-guide 关卡表为「结线织机」——与本地「经纬织机」为命名变体（另见社区摘要亦作「纬线织机」），副本归属一致（https://wiki.mysqil.com/guides/beginner-guide），与本地配置不一致，以游戏内实测为准",
       "config": {
         "任务类型": "空幕",
         "空幕序号": 3
@@ -448,13 +629,6 @@
       "obtain": "external"
     },
     {
-      "id": "dreamless_core",
-      "display_name": "无梦果核",
-      "category": "其他",
-      "source": "来源未确认（都市特技升级）",
-      "obtain": "external"
-    },
-    {
       "id": "oracle_stone",
       "display_name": "谕石",
       "category": "其他",
@@ -463,168 +637,168 @@
     },
     {
       "id": "ability_1_b",
-      "display_name": "技能书·军衔系·蓝（×3当量）",
+      "display_name": "尉官的谨慎",
       "category": "异能升级材料",
       "source": "等价折算录入（非刷取掉落；白:蓝:紫=1:3:9，经验按点数）",
       "obtain": "external"
     },
     {
       "id": "ability_1_p",
-      "display_name": "技能书·军衔系·紫（×9当量）",
+      "display_name": "「白蔷薇」",
       "category": "异能升级材料",
       "source": "等价折算录入（非刷取掉落；白:蓝:紫=1:3:9，经验按点数）",
       "obtain": "external"
     },
     {
       "id": "ability_2_b",
-      "display_name": "技能书·雏鸟系·蓝（×3当量）",
+      "display_name": "白鸽的振翅",
       "category": "异能升级材料",
       "source": "等价折算录入（非刷取掉落；白:蓝:紫=1:3:9，经验按点数）",
       "obtain": "external"
     },
     {
       "id": "ability_2_p",
-      "display_name": "技能书·雏鸟系·紫（×9当量）",
+      "display_name": "「橄榄枝」",
       "category": "异能升级材料",
       "source": "等价折算录入（非刷取掉落；白:蓝:紫=1:3:9，经验按点数）",
       "obtain": "external"
     },
     {
       "id": "ability_3_b",
-      "display_name": "技能书·帽子系·蓝（×3当量）",
+      "display_name": "已知的倦怠",
       "category": "异能升级材料",
       "source": "等价折算录入（非刷取掉落；白:蓝:紫=1:3:9，经验按点数）",
       "obtain": "external"
     },
     {
       "id": "ability_3_p",
-      "display_name": "技能书·帽子系·紫（×9当量）",
+      "display_name": "「黑帽子」",
       "category": "异能升级材料",
       "source": "等价折算录入（非刷取掉落；白:蓝:紫=1:3:9，经验按点数）",
       "obtain": "external"
     },
     {
       "id": "ability_4_b",
-      "display_name": "技能书·同频系·蓝（×3当量）",
+      "display_name": "信仰的共鸣",
       "category": "异能升级材料",
       "source": "等价折算录入（非刷取掉落；白:蓝:紫=1:3:9，经验按点数）",
       "obtain": "external"
     },
     {
       "id": "ability_4_p",
-      "display_name": "技能书·同频系·紫（×9当量）",
+      "display_name": "「心跳夜」",
       "category": "异能升级材料",
       "source": "等价折算录入（非刷取掉落；白:蓝:紫=1:3:9，经验按点数）",
       "obtain": "external"
     },
     {
       "id": "ability_5_b",
-      "display_name": "技能书·水波系·蓝（×3当量）",
+      "display_name": "倒悬的轻响",
       "category": "异能升级材料",
       "source": "等价折算录入（非刷取掉落；白:蓝:紫=1:3:9，经验按点数）",
       "obtain": "external"
     },
     {
       "id": "ability_5_p",
-      "display_name": "技能书·水波系·紫（×9当量）",
+      "display_name": "「第二人」",
       "category": "异能升级材料",
       "source": "等价折算录入（非刷取掉落；白:蓝:紫=1:3:9，经验按点数）",
       "obtain": "external"
     },
     {
       "id": "arc_1_b",
-      "display_name": "弧盘突破·戏剧芯·蓝（×3当量）",
+      "display_name": "大师级戏剧芯",
       "category": "弧盘突破材料",
       "source": "等价折算录入（非刷取掉落；白:蓝:紫=1:3:9，经验按点数）",
       "obtain": "external"
     },
     {
       "id": "arc_1_p",
-      "display_name": "弧盘突破·戏剧芯·紫（×9当量）",
+      "display_name": "典藏级戏剧芯",
       "category": "弧盘突破材料",
       "source": "等价折算录入（非刷取掉落；白:蓝:紫=1:3:9，经验按点数）",
       "obtain": "external"
     },
     {
       "id": "arc_2_b",
-      "display_name": "弧盘突破·液态梦·蓝（×3当量）",
+      "display_name": "液态梦旅行装",
       "category": "弧盘突破材料",
       "source": "等价折算录入（非刷取掉落；白:蓝:紫=1:3:9，经验按点数）",
       "obtain": "external"
     },
     {
       "id": "arc_2_p",
-      "display_name": "弧盘突破·液态梦·紫（×9当量）",
+      "display_name": "罐装液态梦",
       "category": "弧盘突破材料",
       "source": "等价折算录入（非刷取掉落；白:蓝:紫=1:3:9，经验按点数）",
       "obtain": "external"
     },
     {
       "id": "arc_3_b",
-      "display_name": "弧盘突破·苹果核·蓝（×3当量）",
+      "display_name": "银质苹果核",
       "category": "弧盘突破材料",
       "source": "等价折算录入（非刷取掉落；白:蓝:紫=1:3:9，经验按点数）",
       "obtain": "external"
     },
     {
       "id": "arc_3_p",
-      "display_name": "弧盘突破·苹果核·紫（×9当量）",
+      "display_name": "金色苹果核",
       "category": "弧盘突破材料",
       "source": "等价折算录入（非刷取掉落；白:蓝:紫=1:3:9，经验按点数）",
       "obtain": "external"
     },
     {
       "id": "arc_4_b",
-      "display_name": "弧盘突破·螺旋乐·蓝（×3当量）",
+      "display_name": "螺旋乐小节",
       "category": "弧盘突破材料",
       "source": "等价折算录入（非刷取掉落；白:蓝:紫=1:3:9，经验按点数）",
       "obtain": "external"
     },
     {
       "id": "arc_4_p",
-      "display_name": "弧盘突破·螺旋乐·紫（×9当量）",
+      "display_name": "螺旋乐齐奏",
       "category": "弧盘突破材料",
       "source": "等价折算录入（非刷取掉落；白:蓝:紫=1:3:9，经验按点数）",
       "obtain": "external"
     },
     {
       "id": "arc_5_b",
-      "display_name": "弧盘突破·冷点心·蓝（×3当量）",
+      "display_name": "原味冷点心",
       "category": "弧盘突破材料",
       "source": "等价折算录入（非刷取掉落；白:蓝:紫=1:3:9，经验按点数）",
       "obtain": "external"
     },
     {
       "id": "arc_5_p",
-      "display_name": "弧盘突破·冷点心·紫（×9当量）",
+      "display_name": "特制冷点心",
       "category": "弧盘突破材料",
       "source": "等价折算录入（非刷取掉落；白:蓝:紫=1:3:9，经验按点数）",
       "obtain": "external"
     },
     {
       "id": "exp_char_b",
-      "display_name": "猎人攻略·蓝书（每本5000点）",
+      "display_name": "资深猎人攻略",
       "category": "经验与甲硬币",
       "source": "等价折算录入（非刷取掉落；白:蓝:紫=1:3:9，经验按点数）",
       "obtain": "external"
     },
     {
       "id": "exp_char_p",
-      "display_name": "猎人攻略·紫书（每本20000点）",
+      "display_name": "特级猎人攻略",
       "category": "经验与甲硬币",
       "source": "等价折算录入（非刷取掉落；白:蓝:紫=1:3:9，经验按点数）",
       "obtain": "external"
     },
     {
       "id": "exp_arc_b",
-      "display_name": "染剂·蓝书（每本2500点）",
+      "display_name": "无彩染剂",
       "category": "经验与甲硬币",
       "source": "等价折算录入（非刷取掉落；白:蓝:紫=1:3:9，经验按点数）",
       "obtain": "external"
     },
     {
       "id": "exp_arc_p",
-      "display_name": "染剂·紫书（每本10000点）",
+      "display_name": "混沌染剂",
       "category": "经验与甲硬币",
       "source": "等价折算录入（非刷取掉落；白:蓝:紫=1:3:9，经验按点数）",
       "obtain": "external"
@@ -641,7 +815,81 @@
       "display_name": "方斯（家具/都市消耗货币）",
       "category": "都市特技与家具",
       "source": "家具与都市特技消耗（mysqil upgrades.json 实证）",
+      "obtain": "external",
+      "manual_only": true
+    },
+    {
+      "id": "hcore",
+      "display_name": "扩容核心",
+      "category": "其他",
+      "source": "猎人交易所（异能/武器升级素材自选箱）",
       "obtain": "external"
+    },
+    {
+      "id": "ucell",
+      "display_name": "异构单元",
+      "category": "小怪素材",
+      "source": "大世界小怪掉落·转化材料（与扩容核心同时消耗）",
+      "obtain": "external"
+    },
+    {
+      "id": "coin_carrot",
+      "display_name": "胡萝卜币",
+      "category": "空幕倒带货币",
+      "source": "空幕·倒带（抽驱动块；白档，与甲硬币两种货币体系）",
+      "obtain": "external"
+    },
+    {
+      "id": "coin_carrot_s",
+      "display_name": "银萝卜币",
+      "category": "空幕倒带货币",
+      "source": "空幕·倒带（抽驱动块；蓝档，与甲硬币两种货币体系）",
+      "obtain": "external"
+    },
+    {
+      "id": "coin_carrot_g",
+      "display_name": "金萝卜币",
+      "category": "空幕倒带货币",
+      "source": "空幕·倒带（抽驱动块；紫档，与甲硬币两种货币体系）",
+      "obtain": "external"
+    },
+    {
+      "id": "rosemary_pawn",
+      "display_name": "迷迭棋子",
+      "category": "其他",
+      "source": "限定池抽卡副产物→集市·迷迭兑换商店",
+      "obtain": "external"
+    },
+    {
+      "id": "hunter_exp",
+      "display_name": "猎人等级经验",
+      "category": "其他",
+      "source": "猎人等级系统",
+      "obtain": "external"
+    },
+    {
+      "id": "huan_stone",
+      "display_name": "环石",
+      "category": "手动登记",
+      "source": "手动登记项（官方名待核：everness OracleStone 2026-11-12 实抓=谕石，与本表 oracle_stone 同名而非环石，简报推测不成立；mysqil/ntestrategy 2026-11-11 实抓均未收录）",
+      "obtain": "external",
+      "manual_only": true
+    },
+    {
+      "id": "niefu_dice",
+      "display_name": "捏造骰子",
+      "category": "手动登记",
+      "source": "手动登记项（官方名经 everness /zh-Hans/items/DiceNormal 2026-11-12 实抓确认＝「捏造骰子」，与用户写法一致，display 不动）",
+      "obtain": "external",
+      "manual_only": true
+    },
+    {
+      "id": "zhishi_dice",
+      "display_name": "质实骰子",
+      "category": "手动登记",
+      "source": "手动登记项（官方名待核：everness Dicelimite_01/02 页面存在但未提供中文名，<title> 回显码名；mysqil/ntestrategy 2026-11-11 实抓均未收录）",
+      "obtain": "external",
+      "manual_only": true
     }
   ],
   "tiers": {
@@ -1076,6 +1324,52 @@
     ],
     "oracle_stone": [
       "谕石"
+    ],
+    "exp_char": [
+      "猎人攻略分",
+      "猎人攻略",
+      "猎人攻略分·新锐"
+    ],
+    "exp_char_b": [
+      "资深猎人攻略",
+      "猎人攻略分·资深"
+    ],
+    "exp_char_p": [
+      "特级猎人攻略",
+      "猎人攻略分·特级"
+    ],
+    "exp_arc": [
+      "染剂"
+    ],
+    "hcore": [
+      "扩容核心"
+    ],
+    "ucell": [
+      "异构单元"
+    ],
+    "coin_carrot": [
+      "胡萝卜币"
+    ],
+    "coin_carrot_s": [
+      "银萝卜币"
+    ],
+    "coin_carrot_g": [
+      "金萝卜币"
+    ],
+    "rosemary_pawn": [
+      "迷迭棋子"
+    ],
+    "hunter_exp": [
+      "猎人等级经验"
+    ],
+    "huan_stone": [
+      "环石"
+    ],
+    "niefu_dice": [
+      "捏造骰子"
+    ],
+    "zhishi_dice": [
+      "质实骰子"
     ]
   }
 }

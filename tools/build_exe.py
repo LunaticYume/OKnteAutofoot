@@ -9,9 +9,15 @@
 
 启动器定位 Python 的顺序：
     1) <exe目录>/python/python.exe   —— 用户自行放入完整 Python 即可脱依赖
-    2) data/state.json 的 oknte_root 指向的 ok-nte 内嵌 Python
+    2) <exe目录>/data/state.json（旧布局，升级用户旧文件永存、实为主源）与
+       %LOCALAPPDATA%/OKntePlanner/data/state.json（用户数据目录）的 oknte_root
+       指向的 ok-nte 内嵌 Python
     3) D:\\GamingAssistant\\ok-nte 默认安装位置
-找到后以 `python -m app.main`（cwd=exe 目录）拉起面板。
+    4) where python
+找到后以 `python -m app.main`（cwd=exe 目录）拉起面板，并注入
+OKNTE_PLANNER_USER_DATA=1 声明打包态（用户数据统一落 %LOCALAPPDATA%）。
+面板用户数据不再落 dist——打包前 check_dist_data_clean 自检阻断含个人数据的
+dist（main() 最先调用，先于 build_dist() 的 rmtree）。
 
 运行方式（项目根，任一 Python 3.10+）：
     python tools/build_exe.py
@@ -68,23 +74,43 @@ class Launcher {
         MessageBoxW(IntPtr.Zero, text, "异环养成规划器", 0x10);
     }
 
-    static string FindPython() {
-        string local = Path.Combine(BaseDir, "python", "python.exe");
-        if (File.Exists(local)) return local;
+    static string ReadOknteRoot(string statePath) {
+        // 从 state.json 文本提取 oknte_root（EXE 旁旧布局与用户数据目录两处共用）
         try {
-            string state = Path.Combine(BaseDir, "data", "state.json");
-            if (File.Exists(state)) {
-                Match m = Regex.Match(File.ReadAllText(state),
+            if (File.Exists(statePath)) {
+                Match m = Regex.Match(File.ReadAllText(statePath),
                     "\"oknte_root\"\\s*:\\s*\"([^\"]+)\"");
-                if (m.Success) {
-                    string emb = Path.Combine(m.Groups[1].Value.Replace("\\\\", "\\"),
-                        "data", "apps", "ok-nte", "python", "python.exe");
-                    if (File.Exists(emb)) return emb;
-                }
+                if (m.Success) return m.Groups[1].Value.Replace("\\\\", "\\");
             }
         } catch { }
+        return null;
+    }
+
+    static string PythonFromRoot(string root) {
+        if (root == null) return null;
+        try {
+            string emb = Path.Combine(root, "data", "apps", "ok-nte", "python", "python.exe");
+            return File.Exists(emb) ? emb : null;
+        } catch { return null; }
+    }
+
+    static string FindPython() {
+        // 1) 用户自带完整 Python
+        string local = Path.Combine(BaseDir, "python", "python.exe");
+        if (File.Exists(local)) return local;
+        // 2) 旧布局：EXE 旁 data\state.json 的 oknte_root（迁移只复制不删、旧文件永存，实为主源）
+        string py = PythonFromRoot(ReadOknteRoot(Path.Combine(BaseDir, "data", "state.json")));
+        if (py != null) return py;
+        // 3) 新布局：用户数据目录 %LOCALAPPDATA%\OKntePlanner\data\state.json
+        string userState = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "OKntePlanner", "data", "state.json");
+        py = PythonFromRoot(ReadOknteRoot(userState));
+        if (py != null) return py;
+        // 4) 默认安装位置回退
         string fallback = @"D:\GamingAssistant\ok-nte\data\apps\ok-nte\python\python.exe";
         if (File.Exists(fallback)) return fallback;
+        // 5) where python
         try {
             var psi = new ProcessStartInfo("cmd.exe", "/c where python 2>nul") {
                 UseShellExecute = false, RedirectStandardOutput = true, CreateNoWindow = true };
@@ -124,6 +150,10 @@ class Launcher {
         };
         psi.EnvironmentVariables["PYTHONIOENCODING"] = "utf-8";
         psi.EnvironmentVariables["PYTHONUNBUFFERED"] = "1";
+        // 打包态声明：state.py 读 OKNTE_PLANNER_USER_DATA=1 → 用户数据统一落
+        // %LOCALAPPDATA%\OKntePlanner\data（变量名与 state.py 是两处无编译期检查的
+        // 字符串，接线由 build_exe._launch_and_probe 的 .migrated 断言验证）
+        psi.EnvironmentVariables["OKNTE_PLANNER_USER_DATA"] = "1";
         using (var p = Process.Start(psi)) {
             p.WaitForExit();  // 面板退出（用户关闭 Edge 桌面窗口）即收尾
             Log("面板退出，退出码 " + p.ExitCode);
@@ -182,14 +212,26 @@ USAGE_TXT = """异环养成规划器（OKnteAutofoot）使用说明
   - 面板里先点「预演（不落盘）」确认无误，再「开始执行」。
 
 数据与日志：
-  - 用户数据在各自 EXE 旁的 data\\state.json（可随时备份/迁移）；
-    dist 分发时不携带任何历史数据。
-  - 【重要】两个 EXE 的数据目录相互独立：在 OKntePlanner_single 里填的角色/库存/
-    设置，OKntePlanner（启动器档）里看不到，反之亦然——请固定使用一个。
-  - 【放心】重新打包/更新版本会自动保留两个 EXE 旁的用户数据
-    （state.json、图鉴覆盖层、backups/）。
-  - 排查日志：launcher.log（启动器）、data\\panel.log（面板）、crash.log（异常）。
-  - 端口被占会自动避让并在 panel.log 提示新端口；双击无反应先看上述日志。
+  - 用户数据统一在 %LOCALAPPDATA%\\OKntePlanner\\data（角色/库存/设置/图鉴
+    覆盖层/塔吉多凭证/OCR 标定/panel.log 等；两个 EXE 共用同一份，可整体
+    备份/迁移）。【勿同时双开两个 EXE】——并发写会互相覆盖。
+  - EXE 旁的 data\\ 仅为出厂数据表模板（materials/yields/requirements 等），
+    面板不往里写任何用户数据。
+  - 首次启动自动初始化用户数据目录；旧版（数据在 EXE 旁 data\\）首次启动会
+    自动整树迁移到用户数据目录，原目录原样保留（只复制不删除）。
+  - 【放心】重新打包/更新版本不会动用户数据（用户数据不在 EXE 目录内，
+    替换 EXE 目录即可升级）。
+  - 手动迁移/合并旧数据：python -m tools.migrate_user_data --from <旧数据
+    目录> --apply（可加 --dry-run 先演练；目标已存在的文件一律跳过）。
+  - 更新出厂数据表：删除用户数据目录下的 .migrated 与对应表文件后重启面板
+    （原子 no-clobber 只补缺失文件，其余用户数据不动）。
+  - 排查日志：launcher.log/crash.log 在 EXE 旁；panel.log 在用户数据目录。
+    端口被占会自动避让并在 panel.log 提示新端口；双击无反应先看上述日志。
+  - 启动器找 Python 优先读 EXE 旁 data\\state.json（旧布局）的 oknte_root，
+    再读用户数据目录的 state.json——面板内改 oknte_root 写的是用户数据目录
+    文件，启动器不跟随。
+  - 以其他管理员账户提权运行时，数据落提权账户的 LocalAppData（提权账户的
+    OKntePlanner\\data），与原账户不共享。
 
 详细文档见源码仓库 docs\\ 目录（上游兼容清单、各阶段验收报告）。
 """
@@ -248,6 +290,54 @@ def copy_data_tables(dest_data):
     if os.path.isdir(mysqil_src):
         shutil.copytree(mysqil_src, os.path.join(dest_data, "mysqil"), dirs_exist_ok=True,
                         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    # 攻略站数据源快照：source_crosscheck.json=独立来源交叉核对证据链（静态、
+    # selftest 依赖，随包分发）；character_cooldowns.json=角色冷却参考数据（同）；
+    # guide_sites.json 为运行时用户数据，不随包
+    extra_data_files = [
+        os.path.join("sites", "source_crosscheck.json"),
+        os.path.join("character_cooldowns.json"),
+    ]
+    for rel in extra_data_files:
+        src = os.path.join(ROOT, "data", rel)
+        if os.path.isfile(src):
+            os.makedirs(os.path.dirname(os.path.join(dest_data, rel)), exist_ok=True)
+            shutil.copy2(src, os.path.join(dest_data, rel))
+
+
+def check_dist_data_clean(dist_roots=(DIST, DIST_SINGLE)):
+    """打包前数据自检（BUILD-01/SEC-01 闸门；纯检查，绝不删任何文件）。
+
+    dist 各档 data/ 下只允许出厂数据表集（与 copy_data_tables 写入一一对应）：
+    TABLE_FILES + build_info.json + character_cooldowns.json + mysqil/ 整目录
+    （公开游戏数据，含随包 .bak）+ sites/source_crosscheck.json（sites 下唯一
+    放行文件）。其余任何文件——state.json*、backups/、panel.log、runtime.json*、
+    oknte_plan.json、ocr_layout.json*、game_data_custom.json、edge_profile/、
+    avatars/、tajiduo_*、gacha_history.json、ok-nte-live.log、
+    sites/guide_sites.json*、materials.json.pre-manual.bak 等历史 .bak 名等
+    个人/运行时数据——收进 offender 相对路径清单返回，调用方据此在
+    build_dist() 的 rmtree(DIST) 之前阻断打包。dist 根目录文件（crash.log/
+    launcher.log 等）不在本闸门契约范围（只扫各档 data/）。
+    """
+    allowed_files = set(TABLE_FILES) | {"build_info.json", "character_cooldowns.json"}
+    allowed_dirs = {"mysqil"}
+    allowed_exact = {os.path.join("sites", "source_crosscheck.json")}
+    offenders = []
+    for dist_root in dist_roots:
+        data = os.path.join(dist_root, "data")
+        if not os.path.isdir(data):
+            continue
+        for base, _dirs, files in os.walk(data):
+            for name in files:
+                rel = os.path.relpath(os.path.join(base, name), data)
+                top = rel.split(os.sep)[0]
+                if rel in allowed_exact:
+                    continue
+                if top in allowed_dirs:
+                    continue  # mysqil/ 整目录放行
+                if name in allowed_files and os.sep not in rel:
+                    continue
+                offenders.append(os.path.join(os.path.basename(dist_root), "data", rel))
+    return offenders
 
 
 def _generate_icon(path):
@@ -404,11 +494,14 @@ def try_pyinstaller_single(py):
             return None
         size_mb = os.path.getsize(exe) / 1024 / 1024
         print(f"单文件 EXE 构建完成: {exe} ({size_mb:.1f} MB)")
-        # 冻结模式数据目录在 EXE 旁：数据表模板必须随行（否则首启 import planner 失败）
+        # 冻结模式首启播种源在 EXE 旁 data\：数据表模板必须随行（否则首启 import planner 失败）
         os.makedirs(os.path.join(DIST_SINGLE, "data"), exist_ok=True)
         copy_data_tables(os.path.join(DIST_SINGLE, "data"))
         Path(DIST_SINGLE, "使用说明.txt").write_text(USAGE_TXT, encoding="utf-8")
-        # 探针（无 admin 标志）：验证冻结环境下数据目录落在 EXE 旁而非 _MEIPASS 临时目录
+        # 探针（无 admin 标志）：验证冻结环境首启把数据播种进用户数据目录
+        # （%LOCALAPPDATA%\OKntePlanner\data）而非 EXE 旁/_MEIPASS 临时目录。
+        # EXE 旁预置占位出厂数据表使复制分支真实执行；LOCALAPPDATA 指向临时目录，
+        # 不在构建机真实用户目录播种/提前落 .migrated（会关死首启迁移幂等门）。
         probe_dir = os.path.join(ROOT, "tools", "_build", "probe")
         os.makedirs(probe_dir, exist_ok=True)
         probe_py = os.path.join(probe_dir, "probe.py")
@@ -420,12 +513,23 @@ def try_pyinstaller_single(py):
              "--workpath", work, "--specpath", probe_dir, probe_py],
             cwd=ROOT, env=env, capture_output=True, text=True, timeout=600)
         assert r2.returncode == 0, f"探针构建失败:\n{r2.stderr[-400:]}"
-        r3 = subprocess.run([os.path.join(probe_dir, "probe.exe")],
-                            capture_output=True, text=True, timeout=60)
-        data_dir = (r3.stdout or "").strip().splitlines()[-1] if r3.stdout.strip() else ""
-        assert data_dir.lower() == os.path.join(probe_dir, "data").lower(), \
-            f"冻结环境数据目录应在 EXE 旁，实际 {data_dir!r}"
-        print(f"冻结环境数据目录探针通过 ✅（{data_dir}）")
+        probe_data = os.path.join(probe_dir, "data")
+        os.makedirs(probe_data, exist_ok=True)
+        Path(probe_data, "materials.json").write_text(
+            json.dumps({"placeholder": "probe"}, ensure_ascii=False), encoding="utf-8")
+        with tempfile.TemporaryDirectory(prefix="oknte_probe_env_") as env_dir:
+            r3 = subprocess.run([os.path.join(probe_dir, "probe.exe")],
+                                capture_output=True, text=True, timeout=60,
+                                env={**os.environ, "LOCALAPPDATA": env_dir})
+            data_dir = (r3.stdout or "").strip().splitlines()[-1] if r3.stdout.strip() else ""
+            expected = os.path.join(env_dir, "OKntePlanner", "data")
+            assert data_dir.lower() == expected.lower(), \
+                f"冻结环境数据目录应在用户数据目录 {expected}，实际 {data_dir!r}"
+            assert os.path.isfile(os.path.join(expected, ".migrated")), \
+                "冻结探针首启未写 .migrated（播种未完成）"
+            assert os.path.isfile(os.path.join(expected, "materials.json")), \
+                "冻结探针未播种出厂数据表 materials.json"
+            print(f"冻结环境数据目录探针通过 ✅（{data_dir}）")
         return exe
     except Exception as e:  # noqa: BLE001 —— 可选档任何失败都不阻断主产物
         print(f"跳过：可选档异常 {type(e).__name__}: {e}")
@@ -436,10 +540,26 @@ PYI_DEPS = os.path.join(ROOT, "tools", "_build", "pyi")
 HAS_PYWEBVIEW = False  # 由 try_pyinstaller_single 设置（原生窗口依赖是否打进包）
 
 
+def _probe_panel_token(path):
+    """读面板令牌文件（打包态=隔离 LOCALAPPDATA 下 OKntePlanner/data/panel_token.json；
+    源码态副本=app_root/data/panel_token.json）。缺/坏/空返回 None。仅探针内存使用，
+    绝不 print（token 不落构建日志）。"""
+    try:
+        with open(path, encoding="utf-8") as f:
+            token = json.load(f).get("token")
+    except (OSError, ValueError):
+        return None
+    return token if isinstance(token, str) and token else None
+
+
 def _launch_and_probe(exe_path, port, ui_env, timeout=90):
     """真实拉起一个 EXE：轮询 /api/bootstrap 与首页，随后杀树并清理新产生的文件。
     ui_env 控制 UI 策略（如 {"OKNTE_PLANNER_UI": "edge"} / {}=frozen 默认原生窗口）。
-    失败时保留并返回子进程控制台输出尾部，供构建摘要定位根因。"""
+    失败时保留并返回子进程控制台输出尾部，供构建摘要定位根因。
+    LOCALAPPDATA 指向临时目录：面板用户数据/首启 .migrated 都落隔离目录，绝不在
+    构建机真实用户目录播种或提前关死旧数据的首启自动迁移门；api_ok 时断言
+    .migrated 已写——LAUNCHER_CS 注入的 OKNTE_PLANNER_USER_DATA 与 state.py 读取名
+    是两处无编译期检查的字符串，拼错即静默失效，此处以真机拉起验证接线。"""
     import time as _time
     import urllib.request
     exe_dir = os.path.dirname(exe_path)
@@ -447,59 +567,85 @@ def _launch_and_probe(exe_path, port, ui_env, timeout=90):
                 for base, _dirs, files in os.walk(exe_dir) for n in files}
     out_path = os.path.join(exe_dir, "_probe_out.log")
     out_file = FileIO(out_path, "wb")
-    proc = subprocess.Popen(
-        [exe_path], cwd=exe_dir, env={**os.environ,
-                                      "OKNTE_PLANNER_PORT": str(port),
-                                      **ui_env},
-        stdout=out_file, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
-    # 强制直连：系统代理/TUN 可能截获 127.0.0.1 请求导致探测假超时。
-    # 单次请求超时必须 > /api/bootstrap 的响应耗时（内含 tasklist+PowerShell 进程检测，2~4 秒）。
-    direct = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    _time.sleep(4)  # 先给启动链（EXE→python→面板）留出时间，再做轮询
-    api_ok, page_ok, detail = False, False, ""
-    deadline = _time.time() + timeout
-    while _time.time() < deadline:
+    # ignore_cleanup_errors：Edge 壳残留子进程可能锁住临时 LOCALAPPDATA 句柄，
+    # 清理抛异常会打断构建收尾（项目基线 Python 3.10+）
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True,
+                                     prefix="oknte_probe_lad_") as env_dir:
+        proc = subprocess.Popen(
+            [exe_path], cwd=exe_dir, env={**os.environ,
+                                          "OKNTE_PLANNER_PORT": str(port),
+                                          "LOCALAPPDATA": env_dir,
+                                          **ui_env},
+            stdout=out_file, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+        # 强制直连：系统代理/TUN 可能截获 127.0.0.1 请求导致探测假超时。
+        # 单次请求超时必须 > /api/bootstrap 的响应耗时（内含 tasklist+PowerShell 进程检测，2~4 秒）。
+        direct = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        # SEC-05：/api 全部要求 X-Panel-Token 头——令牌由面板写进隔离用户数据目录
+        # （与 .migrated marker 同 join 口径，frozen 态 DATA_DIR=LOCALAPPDATA/OKntePlanner/data）；
+        # 超时内未生成即判失败（面板未以打包态运行），漏带 token 头会表现为探测红
+        # 而非静默绕过
+        token_path = os.path.join(env_dir, "OKntePlanner", "data", "panel_token.json")
+        _time.sleep(4)  # 先给启动链（EXE→python→面板）留出时间，再做轮询
+        api_ok, page_ok, detail = False, False, ""
+        deadline = _time.time() + timeout
+        while _time.time() < deadline:
+            token = _probe_panel_token(token_path)
+            if not token:
+                detail = "panel_token.json 未生成（面板未以打包态运行？）"
+                _time.sleep(1)
+                continue
+            try:
+                req = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/api/bootstrap",
+                    headers={"X-Panel-Token": token})
+                with direct.open(req, timeout=15) as resp:
+                    if resp.status == 200:
+                        api_ok = True
+                        break
+            except OSError as e:
+                detail = f"{type(e).__name__}: {e}"
+                _time.sleep(1)
+        if api_ok:
+            try:
+                with direct.open(f"http://127.0.0.1:{port}/", timeout=5) as resp:
+                    page_ok = resp.status == 200 and "异环养成规划器".encode("utf-8") in resp.read()
+            except OSError as e:
+                detail = f"首页获取失败: {e}"
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                       capture_output=True, timeout=30)
         try:
-            with direct.open(f"http://127.0.0.1:{port}/api/bootstrap", timeout=15) as resp:
-                if resp.status == 200:
-                    api_ok = True
-                    break
-        except OSError as e:
-            detail = f"{type(e).__name__}: {e}"
-            _time.sleep(1)
-    if api_ok:
+            proc.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            pass
+        _time.sleep(1)
+        out_file.close()
+        console_tail = ""
         try:
-            with direct.open(f"http://127.0.0.1:{port}/", timeout=5) as resp:
-                page_ok = resp.status == 200 and "异环养成规划器".encode("utf-8") in resp.read()
-        except OSError as e:
-            detail = f"首页获取失败: {e}"
-    subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
-                   capture_output=True, timeout=30)
-    try:
-        proc.wait(timeout=20)
-    except subprocess.TimeoutExpired:
-        pass
-    _time.sleep(1)
-    out_file.close()
-    console_tail = ""
-    try:
-        console_tail = open(out_path, "rb").read().decode("utf-8", "replace").strip()[-500:]
-    except OSError:
-        pass
-    if not api_ok:  # 失败先保留现场（含日志），再清理
-        keep = os.path.join(ROOT, "tools", "_build", "probe_failure")
-        shutil.rmtree(keep, ignore_errors=True)
-        shutil.copytree(exe_dir, keep)
-        detail += f"（现场已保留: {keep}）"
-    for base, dirs, files in os.walk(exe_dir, topdown=False):  # 清理实跑产生的数据/日志/空目录
-        for name in files:
-            path = os.path.join(base, name)
-            if path not in pristine:
-                os.remove(path)
-        for name in dirs:
-            path = os.path.join(base, name)
-            if path not in pristine and not os.listdir(path):
-                os.rmdir(path)
+            console_tail = open(out_path, "rb").read().decode("utf-8", "replace").strip()[-500:]
+        except OSError:
+            pass
+        if not api_ok:  # 失败先保留现场（含日志），再清理
+            keep = os.path.join(ROOT, "tools", "_build", "probe_failure")
+            shutil.rmtree(keep, ignore_errors=True)
+            shutil.copytree(exe_dir, keep)
+            detail += f"（现场已保留: {keep}）"
+        if api_ok:
+            # 接线断言：面板 import app.state 即触发首启迁移写 marker（bundled 非空
+            # 分支在真 dist 上必走复制），不依赖面板写任何状态——隔离 LOCALAPPDATA
+            # 下未见 .migrated = 面板没以打包态运行（C# 侧注入变量名拼错/未注入）
+            marker = os.path.join(env_dir, "OKntePlanner", "data", ".migrated")
+            assert os.path.isfile(marker), (
+                "LAUNCHER_CS 与 state.py 的 OKNTE_PLANNER_USER_DATA 接线断裂："
+                "面板未以打包态运行（隔离 LOCALAPPDATA 下未见 .migrated）")
+        for base, dirs, files in os.walk(exe_dir, topdown=False):  # 清理实跑产生的数据/日志/空目录
+            for name in files:
+                path = os.path.join(base, name)
+                if path not in pristine:
+                    os.remove(path)
+            for name in dirs:
+                path = os.path.join(base, name)
+                if path not in pristine and not os.listdir(path):
+                    os.rmdir(path)
     return api_ok, page_ok, detail, console_tail
 
 
@@ -555,18 +701,27 @@ def _probe_auto_avoid(py):
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                 stdin=subprocess.DEVNULL)
         direct = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        # SEC-05：无 LOCALAPPDATA 重定向 → 面板以源码态把令牌写进副本
+        # d/data/panel_token.json（源码态 DATA_DIR=app_root/data）；文件未生成期间
+        # 请求会 401，故每轮先读令牌、缺则跳过本轮（避免 401 被误判为端口不可用）
+        token_path = os.path.join(d, "data", "panel_token.json")
         found = None
         deadline = _time.time() + 90
         while _time.time() < deadline and found is None:
-            for port in range(8765, 8776):
-                try:
-                    # 单次超时 10s：bootstrap 含进程检测，响应可能需要数秒
-                    with direct.open(f"http://127.0.0.1:{port}/api/bootstrap", timeout=10) as r:
-                        if r.status == 200:
-                            found = port
-                            break
-                except OSError:
-                    continue
+            token = _probe_panel_token(token_path)
+            if token:
+                for port in range(8765, 8776):
+                    try:
+                        # 单次超时 10s：bootstrap 含进程检测，响应可能需要数秒
+                        req = urllib.request.Request(
+                            f"http://127.0.0.1:{port}/api/bootstrap",
+                            headers={"X-Panel-Token": token})
+                        with direct.open(req, timeout=10) as r:
+                            if r.status == 200:
+                                found = port
+                                break
+                    except OSError:
+                        continue
             if found is None:
                 _time.sleep(1)
         subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
@@ -639,61 +794,32 @@ def verify_exes_live(py):
     return results
 
 
-USER_KEEP_PREFIXES = ("state.json", "game_data_custom.json", "panel.log")
-
-
-def _stash_user_data(dist_root, stash):
-    """重建前把 dist 用户数据（state.json*/图鉴覆盖层/backups/panel.log）暂存出去。
-    此前 build_dist 开头 rmtree(DIST) 会连用户在面板里产生的数据一起清空。"""
-    data = os.path.join(dist_root, "data")
-    if not os.path.isdir(data):
-        return False
-    marker = os.path.join(stash, os.path.basename(dist_root), "data")
-    moved = False
-    for name in os.listdir(data):
-        src = os.path.join(data, name)
-        if name.startswith(USER_KEEP_PREFIXES) or name == "backups":
-            dst = os.path.join(marker, name)
-            os.makedirs(os.path.dirname(dst), exist_ok=True)
-            if os.path.isdir(src):
-                shutil.copytree(src, dst)
-            else:
-                shutil.copy2(src, dst)
-            moved = True
-    return moved
-
-
-def _restore_user_data(dist_root, stash):
-    src = os.path.join(stash, os.path.basename(dist_root), "data")
-    if not os.path.isdir(src):
-        return
-    data = os.path.join(dist_root, "data")
-    os.makedirs(data, exist_ok=True)
-    for name in os.listdir(src):
-        s = os.path.join(src, name)
-        d = os.path.join(data, name)
-        if os.path.isdir(s):
-            shutil.copytree(s, d, dirs_exist_ok=True)
-        else:
-            shutil.copy2(s, d)
-
-
 def main():
+    # 打包前数据自检必须最先执行（先于 build_dist 的 rmtree(DIST)）：
+    # 新布局下用户数据不再落 dist，stash/restore 已无意义且语义已错
+    # （copy2 覆盖会把陈旧表盖回刚刷新的出厂数据表），故删除并以
+    # 『自检阻断 + 迁移 CLI』替代
+    offenders = check_dist_data_clean()
+    if offenders:
+        print("== 打包前数据自检未通过：dist data/ 下存在个人/运行时数据 ==")
+        for rel in offenders:
+            print(f"  {rel}")
+        print("处置：先迁移——python -m tools.migrate_user_data --from <对应 dist 的 data 目录>"
+              " --apply（可先加 --dry-run 演练）；\n"
+              "      或确认无用后手动删除上述文件；若上次构建被中断，残留文件"
+              "（自测/冒烟产物）可径直清理后重试。")
+        for root in (DIST, DIST_SINGLE):
+            if os.path.basename(root) in {o.split(os.sep, 1)[0] for o in offenders}:
+                print(f"  待迁移目录: {os.path.join(root, 'data')}")
+        return 1
     py = embedded_python()
     print(f"验证用 Python: {py}")
-    stash = tempfile.mkdtemp(prefix="oknte_userdata_")
-    had_user_data = _stash_user_data(DIST, stash) | _stash_user_data(DIST_SINGLE, stash)
     try:
         build_dist()
         checks = verify_dist(py)
         single = try_pyinstaller_single(py)
         checks += verify_exes_live(py)
     finally:
-        if had_user_data:
-            _restore_user_data(DIST, stash)
-            _restore_user_data(DIST_SINGLE, stash)
-            shutil.rmtree(stash, ignore_errors=True)
-            print("  用户数据已从上一次安装恢复（state/图鉴覆盖层/backups）")
         # 清理构建期第三方依赖缓存（vendored PyInstaller/bottle 会被安全扫描判 95 条
         # 高危并拦截 commit；均为库自身模式而非项目代码）。下次构建自动重装。
         if os.path.isdir(PYI_DEPS):

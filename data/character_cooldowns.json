@@ -1,0 +1,401 @@
+{
+  "fetched_at": "2026-11-09 03:53:17",
+  "source": {
+    "host": "nteguide.com",
+    "url_pattern": "https://nteguide.com/zh/characters/<slug>/",
+    "method": "curl 实抓 46 个角色页 HTML（https+白名单主机，逐页 GET），解析页面内嵌 Next.js RSC JSON 的 skills 字段：e_sec 取 skills.skill（战技/E）.cooldown，q_sec 取 skills.ultimate（终结技/Q）.cooldown；站点渲染文本不含数值（WebFetch 验证），数值仅存在于 RSC payload。角色名↔slug 映射取自 data/sites/guide_sites.json（2026-11-07 抓取）。"
+  },
+  "caliber": {
+    "e_sec": "E技能（战技）冷却，单位秒（原值见 e_raw，页面格式不统一：字符串\"10s\"与数字 15 混用，已归一化）",
+    "q_sec": "Q技能（终结技）冷却，单位秒；部分角色 ultimate 无 cooldown 字段（仅能量消耗 80/120 能量）置 null——实测 26/42 名角色带 q 冷却（20s/60s）。侦察轮「Q 无冷却」结论仅对抽查 6 名命中（阿德勒/娜娜莉/卡厄斯/残虹/九原/浔，本次全量实抓与其逐一相符），全量口径以本文件实测为准",
+    "scope": "页面为单一标称值，不区分技能等级/星级成长；测得口径为攻略站页面数据，非游戏内实测；nteguide 各页自注为历史数据（复核 2026-09-29，「不验证当前版本」），仅作规划参考，以游戏内核对为准",
+    "inclusion": "只收录页面有实测数值的角色（42/46）；查不到的不编造，4 名未收录者列于 unmeasured 并注明原因"
+  },
+  "characters": {
+    "阿德勒": {
+      "slug": "adler",
+      "e_sec": 10,
+      "q_sec": null,
+      "e_name": "诛恶护持",
+      "e_raw": "10s",
+      "q_name": "万象澄寂",
+      "q_raw": null
+    },
+    "赤音": {
+      "slug": "akane",
+      "e_sec": 8,
+      "q_sec": 60,
+      "e_name": "言灵之力",
+      "e_raw": "8s",
+      "q_name": "咒阵爆发",
+      "q_raw": "60s"
+    },
+    "阿尔法德": {
+      "slug": "alphard",
+      "e_sec": 15,
+      "q_sec": 60,
+      "e_name": "镜像分身",
+      "e_raw": "15s",
+      "q_name": "万象归虚",
+      "q_raw": "60s"
+    },
+    "白藏": {
+      "slug": "baicang",
+      "e_sec": 14,
+      "q_sec": 20,
+      "e_name": "不吝赐教",
+      "e_raw": "14s",
+      "q_name": "不言不知秋",
+      "q_raw": "20s"
+    },
+    "黑鸟": {
+      "slug": "black-bird",
+      "e_sec": 8,
+      "q_sec": 60,
+      "e_name": "虚空撕裂",
+      "e_raw": "8s",
+      "q_name": "终焉之刻",
+      "q_raw": "60s"
+    },
+    "残虹": {
+      "slug": "canhong",
+      "e_sec": 8,
+      "q_sec": null,
+      "e_name": "咒蚀·浊焰",
+      "e_raw": "8s",
+      "q_name": "终结·九百九十九夜",
+      "q_raw": null
+    },
+    "卡厄斯": {
+      "slug": "chaos",
+      "e_sec": 15,
+      "q_sec": null,
+      "e_name": "变轨·搜查令",
+      "e_raw": 15,
+      "q_name": "报应·镰刃裁决",
+      "q_raw": null
+    },
+    "赤子": {
+      "slug": "chiz",
+      "e_sec": 8,
+      "q_sec": 60,
+      "e_name": "宇宙裂隙",
+      "e_raw": "8s",
+      "q_name": "星河坠落",
+      "q_raw": "60s"
+    },
+    "克劳": {
+      "slug": "crow",
+      "e_sec": 8,
+      "q_sec": 60,
+      "e_name": "虚空撕裂",
+      "e_raw": "8s",
+      "q_name": "终焉之刻",
+      "q_raw": "60s"
+    },
+    "达芙迪尔": {
+      "slug": "daffodil",
+      "e_sec": 8,
+      "q_sec": null,
+      "e_name": "同振",
+      "e_raw": "8s",
+      "q_name": "见此终幕",
+      "q_raw": null
+    },
+    "埃德加": {
+      "slug": "edgar",
+      "e_sec": 12,
+      "q_sec": null,
+      "e_name": "狂流",
+      "e_raw": 12,
+      "q_name": "迷宫领域",
+      "q_raw": null
+    },
+    "法蒂亚": {
+      "slug": "fadia",
+      "e_sec": 15,
+      "q_sec": null,
+      "e_name": "存在证明的体验",
+      "e_raw": 15,
+      "q_name": "痛苦让位于狂喜",
+      "q_raw": null
+    },
+    "风花": {
+      "slug": "fuuka",
+      "e_sec": 12,
+      "q_sec": 60,
+      "e_name": "生命脉冲",
+      "e_raw": "12s",
+      "q_name": "万物复苏",
+      "q_raw": "60s"
+    },
+    "吾郎": {
+      "slug": "goro",
+      "e_sec": 8,
+      "q_sec": 60,
+      "e_name": "言灵之力",
+      "e_raw": "8s",
+      "q_name": "咒阵爆发",
+      "q_raw": "60s"
+    },
+    "哈尼尔": {
+      "slug": "haniel",
+      "e_sec": 16,
+      "q_sec": null,
+      "e_name": "静默月林的守护者",
+      "e_raw": "16s",
+      "q_name": "名为哈尼娅的旋律",
+      "q_raw": null
+    },
+    "哈索尔": {
+      "slug": "hathor",
+      "e_sec": 8,
+      "q_sec": null,
+      "e_name": "空中指令",
+      "e_raw": "8s",
+      "q_name": "铁骑速递",
+      "q_raw": null
+    },
+    "穗鸟": {
+      "slug": "hotori",
+      "e_sec": 12,
+      "q_sec": null,
+      "e_name": "今景复映",
+      "e_raw": 12,
+      "q_name": "浮世来潮",
+      "q_raw": null
+    },
+    "伊洛伊": {
+      "slug": "illica",
+      "e_sec": 8,
+      "q_sec": 60,
+      "e_name": "镜像分身",
+      "e_raw": "8s",
+      "q_name": "万象归虚",
+      "q_raw": "60s"
+    },
+    "詹森": {
+      "slug": "jenson",
+      "e_sec": 15,
+      "q_sec": 60,
+      "e_name": "心灵感应",
+      "e_raw": "15s",
+      "q_name": "灵魂风暴",
+      "q_raw": "60s"
+    },
+    "九原": {
+      "slug": "jiuyuan",
+      "e_sec": 15,
+      "q_sec": null,
+      "e_name": "情报猎手",
+      "e_raw": 15,
+      "q_name": "终局清账",
+      "q_raw": null
+    },
+    "海斗": {
+      "slug": "kaito",
+      "e_sec": 8,
+      "q_sec": 60,
+      "e_name": "镜像分身",
+      "e_raw": "8s",
+      "q_name": "万象归虚",
+      "q_raw": "60s"
+    },
+    "安魂曲": {
+      "slug": "lacrimosa",
+      "e_sec": 15,
+      "q_sec": null,
+      "e_name": "起床气加载中",
+      "e_raw": 15,
+      "q_name": "工作日的最终审判",
+      "q_raw": null
+    },
+    "莉莉娜": {
+      "slug": "lilina",
+      "e_sec": 15,
+      "q_sec": 60,
+      "e_name": "宇宙裂隙",
+      "e_raw": "15s",
+      "q_name": "星河坠落",
+      "q_raw": "60s"
+    },
+    "凛子": {
+      "slug": "lingko",
+      "e_sec": 8,
+      "q_sec": 60,
+      "e_name": "言灵之力",
+      "e_raw": "8s",
+      "q_name": "咒阵爆发",
+      "q_raw": "60s"
+    },
+    "玛丽娜": {
+      "slug": "marina",
+      "e_sec": 8,
+      "q_sec": 60,
+      "e_name": "宇宙裂隙",
+      "e_raw": "8s",
+      "q_name": "星河坠落",
+      "q_raw": "60s"
+    },
+    "梅露拉": {
+      "slug": "merula",
+      "e_sec": 8,
+      "q_sec": 60,
+      "e_name": "镜像分身",
+      "e_raw": "8s",
+      "q_name": "万象归虚",
+      "q_raw": "60s"
+    },
+    "薄荷": {
+      "slug": "mint",
+      "e_sec": 8,
+      "q_sec": null,
+      "e_name": "奥义·超级连风爪",
+      "e_raw": "8s",
+      "q_name": "奥义·霹雳疾风斩",
+      "q_raw": null
+    },
+    "密斯莫": {
+      "slug": "mismo",
+      "e_sec": 12,
+      "q_sec": 60,
+      "e_name": "虚空撕裂",
+      "e_raw": "12s",
+      "q_name": "终焉之刻",
+      "q_raw": "60s"
+    },
+    "娜娜莉": {
+      "slug": "nanally",
+      "e_sec": 10,
+      "q_sec": null,
+      "e_name": "柯林斯·嗷呜术",
+      "e_raw": "10s",
+      "q_name": "柯林斯·终极术",
+      "q_raw": null
+    },
+    "奈莉": {
+      "slug": "nelly",
+      "e_sec": 12,
+      "q_sec": 60,
+      "e_name": "生命脉冲",
+      "e_raw": "12s",
+      "q_name": "万物复苏",
+      "q_raw": "60s"
+    },
+    "尼察": {
+      "slug": "nitsa",
+      "e_sec": 12,
+      "q_sec": 60,
+      "e_name": "心灵感应",
+      "e_raw": "12s",
+      "q_name": "灵魂风暴",
+      "q_raw": "60s"
+    },
+    "妮夏": {
+      "slug": "nixia",
+      "e_sec": 10,
+      "q_sec": null,
+      "e_name": "异能·发丝囚笼",
+      "e_raw": "10s",
+      "q_name": "终结·星之羁绊",
+      "q_raw": null
+    },
+    "蕾妮": {
+      "slug": "renee",
+      "e_sec": 12,
+      "q_sec": 60,
+      "e_name": "心灵感应",
+      "e_raw": "12s",
+      "q_name": "灵魂风暴",
+      "q_raw": "60s"
+    },
+    "咲里": {
+      "slug": "sakiri",
+      "e_sec": 12,
+      "q_sec": 60,
+      "e_name": "言灵之力",
+      "e_raw": "12s",
+      "q_name": "咒阵爆发",
+      "q_raw": "60s"
+    },
+    "沁红": {
+      "slug": "shinku",
+      "e_sec": 8,
+      "q_sec": 60,
+      "e_name": "生命脉冲",
+      "e_raw": "8s",
+      "q_name": "万物复苏",
+      "q_raw": "60s"
+    },
+    "翳": {
+      "slug": "skia",
+      "e_sec": 15,
+      "q_sec": null,
+      "e_name": "啮逐潜影",
+      "e_raw": 15,
+      "q_name": "群犬吠形",
+      "q_raw": null
+    },
+    "希尔菲": {
+      "slug": "sylphy",
+      "e_sec": 12,
+      "q_sec": 60,
+      "e_name": "生命脉冲",
+      "e_raw": "12s",
+      "q_name": "万物复苏",
+      "q_raw": "60s"
+    },
+    "泰格多": {
+      "slug": "taygedo",
+      "e_sec": 12,
+      "q_sec": 60,
+      "e_name": "宇宙裂隙",
+      "e_raw": "12s",
+      "q_name": "星河坠落",
+      "q_raw": "60s"
+    },
+    "明虎": {
+      "slug": "xiaozhen",
+      "e_sec": 8,
+      "q_sec": 60,
+      "e_name": "生命脉冲",
+      "e_raw": "8s",
+      "q_name": "万物复苏",
+      "q_raw": "60s"
+    },
+    "浔": {
+      "slug": "xun",
+      "e_sec": 8,
+      "q_sec": null,
+      "e_name": "今景复映",
+      "e_raw": "8s",
+      "q_name": "浮世来潮",
+      "q_raw": null
+    },
+    "零（女）": {
+      "slug": "zero-female",
+      "e_sec": 8,
+      "q_sec": 60,
+      "e_name": "铭隙鉴刻",
+      "e_raw": "8s",
+      "q_name": "奇零除尽",
+      "q_raw": "60s"
+    },
+    "零（男）": {
+      "slug": "zero-male",
+      "e_sec": 8,
+      "q_sec": 60,
+      "e_name": "铭隙鉴刻",
+      "e_raw": "8s",
+      "q_name": "奇零除尽",
+      "q_raw": "60s"
+    }
+  },
+  "unmeasured": {
+    "奥蕾莉亚": "页面 RSC JSON 技能块无 cooldown/cost 数值字段（技能名为占位「战技/终结技」）",
+    "小吱": "页面 RSC JSON 技能块无 cooldown/cost 数值字段",
+    "零": "页面为跳转占位（无技能数值）；实际数据拆分在零（男）/零（女）两条",
+    "真红": "页面 RSC JSON 技能块无 cooldown/cost 数值字段"
+  },
+  "count": 42
+}

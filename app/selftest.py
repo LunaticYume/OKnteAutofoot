@@ -226,6 +226,77 @@ def test_adapter_compat_write_backup():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+@case
+def test_dxgi_probe_warning():
+    """复审阻断⑤：DXGI 采集探测必须可观测（此前 launcher 探测失败完全静默——
+    ok-nte 内嵌 Python 缺 d3dshot 时 capture_method 恒回落 BitBlt_RenderFull
+    （PrintWindow 同步截图=两次卡死实证路径），卡死防护未生效且运维无从知晓）：
+    - capture_probe_warning：解释器缺失→None（compat problems 已告警，不重复）；
+      探测失败（夹具空 python.exe 无法执行→OSError）→警告含 d3dshot 修复命令；
+      探测可用→None；
+    - dxgi_available 进程级缓存：同一 root 只探一次（真探测要拉起 Desktop
+      Duplication，秒级，不可每次 bootstrap 重付）；
+    - LAUNCHER_SRC：探测成败都有 [capture-probe] print（运行时经 runner stdout 泵
+      进「最新日志」/ok-nte-live.log）；capture_method 注入语义不变；
+    - /api/bootstrap 与前端消费字段成对（静态源校验，无真服务）。"""
+    import inspect
+    import app.main as main_mod
+    tmp = tempfile.mkdtemp(prefix="oknte_dxgi_")
+    try:
+        ok = _build_fake_oknte(os.path.join(tmp, "root"))
+        no_py = None  # 断言早失败时 finally 不得 NameError
+        cache_key = ok.root
+        adapter_mod.OkNte._DXGI_PROBE_CACHE.pop(cache_key, None)  # 清同路径历史缓存
+        try:
+            # 夹具 python.exe 是空文件：CreateProcess 失败 → OSError → 探测 False
+            warning = ok.capture_probe_warning()
+            assert warning and "d3dshot" in warning and "BitBlt_RenderFull" in warning \
+                and "-m pip install d3dshot" in warning, warning
+            assert "内嵌 Python 缺少 d3dshot" in warning, warning
+            # 进程级缓存生效：缓存已按 root 记 False，再问不再重探
+            assert adapter_mod.OkNte._DXGI_PROBE_CACHE[cache_key] is False
+            # 探测可用 → 无警告（monkeypatch 探测结果，不真拉 Desktop Duplication）
+            ok.dxgi_available = lambda: True
+            assert ok.capture_probe_warning() is None
+            # 解释器缺失 → None（compat problems 首条已覆盖，不重复告警）
+            no_py = _build_fake_oknte(os.path.join(tmp, "root2"))
+            os.remove(no_py.python_exe)
+            adapter_mod.OkNte._DXGI_PROBE_CACHE.pop(no_py.root, None)
+            assert no_py.capture_probe_warning() is None
+        finally:
+            adapter_mod.OkNte._DXGI_PROBE_CACHE.pop(cache_key, None)
+            if no_py is not None:
+                adapter_mod.OkNte._DXGI_PROBE_CACHE.pop(no_py.root, None)
+        # LAUNCHER_SRC：成败双 print + 注入语义保持（2026-11-10 修订：序列
+        # ['WGC','BitBlt_RenderFull',探测通过的 DXGI]——DXGI 置末位，真机
+        # E_INVALIDARG 时不再挡住 BitBlt_RenderFull 兜底，GUI 已验证形态对齐）
+        src = adapter_mod.LAUNCHER_SRC
+        assert src.count("[capture-probe]") == 2, \
+            "launcher 探测成功/失败都必须有可见 print"
+        assert "cfg['windows']['capture_method'] = _capture_methods" in src
+        assert "_capture_methods = ['WGC', 'BitBlt_RenderFull']" in src, \
+            "capture_method 序列必须 WGC 首位、BitBlt_RenderFull 次位（GUI 已验证形态）"
+        assert "_capture_methods.append('DXGI')" in src, \
+            "DXGI 仅探测通过才追加，且必须置于列表末位"
+        # 顺序硬校验：DXGI 追加必须发生在初始列表构造之后、cfg 注入之前
+        pos_init = src.index("_capture_methods = ['WGC', 'BitBlt_RenderFull']")
+        pos_dxgi = src.index("_capture_methods.append('DXGI')")
+        pos_inject = src.index("cfg['windows']['capture_method'] = _capture_methods")
+        assert pos_init < pos_dxgi < pos_inject, \
+            (pos_init, pos_dxgi, pos_inject)
+        # /api/bootstrap 透出 + 前端消费成对（端点源静态校验）
+        get_src = inspect.getsource(main_mod.Handler.do_GET)
+        assert '"capture_warning": oknte.capture_probe_warning()' in get_src, \
+            "/api/bootstrap 必须透出 capture_probe_warning 结果"
+        idx_src = open(os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "app", "web", "index.html"),
+            encoding="utf-8").read()
+        assert "BOOT.capture_warning" in idx_src, \
+            "前端必须消费 capture_warning（侧栏警示标签）"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 # ---------- 用例 1b：兼容性指纹 × 最小补丁 fixture 矩阵 ----------
 
 @case
@@ -413,6 +484,44 @@ def test_monitor_skipped():
     assert status == "skipped", f"状态应为 skipped，实际 {status}"
     assert spent == 0, "skipped 不应计消耗"
     assert "跳过" in note, f"原因应说明跳过，实际 {note!r}"
+
+
+@case
+def test_monitor_window_visibility():
+    """窗口可见性判据（复审 #7b：2026-11-08 真机取证新增，此前无 selftest 覆盖）：
+    日志出现 visible:False → monitor.window_invisible=True（runner 据此报警
+    window_warning），恢复 visible:True 清除；伴随形式 changed,visible:False 被
+    visible:False 子串判据覆盖；无 visible:False 的 hwnd changed（常规采集切换）
+    不报警；可见性行只做展示，不影响 outcome 判定（不产生失败/完成）。"""
+    # 置位 + 伴随形式
+    m = RunMonitor()
+    m.feed(["2026-11-08 10:00:00 [INFO] capture hwnd changed,visible:False"])
+    assert m.window_invisible is True, "visible:False（含 changed 伴随形式）必须置位"
+    # 恢复清除
+    m.feed(["2026-11-08 10:00:30 [INFO] capture hwnd changed,visible:True"])
+    assert m.window_invisible is False, "visible:True 必须清除告警"
+    # 无 visible:False 的 hwnd changed（常规切换）不置位
+    m2 = RunMonitor()
+    m2.feed(["2026-11-08 10:00:00 [INFO] capture hwnd changed"])
+    assert m2.window_invisible is False, "常规 hwnd changed 不应报警"
+    # 大小写敏感照日志原文（标记常量逐字匹配）
+    assert RunMonitor.WINDOW_MARK_INVISIBLE == "visible:False"
+    assert RunMonitor.WINDOW_MARK_VISIBLE == "visible:True"
+    # 只做展示不判定：喂纯可见性行的 outcome 必须与空喂一致（默认 failed 兜底理由，
+    # 不新增 failures/完成标记）——可见性行只是 runner 报警的展示信号
+    m3 = RunMonitor()
+    m3.feed(["2026-11-08 10:00:00 [INFO] visible:False",
+             "2026-11-08 10:00:05 [INFO] visible:True",
+             "2026-11-08 10:00:10 [INFO] visible:False"])
+    status, spent, note = m3.outcome(200, 40)
+    m_empty = RunMonitor()
+    status0, spent0, note0 = m_empty.outcome(200, 40)
+    assert (status, spent, note) == (status0, spent0, note0) \
+        and (status, spent, note) == ("failed", 0, "未捕获到任务完成标记"), \
+        f"可见性行不参与 outcome 判定，实际 {(status, spent, note)} vs 空喂 {(status0, spent0, note0)}"
+    assert m3.failures == [] and m3.completed is False and m3.skipped is False, \
+        (m3.failures, m3.completed, m3.skipped)
+    assert m3.window_invisible is True  # 末态保留（runner 恢复日志到达前持续报警）
 
 
 @case
@@ -614,7 +723,7 @@ def test_planner_algorithm_matrix():
         plan = planner.make_plan(now=NOW)
         assert plan["steps"] == [] and plan["no_op_reason"] == "waiting_for_reset", \
             f"全部拉黑应为 waiting_for_reset，实际 {plan['no_op_reason']}"
-        assert plan["detail"]["skipped_blacklisted"] == ["甲硬币", "猎人攻略（角色经验书）"], \
+        assert plan["detail"]["skipped_blacklisted"] == ["甲硬币", "特级猎人攻略"], \
             f"被拉黑跳过的材料应在 detail 中可见，实际 {plan['detail']}"
 
         # 有缺口但产量全为 0 → invalid_material_config
@@ -646,7 +755,7 @@ def test_planner_step_and_plan_reason():
         assert (r["material"], r["display_name"], r["target"], r["inventory"],
                 r["deficit"], r["yield_per_run"], r["runs_needed"], r["cost_per_run"],
                 r["budget_before"], r["runs_planned"]) == \
-               ("exp_char", "猎人攻略（角色经验书）", 30, 5, 25, 7.0, 4, 40, 180, 4), \
+               ("exp_char", "特级猎人攻略", 30, 5, 25, 7.0, 4, 40, 180, 4), \
             f"步骤 reason 各维度数值错误: {r}"
         assert "角色乙" in r["text"] and "缺口 25" in r["text"] and "4 轮" in r["text"], \
             f"reason.text 应含角色/缺口/轮数可读解释: {r['text']}"
@@ -1639,6 +1748,9 @@ def test_port_conflict_friendly_error():
     assert cands[:5] == [8765, 8766, 8767, 8768, 8769], cands
     assert 8865 in cands and 8965 in cands, "应包含 +100/+200 跳段候选（跳出排除区）"
     assert len(cands) == 3 * 21, len(cands)
+    # SEC-05：本用例是进程内首个 create_server 调用——直设全局令牌（生产生成器
+    # 现生成，零凭据字面量）→ _ensure_panel_token 空转，全程零文件写入 repo data/
+    main_mod._PANEL_TOKEN = main_mod._new_panel_token()
     # 1) 被占端口自动避让：占用 P 后应绑到 (P, P+5] 内的可用端口
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
@@ -1780,6 +1892,77 @@ def test_materials_catalog_integrity():
     assert len(planner.TARGET_ORDER) == 19
     for tid in planner.TARGET_ORDER:
         assert "config" in planner.TARGETS[tid] and planner.TARGETS[tid].get("display_name"), tid
+
+
+@case
+def test_concrete_display_names():
+    """系列养成材料显示具体道具名（2026-11-08 用户实测："技能书·帽子系（…）"系名
+    风格不指向具体道具，实际要刷的是「黑帽子」）：targets 的 ability_N/arc_N 带
+    concrete_names:{base,blue,purple}（值照抄 item_names 首别名，同一事实源不双写
+    漂移；缺失置 null），planner.display_name 有 concrete_names 返回紫档具体名，
+    缺失回退原链——分档 extra 条目不受影响（系名·档位风格是设计内显示）；
+    2026-11-09 全量具体名补全后 exp_char/exp_arc 也带 concrete_names（用例 4c 的
+    exp_char 断言已同步为紫档具体名）；四档折算语义不变（折算在
+    equivalent_inventory/tiers，与展示名解耦）。"""
+    inn = planner.MATERIALS.get("item_names") or {}
+    for pre in ("ability", "arc"):
+        for n in range(1, 6):
+            tid = f"{pre}_{n}"
+            cn = planner.TARGETS[tid].get("concrete_names") or {}
+            assert set(cn) >= {"base", "blue", "purple"}, (tid, cn)
+            assert cn.get("base") == (inn.get(tid) or [None])[0], tid
+            assert cn.get("blue") == (inn.get(f"{tid}_b") or [None])[0], tid
+            assert cn.get("purple") == (inn.get(f"{tid}_p") or [None])[0], tid
+            assert planner.display_name(tid) == cn["purple"], tid
+    assert planner.display_name("ability_3") == "「黑帽子」", \
+        planner.display_name("ability_3")
+    assert planner.display_name("arc_3") == "金色苹果核", planner.display_name("arc_3")
+    # exp_char 已补 concrete_names（2026-11-09 全量具体名）：紫档具体名出口，
+    # 用例 4c reason 断言同步为「特级猎人攻略」
+    assert planner.display_name("exp_char") == "特级猎人攻略"
+    assert planner.display_name("exp_arc") == "混沌染剂"
+    assert planner.display_name("coin") == "甲硬币"
+    # 分档 extra 条目 display 改具体道具名（2026-11-09 工作包5，用户要求全部简化：
+    # 系名·档位风格「技能书·帽子系·紫（×9当量）」不指向具体道具；新值照抄
+    # targets concrete_names 同档实名——同一事实源不双写漂移；四档折算语义仍在
+    # tiers/equivalent_inventory，与展示名解耦）
+    assert planner.display_name("ability_3_p") == "「黑帽子」", \
+        planner.display_name("ability_3_p")
+    for tid, want in (("ability_1_b", "尉官的谨慎"), ("ability_1_p", "「白蔷薇」"),
+                      ("arc_1_b", "大师级戏剧芯"), ("arc_1_p", "典藏级戏剧芯"),
+                      ("arc_3_p", "金色苹果核"), ("exp_char_b", "资深猎人攻略"),
+                      ("exp_arc_p", "混沌染剂")):
+        got = planner.display_name(tid)
+        cn = (planner.TARGETS.get(tid.rsplit("_", 1)[0], {}).get("concrete_names") or {})
+        expect = cn.get("blue" if tid.endswith("_b") else "purple")
+        assert got == want == expect, (tid, got, want, expect)
+    # 计划 reason/步骤名走同一 display_name 出口 → 具体名同步（缺口→紫档名）；
+    # 需求经 extra_needs 直配 ability_3（成长模型依赖目录/轨道，直配最稳）
+    with _StateGuard():
+        STATE.data["settings"] = dict(DEFAULT_SETTINGS)
+        STATE.data["inventory"] = {}
+        STATE.data["today"] = _day_today()
+        STATE.data["characters"] = [_char("c1", "甲", {"ability_3": 9})]
+        plan = planner.make_plan(now=NOW)
+        step = next(s for s in plan["steps"] if s["mat_id"] == "ability_3")
+        assert step["reason"]["display_name"] == "「黑帽子」", step["reason"]
+
+
+@case
+def test_concrete_names_full_coverage():
+    """全量材料具体名补全（2026-11-09）：体力本 14 个系列/经验目标
+    （ability_1..5/arc_1..5/exp_char/exp_arc）全部带 concrete_names 三档实名，
+    三键非空且 planner.display_name 一律返回紫档具体名——与前端 allMaterials()/
+    每轮产出卡片、后端 yield_suggestions 的同一显示出口对齐。"""
+    ids = ([f"ability_{n}" for n in range(1, 6)]
+           + [f"arc_{n}" for n in range(1, 6)]
+           + ["exp_char", "exp_arc"])
+    for tid in ids:
+        cn = planner.TARGETS[tid].get("concrete_names") or {}
+        assert set(cn) >= {"base", "blue", "purple"}, (tid, cn)
+        for k in ("base", "blue", "purple"):
+            assert isinstance(cn.get(k), str) and cn[k].strip(), (tid, k)
+        assert planner.display_name(tid) == cn["purple"], (tid, planner.display_name(tid))
 
 
 @case
@@ -2281,6 +2464,553 @@ def test_wiki_fetch_parse_offline():
 
 
 @case
+def test_sites_fetch_offline():
+    """攻略站模块离线自测：shared.js 式 JS 解析（含注释/裸标识符）、SSRF 白名单
+    校验（伪造 DNS，不触网）、消毒与目录合并策略。不触网、不写任何文件。"""
+    from app import sites_fetch as sf
+    import socket as socket_mod
+    # 1) JS 解析：数据数组内注释行 + 值位置裸标识符引用（IMG.x）+ 尾逗号
+    js = """
+    const IMG = { a: "https://x/a.webp" };
+    const CHARS = [
+      // ----- S+ tier -----
+      { id:"hotori", rarity:"S", name:{en:"Hotori",zh:"浔",ja:"潿"}, img: IMG.a },
+      { id:"zero", rarity:"S", name:{en:"Zero",zh:"零",ja:"ゼロ"}, img: IMG.a, },
+    ];
+    const ARCS = [
+      { rarity:"S", type:"solid", name:{en:"Reality Refuge",zh:"现实庇护"}, best:["zero"] }, // 注释
+    ];
+    const CHAR_MATS = [
+      { id:"hotori", items:[ {q:"×17", en:"A", zh:"失落絮语"} ] },
+    ];
+    """
+    cleaned = sf.strip_js_comments(js)
+    chars = sf._extract_const(cleaned, "CHARS")
+    assert [c["name"]["zh"] for c in chars] == ["浔", "零"], chars
+    assert chars[0]["img"] == {"__ref__": "IMG.a"}, "裸标识符应吞为不透明引用"
+    assert [a["name"]["zh"] for a in sf._extract_const(cleaned, "ARCS")] == ["现实庇护"]
+    mats = sf._extract_const(cleaned, "CHAR_MATS")
+    assert mats[0]["items"][0]["zh"] == "失落絮语"
+    try:
+        sf._extract_const(cleaned, "NOPE")
+        raise AssertionError("缺块应抛 ValueError")
+    except ValueError:
+        pass
+    # 2) 消毒
+    assert sf.clean_text(" 浔\x00\n ") == "浔" and sf.clean_text(3) == ""
+    assert sf.clean_text("x" * 64) == "x" * 32
+    # 3) 主机白名单（子域归一化；前缀/后缀伪装与 localhost 拒绝）
+    #    2026-11-10 起 nteguide.com 全面禁用（AGENTS.md）：必须被拒
+    assert sf.host_allowed("ntestrategy.com") and sf.host_allowed("wiki.mysqil.com")
+    assert sf.host_allowed("ntestrategy.com.") and sf.host_allowed("NTESTRATEGY.com")
+    # 2026-11-11 新增白名单主机（api.everness.info 资产子域由 endswith 规则自动放行）
+    assert sf.host_allowed("everness.info") and sf.host_allowed("api.everness.info")
+    assert sf.host_allowed("nte.nanoka.cc")
+    for bad in ("localhost", "127.0.0.1", "evil-ntestrategy.com",
+                "ntestrategy.com.evil.com", "nteguide.com", "www.nteguide.com",
+                "api.nteguide.com", "", None):
+        assert not sf.host_allowed(bad), bad
+    # 4) URL 校验：伪造 DNS（不触网）——非 https/外域/带用户信息/非 443 端口全拒；
+    #    白名单主机解析到环回/私网/链路本地/保留段也拒；nteguide.com 已禁用必拒
+    orig = socket_mod.getaddrinfo
+    try:
+        socket_mod.getaddrinfo = lambda *a, **k: []
+        assert sf._validate_url("https://ntestrategy.com/js/shared.js")
+        assert sf._validate_url("https://wiki.mysqil.com/characters/")
+        for url in ("http://ntestrategy.com/x", "https://evil.com/x",
+                    "https://user:pw@ntestrategy.com/x", "https://ntestrategy.com:8443/x",
+                    "https://nteguide.com/api/characters.json",
+                    "https://api.nteguide.com/search-index.json"):
+            try:
+                sf._validate_url(url)
+                raise AssertionError("应拒绝：" + url)
+            except ValueError:
+                pass
+        for ip, label in (("127.0.0.1", "环回"), ("10.0.0.5", "私网"),
+                          ("169.254.169.254", "链路本地"), ("192.0.2.1", "保留")):
+            socket_mod.getaddrinfo = lambda *a, _ip=ip, **k: [
+                (socket_mod.AF_INET, socket_mod.SOCK_STREAM, 6, "", (_ip, 443))]
+            try:
+                sf._validate_url("https://ntestrategy.com/js/shared.js")
+                raise AssertionError(f"解析到{label}地址应拒绝：{ip}")
+            except ValueError:
+                pass
+    finally:
+        socket_mod.getaddrinfo = orig
+    # 5) 合并策略：已有实名不覆盖、缺失补录、跨源同实体（英文名归并）只进一条
+    #    （2026-11-10 起第二源为 mysqil——只有角色名表，弧盘/材料两腿为空）
+    parsed = {
+        "ntestrategy": {"characters": [
+                {"name": "浔", "name_en": "Hotori", "slug": "hotori", "source": "ntestrategy"},
+                {"name": "早雾", "name_en": "Sakiri", "slug": "sakiri", "source": "ntestrategy"}],
+            "arcs": [{"name": "现实庇护", "name_en": "Reality Refuge", "source": "ntestrategy"}],
+            "materials": ["失落絮语", "不存在的材料名"]},
+        "mysqil": {"characters": [
+                {"name": "佐雾", "name_en": "", "slug": "sakiri", "source": "mysqil"}]}}
+    merge, stats = sf.merge_catalogs(["浔"], ["现实避难所"], parsed)
+    assert merge["char_library"] == ["浔", "早雾"], merge["char_library"]
+    assert merge["weapon_library"] == ["现实避难所", "现实庇护"], merge["weapon_library"]
+    assert stats["char_library"]["added"] == ["早雾"]
+    alt = {a["name"] for a in stats["alt_names"]}
+    # 跨源同实体（Sakiri）的后到译名只进 alt_names，不产生重复目录条目
+    assert "佐雾" in alt, stats["alt_names"]
+    assert stats["materials"]["known"] == 1 and stats["materials"]["unmapped"] == ["不存在的材料名"]
+    # 失败回退：单站 None 不影响另一站
+    merge2, _ = sf.merge_catalogs(["浔"], [], {"ntestrategy": None, "mysqil": parsed["mysqil"]})
+    assert merge2["char_library"] == ["浔", "佐雾"]
+    # 快照既往 nteguide 条目剔除（禁用后一次迁移）：characters/arcs/alt_names 三段
+    assert sf._strip_legacy_nteguide(
+        [{"source": "nteguide", "slug": "x"}, {"source": "mysqil", "slug": "y"}, "junk"]
+    ) == [{"source": "mysqil", "slug": "y"}, "junk"]
+
+
+@case
+def test_avatar_map_alias_and_manifest_merge():
+    """头像映射显式别名表（2026-11-10 起全表改接 mysqil 拼音 slug）+ manifest
+    合并语义（2026-11-10 工作包3）。
+    离线：monkeypatch 快照/manifest 读取与下载函数，不触网、不写真实 data/ 目录。"""
+    from app import main as main_mod
+    from app import sites_fetch as sf
+    # ---------- 1) 别名映射：mysqil 拼音 slug 直查 + 别名兜底 + 未收录回落占位 ----------
+    files = {"heiyu": "heiyu.webp", "dafutier": "dafutier.webp",
+             "tajiduo": "tajiduo.webp", "lingke": "lingke.webp",
+             "ling": "ling.webp", "fadiya": "fadiya.webp", "anhunqu": "anhunqu.webp"}
+    # 快照形态模拟 mysqil 名表已同步：实名→拼音 slug 精确命中（别名只在精确失败时应用）
+    slug_names = {"heiyu": ["黑羽"], "dafutier": ["达芙蒂尔"], "tajiduo": ["塔吉多"],
+                  "lingke": ["灵可"], "ling": ["零"], "fadiya": ["法帝娅"]}
+    orig_files, orig_names = sf.avatar_files, main_mod._guide_slug_names
+    sf.avatar_files = lambda: files
+    main_mod._guide_slug_names = lambda: slug_names
+    try:
+        m = main_mod._avatar_map()
+        # mysqil 名表精确命中（同步后的主路径）
+        assert m["黑羽"] == "/avatars/heiyu.webp", m.get("黑羽")
+        assert m["达芙蒂尔"] == "/avatars/dafutier.webp", m.get("达芙蒂尔")
+        assert m["塔吉多"] == "/avatars/tajiduo.webp", m.get("塔吉多")
+        assert m["灵可"] == "/avatars/lingke.webp", m.get("灵可")
+        assert m["零"] == "/avatars/ling.webp", m.get("零")
+        assert m["法帝娅"] == "/avatars/fadiya.webp", m.get("法帝娅")
+        # 别名兜底（快照未同步离线场景）：别名表 slug 在本机有文件才登记
+        assert main_mod.AVATAR_NAME_ALIASES["安魂曲"] == "anhunqu"
+        assert main_mod.AVATAR_NAME_ALIASES["黑羽"] == "heiyu"
+        assert main_mod.AVATAR_NAME_ALIASES["灵可"] == "lingke"
+        assert main_mod.AVATAR_NAME_ALIASES["零"] == "ling"
+        # nteguide 旧 slug（black-bird/daffodil/taygedo/lingko/zero-male）必须绝迹
+        banned = {"black-bird", "daffodil", "taygedo", "lingko", "zero-male",
+                  "zero-female", "haniel", "edgar", "fadia"}
+        assert not (set(main_mod.AVATAR_NAME_ALIASES.values()) & banned), \
+            "别名表不得再含 nteguide slug"
+        # 未收录回落占位：站上无条目的名字不进映射（前端首字母占位）
+        for missing in ("曳尔沐", "EXE", "穗鸟"):
+            assert missing not in m, missing
+    finally:
+        sf.avatar_files, main_mod._guide_slug_names = orig_files, orig_names
+    # 离线（无快照）时别名兜底生效：黑羽/灵可/零 经别名表命中本机文件
+    sf.avatar_files = lambda: files
+    main_mod._guide_slug_names = lambda: {}
+    try:
+        m_offline = main_mod._avatar_map()
+        assert m_offline["黑羽"] == "/avatars/heiyu.webp", m_offline.get("黑羽")
+        assert m_offline["灵可"] == "/avatars/lingke.webp", m_offline.get("灵可")
+        assert m_offline["零"] == "/avatars/ling.webp", m_offline.get("零")
+        assert m_offline["安魂曲"] == "/avatars/anhunqu.webp", m_offline.get("安魂曲")
+        # 别名表没有的名字（奥蕾莉亚 不在 mysqil 25 名单）离线不进映射——绝不虚构
+        assert "奥蕾莉亚" not in m_offline
+    finally:
+        sf.avatar_files, main_mod._guide_slug_names = orig_files, orig_names
+    # 别名 slug 无本机已下载文件 → 不造 URL（同样回落占位，绝不虚构路径）
+    sf.avatar_files = lambda: {}
+    main_mod._guide_slug_names = lambda: slug_names
+    try:
+        m2 = main_mod._avatar_map()
+        assert "黑羽" not in m2 and "零" not in m2, "无文件时别名不得登记"
+    finally:
+        sf.avatar_files, main_mod._guide_slug_names = orig_files, orig_names
+    # ---------- 2) manifest 合并语义：幂等 / 失败不掉出 / 既往条目保留 ----------
+    tmp = tempfile.mkdtemp(prefix="oknte_avatar_merge_")
+    orig_dir, orig_man, orig_get = sf.AVATARS_DIR, sf.AVATAR_MANIFEST_JSON, sf._http_get_bytes
+    sf.AVATARS_DIR = tmp
+    sf.AVATAR_MANIFEST_JSON = os.path.join(tmp, "manifest.json")
+    try:
+        # 既往状态：a/d 既往成功（文件在磁盘，source 为 mysqil 立绘 URL），
+        # b 既往登记但文件缺失（此前下载失败被剔除的形态）
+        for s in ("a", "d"):
+            Path(tmp, s + ".webp").write_bytes(s.encode())
+        sf.save_json_atomic(sf.AVATAR_MANIFEST_JSON, {
+            "schema": 1, "updated_at": "T0", "avatars": {
+                s: {"file": f"{s}.webp",
+                    "source": f"{sf.MYSQIL_IMAGES_BASE}{s}.webp", "fetched_at": "T0"}
+                for s in ("a", "b", "d")}})
+        def fake_get(url, timeout):
+            # b 的立绘与图标两路都失败（图标回落也断）；离线桩绝不触网
+            if "/b.webp" in url or "/b-icon.webp" in url:
+                raise OSError("模拟本轮网络失败")
+            return b"X"  # 非 RIFF → _webp_pixel_size 解析失败 → 非竖版 → 走图标
+        sf._http_get_bytes = fake_get
+        feed = [{"slug": "a"},   # 源未变且文件在磁盘 → 跳过（不重复下载）
+                {"slug": "b"},   # 文件缺失 → 立绘/图标两路重下 → 失败
+                {"slug": "c"}]   # 新成功（桩返回非 RIFF → 图标路）
+        dl, sk, failed = sf.download_avatars(feed)
+        assert (dl, sk, failed) == (1, 1, ["b"]), (dl, sk, failed)
+        man = sf._load_avatar_manifest().get("avatars") or {}
+        assert set(man) == {"a", "b", "c", "d"}, set(man)
+        assert man["b"]["fetched_at"] == "T0", "本轮失败的 b 既往条目不得掉出"
+        assert man["d"]["fetched_at"] == "T0", "不在本轮 feed 的既往成功条目 d 保留"
+        assert man["c"]["file"] == "c.webp" and man["c"]["fetched_at"] != "T0"
+        assert man["c"]["source"] == f"{sf.MYSQIL_IMAGES_BASE}c-icon.webp", \
+            man["c"]  # 立绘非竖版（桩字节不可解析）→ 图标回落且 manifest 记实际源 URL
+        # 幂等：同 feed 再跑一轮 → 计数稳定（0 下载 2 跳过 1 失败），manifest 不再变化
+        dl2, sk2, failed2 = sf.download_avatars(feed)
+        assert (dl2, sk2, failed2) == (0, 2, ["b"]), (dl2, sk2, failed2)
+        man2 = sf._load_avatar_manifest().get("avatars") or {}
+        assert {k: v["fetched_at"] for k, v in man.items()} == \
+               {k: v["fetched_at"] for k, v in man2.items()}, "第二轮 manifest 应逐字段稳定"
+    finally:
+        sf.AVATARS_DIR, sf.AVATAR_MANIFEST_JSON, sf._http_get_bytes = \
+            orig_dir, orig_man, orig_get
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_mysqil_names_parse_offline():
+    """mysqil 中文名→拼音 slug 表解析（2026-11-10 接入）：离线桩不触网。
+    /characters/ 页卡片（<a href="/characters/<slug>">…<h3>名</h3>）为主路径；
+    页面失败回落 sitemap slug 清单 + MYSQIL_SLUG_NAMES 对照表；对照表覆盖不了的
+    slug 记 unmapped_slugs 绝不编造实名；25 项对照表与 2026-11-11 实抓逐项一致。"""
+    from app import sites_fetch as sf
+    # 对照表硬校验：25 slug 全量、名字非空、关键条目与实抓一致（页面 h3 +
+    # data/mysqil/upgrades.json 双源核验值）
+    expected = {
+        "adeler": "阿德勒", "anhunqu": "安魂曲", "baizang": "白藏", "bohe": "薄荷",
+        "canhong": "残虹", "dafutier": "达芙蒂尔", "edjia": "埃德嘉",
+        "fadiya": "法帝娅", "haiyue": "海月", "haniya": "哈尼娅",
+        "hasuoer": "哈索尔", "heiyu": "黑羽", "jiuyuan": "九原", "kaesi": "卡厄斯",
+        "ling": "零", "lingke": "灵可", "mingyin": "明音凛", "nanali": "娜娜莉",
+        "tajiduo": "塔吉多", "xiaozhi": "小吱", "xun": "浔", "yi": "翳",
+        "yiluoyi": "伊洛伊", "zaowu": "早雾", "zhenhong": "真红"}
+    assert sf.MYSQIL_SLUG_NAMES == expected, "MYSQIL_SLUG_NAMES 必须与实抓对照逐项一致"
+    # 1) /characters/ 页主路径：卡片解析（无 h3 的卡不编造实名）
+    page = """
+    <a href="/characters/anhunqu" class="x"><div><h3>安魂曲</h3></div></a>
+    <a href="/characters/heiyu" class="x"><div><h3> 黑羽 </h3></div></a>
+    <a href="/characters/newone" class="x"><div>无名字卡</div></a>
+    """
+    orig_get = sf._http_get
+    sf._http_get = lambda url, timeout=15: page
+    try:
+        d = sf.fetch_mysqil_names(timeout=1)
+        assert d["names_source"] == "page", d["names_source"]
+        by_slug = {c["slug"]: c["name"] for c in d["characters"]}
+        assert by_slug == {"anhunqu": "安魂曲", "heiyu": "黑羽"}, by_slug
+        assert d["unmapped_slugs"] == ["newone"], d["unmapped_slugs"]
+        assert all(c["source"] == "mysqil"
+                   and c["image"] == f"/images/characters/{c['slug']}.webp"
+                   for c in d["characters"])
+    finally:
+        sf._http_get = orig_get
+    # 2) 页面抓取失败 → sitemap + 对照表兜底（含表外 slug 不编造）
+    sitemap = ("<urlset>"
+               "<url><loc>https://wiki.mysqil.com/characters/anhunqu/</loc></url>"
+               "<url><loc>https://wiki.mysqil.com/characters/heiyu/</loc></url>"
+               "<url><loc>https://wiki.mysqil.com/characters/notintable/</loc></url>"
+               "</urlset>")
+    calls = []
+
+    def _fake_get(url, timeout=15):
+        calls.append(url)
+        if "characters/" in url and "sitemap" not in url:
+            raise OSError("模拟页面挂了")  # /characters/ 页失败
+        return sitemap
+    sf._http_get = _fake_get
+    try:
+        d2 = sf.fetch_mysqil_names(timeout=1)
+        assert d2["names_source"] == "sitemap+table", d2["names_source"]
+        by_slug2 = {c["slug"]: c["name"] for c in d2["characters"]}
+        assert by_slug2 == {"anhunqu": "安魂曲", "heiyu": "黑羽"}, by_slug2
+        assert d2["unmapped_slugs"] == ["notintable"], d2["unmapped_slugs"]
+        assert calls[0].startswith("https://wiki.mysqil.com/characters/"), calls
+        assert calls[1].endswith("sitemap-0.xml"), calls
+    finally:
+        sf._http_get = orig_get
+    # 3) 两路全挂 → 抛 (OSError, ValueError)（调用方 sync_guide_sites 捕获该族，
+    #    记 sources.mysqil.error，不崩同步）
+    sf._http_get = lambda *a, **k: (_ for _ in ()).throw(OSError("全挂"))
+    try:
+        try:
+            sf.fetch_mysqil_names(timeout=1)
+            raise AssertionError("两路全挂应抛 OSError/ValueError")
+        except (OSError, ValueError):
+            pass
+    finally:
+        sf._http_get = orig_get
+
+
+@case
+def test_sync_guide_sites_offline():
+    """sync_guide_sites 本体离线三态（独立复审阻断 #1 回归：payload ok 行曾残留
+    sources["nteguide"] 键引用——sources 只含 ntestrategy/mysqil 两键，双站失败时
+    KeyError 冒泡致 /api/sites/sync-guide 100% 失败；monkeypatch fetcher 桩离线复现
+    并修复）。临时 SNAPSHOT_JSON，绝不触网、绝不写生产 data/sites/。"""
+    from app import sites_fetch as sf
+    tmp = tempfile.mkdtemp(prefix="oknte_sync_guide_")
+    orig_dir, orig_snap = sf.SITES_DIR, sf.SNAPSHOT_JSON
+    orig_nte, orig_mysqil = sf.fetch_ntestrategy, sf.fetch_mysqil_names
+    sf.SITES_DIR = tmp
+    sf.SNAPSHOT_JSON = os.path.join(tmp, "guide_sites.json")
+
+    def fail(name):
+        def f(timeout=15):
+            raise ValueError("stub fail " + name)
+        return f
+
+    NT = {"characters": [{"name": "浔", "name_en": "Hotori", "slug": "hotori",
+                          "source": "ntestrategy"}],
+          "arcs": [], "materials": ["失落絮语"],
+          "builds": {"trains": [], "console_builds": [], "char_arcs": []}}
+    MQ = {"characters": [{"name": "安魂曲", "name_en": "", "slug": "anhunqu",
+                          "source": "mysqil"}],
+          "names_source": "page", "unmapped_slugs": []}
+    try:
+        # 态1 双站失败：ok=False、错误进 sources、快照不落盘、绝不抛 KeyError
+        sf.fetch_ntestrategy, sf.fetch_mysqil_names = fail("nte"), fail("mysqil")
+        merge, payload = sf.sync_guide_sites([], [])
+        assert payload["ok"] is False, payload["ok"]
+        assert payload["sources"]["ntestrategy"]["error"] == "stub fail nte"
+        assert payload["sources"]["mysqil"]["error"] == "stub fail mysqil"
+        assert not os.path.exists(sf.SNAPSHOT_JSON), "两站全挂不得刷新快照"
+        # 态2 单挂单成：ok=True、快照落盘、mysqil 段写入且既往 nteguide 条目被剔除
+        sf.fetch_ntestrategy = fail("nte")
+        sf.fetch_mysqil_names = lambda timeout=15: dict(MQ)
+        sf.save_json_atomic(sf.SNAPSHOT_JSON, {  # 预置既往快照（含 nteguide 残留段）
+            "characters": [{"source": "nteguide", "slug": "x", "name": "误译"},
+                           {"source": "ntestrategy", "slug": "hotori", "name": "浔"}],
+            "arcs": [{"source": "nteguide", "name": "旧弧盘"},
+                     {"source": "ntestrategy", "name": "现实庇护"}],
+            "alt_names": [{"kind": "char_library", "name": "凛子", "source": "nteguide"}],
+            "builds": [], "guide_unmapped_materials": []})
+        merge, payload = sf.sync_guide_sites(["安魂曲"], [])
+        assert payload["ok"] is True, payload["ok"]
+        snap = json.load(open(sf.SNAPSHOT_JSON, encoding="utf-8"))
+        srcs = {c.get("source") for c in snap["characters"]}
+        assert srcs == {"ntestrategy", "mysqil"}, srcs
+        assert not any(c.get("source") == "nteguide"
+                       for c in snap["characters"] + snap["arcs"])
+        assert not any(a.get("source") == "nteguide" for a in snap["alt_names"])
+        assert sum(1 for c in snap["characters"]
+                   if c.get("source") == "mysqil") == 1, "mysqil 段整体替换"
+        # 态3 双站成功：目录合并（不覆盖已有实名、缺失补录）
+        sf.fetch_ntestrategy = lambda timeout=15: dict(NT)
+        merge, payload = sf.sync_guide_sites(["浔"], [])
+        assert payload["ok"] is True
+        assert merge["char_library"] == ["浔", "安魂曲"], merge["char_library"]
+        # monkeypatch 全部还原
+    finally:
+        sf.SITES_DIR, sf.SNAPSHOT_JSON = orig_dir, orig_snap
+        sf.fetch_ntestrategy, sf.fetch_mysqil_names = orig_nte, orig_mysqil
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_manual_only_inventory_exclusion():
+    """手动项机制（2026-11-10）：materials.json 的 manual_only:true 材料
+    （甲硬币 coin/方斯 fons/环石 huan_stone/捏造骰子 niefu_dice/质实骰子
+    zhishi_dice）——_inventory_candidates 一律跳过（OCR 不自动识别）；
+    /api/inventory 全量过滤白名单 planner.ALL_ORDER 仍含这 5 个 id（手动录入
+    可落账）；不进 tiers（折算/缺口链 equivalent_inventory 走 tiers 天然不涉及）。
+    注入一条临时 manual_only 对照验证排除来自 manual_only 本身而非 id。"""
+    from app import main as main_mod
+    import json as _json
+    manual_ids = ("coin", "fons", "huan_stone", "niefu_dice", "zhishi_dice")
+    # 1) 生产数据表：5 项 manual_only、不在 OCR 候选、在 ALL_ORDER、不在 tiers
+    for group in ("targets", "extra_materials"):
+        flagged = {m["id"] for m in planner.MATERIALS.get(group, [])
+                   if m.get("manual_only")}
+        assert "coin" in flagged if group == "targets" else True, flagged
+    extra_flagged = {m["id"] for m in planner.MATERIALS.get("extra_materials", [])
+                     if m.get("manual_only")}
+    assert {"fons", "huan_stone", "niefu_dice", "zhishi_dice"} <= extra_flagged, extra_flagged
+    cand_ids = {mid for _, mid in main_mod._inventory_candidates()}
+    for mid in manual_ids:
+        assert mid not in cand_ids, f"manual_only {mid} 不得进 OCR 候选"
+    assert "city_ability_up" in cand_ids, "非 manual 的 extra 对照项应留在候选"
+    assert all(mid in planner.ALL_ORDER for mid in manual_ids), \
+        "/api/inventory 全量过滤白名单必须含 5 个手动项 id"
+    tiers_text = _json.dumps(planner.MATERIALS.get("tiers", {}), ensure_ascii=False)
+    for mid in manual_ids:
+        assert mid not in tiers_text, f"{mid} 不得进 tiers"
+    # 2) 排除判据是 manual_only 本身：临时给对照项 city_ability_up 打标 → 出候选
+    orig_extra = planner.MATERIALS.get("extra_materials")
+    try:
+        patched = [dict(e) for e in orig_extra]
+        for e in patched:
+            if e.get("id") == "city_ability_up":
+                e["manual_only"] = True
+        planner.MATERIALS["extra_materials"] = patched
+        cand_ids2 = {mid for _, mid in main_mod._inventory_candidates()}
+        assert "city_ability_up" not in cand_ids2, "manual_only 打标即出候选"
+    finally:
+        planner.MATERIALS["extra_materials"] = orig_extra
+    # 3) /api/inventory 端点过滤语义（与 Handler 内联过滤同款表达式）：5 项可落账
+    incoming = {"coin": 5, "fons": 6, "huan_stone": 7, "niefu_dice": 8,
+                "zhishi_dice": 9, "id_not_in_table": 99}
+    filtered = {str(k): v for k, v in incoming.items() if str(k) in planner.ALL_ORDER}
+    assert filtered == {"coin": 5, "fons": 6, "huan_stone": 7,
+                        "niefu_dice": 8, "zhishi_dice": 9}, filtered
+
+
+@case
+def test_tajiduo_arc_registration_and_apply():
+    """曳尔沐弧盘补洞（2026-11-10）：自建弧盘「静候彩铃」（payload fork id=
+    fork_elyms）在所有目录零命中 → annotate 自动登记 weapon_library（来源
+    tajiduo/category arc）→ matched_name 回填 → apply 可写绑定+等级；
+    二次登记幂等（不重复追加）；日志行「弧盘未收录已自动登记」可见。
+    _StateGuard 备份/恢复 state.json，绝不污染生产数据。"""
+    from app import main as main_mod
+    tmp = tempfile.mkdtemp(prefix="oknte_arc_reg_")
+    try:
+        with _StateGuard():
+            root = os.path.join(tmp, "root")
+            STATE.data["settings"] = dict(DEFAULT_SETTINGS, oknte_root=root)
+            STATE.data["characters"] = [_char("elyms", "曳尔沐", {})]
+            STATE.data["weapon_library"] = ["思考喵"]
+            STATE.data["today"] = _empty_today()
+            rows = [{"target": "曳尔沐", "name": "曳尔沐", "level": 38,
+                     "fork": {"id": "fork_elyms", "name": "静候彩铃", "level": 1}}]
+            # 1) annotate：未收录弧盘自动登记（幂等起点）
+            annotated = main_mod._tajiduo_annotate(rows)
+            arc = annotated[0]["arc"]
+            assert arc["matched_name"] == "静候彩铃", arc
+            assert arc["registered"] is True, arc
+            assert "静候彩铃" in STATE.data["weapon_library"], STATE.data["weapon_library"]
+            src = (STATE.data.get("weapon_sources") or {}).get("静候彩铃") or {}
+            assert src.get("source") == "tajiduo" and src.get("category") == "arc", src
+            # 日志行（RUNNER 面板日志）
+            assert any("弧盘未收录已自动登记：静候彩铃" in ln
+                       for ln in runner_mod.RUNNER.snapshot()["lines"]), \
+                runner_mod.RUNNER.snapshot()["lines"][-3:]
+            # 2) 二次幂等：登记函数与 annotate 均不再新增
+            canon, registered = main_mod._tajiduo_register_arc("静候彩铃")
+            assert canon == "静候彩铃" and registered is False, (canon, registered)
+            lib_len = len(STATE.data["weapon_library"])
+            annotated2 = main_mod._tajiduo_annotate(rows)
+            assert annotated2[0]["arc"]["registered"] is False
+            assert len(STATE.data["weapon_library"]) == lib_len, "幂等：库长不变"
+            assert (STATE.data.get("weapon_sources") or {}).get("静候彩铃", {}) \
+                .get("source") == "tajiduo", "来源标注不因重复登记漂移"
+            # 3) apply：登记后弧盘绑定 + 等级可写（此前 skip 的补洞语义）
+            apply_rows = [{"target": "曳尔沐", "arc_weapon": "静候彩铃", "arc_level": 3}]
+            result = main_mod._tajiduo_apply_rows(apply_rows)
+            assert result["skipped"] == [], result["skipped"]
+            char = next(c for c in STATE.data["characters"] if c["name"] == "曳尔沐")
+            assert char.get("weapon") == "静候彩铃", char.get("weapon")
+            assert (char.get("tracks") or {}).get("arc_level", {}).get("cur") == 3
+            assert (char.get("tracks") or {}).get("arc_level", {}).get("tgt") == 3, \
+                "目标≥当前语义保持"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_plan_options_endpoint():
+    """GET /api/oknte/plan-options（2026-11-10 新端点，纯只读）：读 working/configs
+    当前 daily_anomaly 三键，对照 prepare_daily_profile 将写入值（首个计划步骤的
+    mat config + 本地已耗+步骤体力 + 循环模式=停用）产出 changes=[{key,cur,new}]；
+    restarts：ok-nte 运行中=1 否则 0（headless 每步重读配置生效，无需重启）。
+    经 _plan_options 直调（端点仅薄壳转发，端点源静态校验路由存在）。
+    fake ok-nte + _StateGuard，配置文件字节级不变量校验。"""
+    import hashlib
+    import inspect
+    from app import main as main_mod
+    tmp = tempfile.mkdtemp(prefix="oknte_planopts_")
+    try:
+        with _StateGuard():
+            root = os.path.join(tmp, "root")
+            ok = _build_fake_oknte(root)
+            ok.is_running_cached = lambda: False
+            STATE.data["settings"] = dict(DEFAULT_SETTINGS, oknte_root=root)
+            STATE.data["inventory"] = {"coin": 0}
+            STATE.data["today"] = _empty_today()
+            STATE.data["characters"] = [_char("c1", "预演角色", {"coin": 30})]
+            with open(ok.routine_config, "rb") as f:
+                before_hash = hashlib.sha256(f.read()).hexdigest()
+            # 1) 有步骤：changes 含 prepare_daily_profile 将写的差异键
+            payload = main_mod._plan_options(ok)
+            assert payload["oknte_running"] is False and payload["restarts"] == 0, payload
+            assert "无需重启" in payload["restarts_reason"], payload["restarts_reason"]
+            assert payload["steps_count"] >= 1 and payload["first_step"], payload
+            keys = {c["key"] for c in payload["changes"]}
+            # fake 配置初始 具体奖励目标=弧盘经验 / 目标消耗体力=240 / 循环模式=自动循环…
+            assert {"具体奖励目标", "目标消耗体力", "循环模式"} <= keys, keys
+            for c in payload["changes"]:
+                assert c["cur"] != c["new"], c  # 只列真实差异
+                assert c["cur"] == FAKE_ROUTINE_CONFIG["daily_anomaly"].get(c["key"]), c
+            target_stamina = payload["first_step"]["stamina"]
+            by_key = {c["key"]: c for c in payload["changes"]}
+            assert by_key["目标消耗体力"]["new"] == target_stamina, \
+                "本地已耗 0 + 步骤体力 = prepare_daily_profile 将写入值"
+            assert by_key["循环模式"]["new"] == "停用"
+            with open(ok.routine_config, "rb") as f:
+                assert hashlib.sha256(f.read()).hexdigest() == before_hash, \
+                    "纯只读：配置文件字节不变"
+            # 2) ok-nte 运行中：restarts=1 + 等待原因
+            ok.is_running_cached = lambda: True
+            payload2 = main_mod._plan_options(ok)
+            assert payload2["restarts"] == 1 and payload2["oknte_running"] is True
+            assert "完全退出" in payload2["restarts_reason"]
+            # 3) 配置损坏：ValueError（端点转 502）
+            Path(_contained(ok.routine_config, ok.root)).write_text(
+                '{"daily_anomaly": broken', encoding="utf-8")
+            try:
+                main_mod._plan_options(ok)
+                raise AssertionError("损坏配置应抛 ValueError")
+            except ValueError:
+                pass
+            # 端点薄壳存在（GET 路由静态校验）
+            get_src = inspect.getsource(main_mod.Handler.do_GET)
+            assert '"/api/oknte/plan-options"' in get_src
+            assert "_plan_options(self._oknte())" in get_src
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_monitor_capture_fail_fastfail():
+    """屏幕采集初始化失败快速返回（2026-11-10 真机取证）：执行器日志出现
+    "cant find a usable windows capture"（DeviceManager）或 "executor connect
+    False"（LauncherTask 10s 刷新超时）→ monitor.capture_fail 记首条原文并置位
+    不复位；runner 据此当轮失败返回（报错含原文与窗口检查提示，启动失败前缀
+    不拉黑）。两标记在 11-08/11-09 正常日志零出现（grep 实证）→ 可靠判据。"""
+    from app.oknte_adapter import RunMonitor
+    real_line = ("2026-11-10 16:48:46,586 ERROR RefreshAdb DeviceManager:"
+                 "cant find a usable windows capture ")
+    m = RunMonitor()
+    m.feed([real_line])
+    assert m.capture_fail == real_line.strip()[:160], m.capture_fail
+    assert m.outcome(200, 40)[0] == "failed"
+    connect_line = ("2026-11-10 16:49:01,846 WARNING TaskExecutor LauncherTask:"
+                    "try refresh timeout 10s, executor connect False")
+    m2 = RunMonitor()
+    m2.feed([connect_line])
+    assert "executor connect False" in m2.capture_fail, m2.capture_fail
+    # 置位不复位：后续正常行不清除（同子进程内采集失败不会自愈）
+    m2.feed(["2026-11-10 16:49:10 INFO RefreshAdb hwnd_window:hwnd changed,connected:1"])
+    assert m2.capture_fail, "置位后不得复位"
+    # 正常日志（GUI 成功路径形态）不得误报
+    m3 = RunMonitor()
+    m3.feed([
+        "2026-11-10 16:54:08,470 INFO RefreshAdb capture:check available "
+        "WINDOWS_BUILD_NUMBER:19045 >= 20348 False",
+        "2026-11-10 16:54:08,471 INFO RefreshAdb update:use BitBlt_RenderFull "
+        "capture render_full: True",
+        "2026-11-10 16:54:08,471 INFO RefreshAdb DeviceManager:capture method "
+        "<class 'ok.device.capture_methods.bitblt.BitBltCaptureMethod'>"])
+    assert m3.capture_fail == "", m3.capture_fail
+    # 常量逐字对齐 ok-script.log 原文（取证行 :35 / :129）
+    assert RunMonitor.CAPTURE_FAIL_MARK == "cant find a usable windows capture"
+    assert RunMonitor.CONNECT_FAIL_MARK == "executor connect False"
+
+
+@case
 def test_codex_custom_material():
     import app.main as main_mod
     tmp = tempfile.mkdtemp(prefix="oknte_codex_mat_")
@@ -2771,7 +3501,9 @@ def test_snapshot_tiered_inventory_reduces_runs():
 
 @case
 def test_ocr_match_inventory_text():
-    """OCR 文本→库存命中表：实名/异体字/「」变体、行内数量、跨行不串位、同名取最大。"""
+    """OCR 文本→库存命中表：实名/异体字/「」变体、行内数量、跨行不串位、同名取最大。
+    2026-11-10 手动项机制：manual_only 材料（甲硬币等 5 项）不再进 OCR 候选——
+    其文本行落 unmatched，库存只能经 /api/inventory 手动录入。"""
     import app.main as main_mod
     text = "\n".join([
         "异环",                                   # 界面噪音：无数字 → 忽略
@@ -2791,7 +3523,8 @@ def test_ocr_match_inventory_text():
     assert m.get("mob_whisper_b") == 7, m         # 异体字归一（眛→昧）
     assert m.get("mob_whisper_c") == 21, m
     assert m.get("boss_sea_tear") == 4, m
-    assert m.get("coin") == 9527, m
+    assert "coin" not in m and "甲硬币" in "".join(r["unmatched_lines"]), \
+        (m, r["unmatched_lines"])  # manual_only：甲硬币不进 OCR 候选（2026-11-10）
     assert "ability_2_b" not in m, "未出现的档位不得被臆造"
     assert any("背包容量" in ln for ln in r["unmatched_lines"])
     assert r["unmatched_lines"] and "异环" in "".join(r["unmatched_lines"])
@@ -2804,7 +3537,9 @@ def test_ocr_match_inventory_text():
 
 @case
 def test_ocr_item_names_dictionary():
-    """item_names 实名字典：57 件覆盖、经验书缺失如实（无实名不编造）、异体字变体在位。"""
+    """item_names 实名字典：67 件覆盖、经验书通用别名在位（2026-11-09 全量
+    具体名补全：猎人攻略分/染剂等提升 OCR 命中；2026-11-10 工作包5 增补经验书
+    三档官方全名；三档具体名在 targets concrete_names，不双写）、异体字变体在位。"""
     import app.main as main_mod
     names = planner.MATERIALS.get("item_names") or {}
     expect = ([f"ability_{n}" for n in range(1, 6)]
@@ -2816,43 +3551,53 @@ def test_ocr_item_names_dictionary():
               + ["boss_flower_seed", "boss_spark_plug", "boss_page_delusion",
                  "boss_pick_watermoon", "boss_nest_fragment", "boss_ticket_stub",
                  "boss_sea_tear", "wk_stamp", "wk_skirt", "wk_memory", "coin",
-                 "city_ability_up", "fons"])
+                 "city_ability_up", "fons",
+                 "hcore", "ucell", "coin_carrot", "coin_carrot_s", "coin_carrot_g",
+                 "rosemary_pawn", "hunter_exp"])
     missing = [k for k in expect if not names.get(k)]
     assert not missing, f"实名缺失：{missing}"
-    assert not any(k.startswith("exp_") for k in names), "经验书无实名，不得编造"
+    # 经验书实名已实证（2026-11-09 用户口径 + 2026-11-10 工作包5 增补分档全名）：
+    # item_names 收通用别名 + 三档官方全名（「猎人攻略分·新锐」等——后缀档位名
+    # 不补别名时数量锚定失败，OCR「识别到但没匹配上」实证）；ntestrategy 变体
+    # 译名（消散剪影/模糊数字等）不收录
+    assert names.get("exp_char") == ["猎人攻略分", "猎人攻略", "猎人攻略分·新锐"], \
+        names.get("exp_char")
+    assert names.get("exp_char_b") == ["资深猎人攻略", "猎人攻略分·资深"], \
+        names.get("exp_char_b")
+    assert names.get("exp_char_p") == ["特级猎人攻略", "猎人攻略分·特级"], \
+        names.get("exp_char_p")
+    assert names.get("exp_arc") == ["染剂"], names.get("exp_arc")
     assert "茫昧絮语" in names["mob_whisper_b"] and "茫眛絮语" in names["mob_whisper_b"], \
         "异体字两种写法都要有"
     assert "橄榄枝" in names["ability_2_p"], "书名号变体应在位"
 
 
-# ---------- 等级 OCR（角色列表：每行=名字+等级+异能等级） ----------
-
 @case
-def test_ocr_match_character_text():
-    """角色列表 OCR：名字→等级+异能等级；未知名字跳过；跨行不串位；同名取首行。"""
+def test_ocr_candidates_single_owner():
+    """候选实名唯一归属（无梦果核回归）：同一 OCR 实名不得被两个 mat_id 认领——
+    targets dreamless_core 与 extra city_ability_up 曾同认「无梦果核」，
+    _inventory_candidates 只做材料内部查重，候选表两键并存 → 命中预览出两行、
+    用户只认得其一。数据侧已删未实证的 dreamless_core（source 标注「来源未确认」，
+    mysqil upgrades.json 实证 city_ability_up 为真；state.json 两 id 均无存量，
+    零数据损失）；代码侧 _inventory_candidates 跨材料归一化去重（首个归属者胜）。"""
     import app.main as main_mod
-    with _StateGuard():
-        STATE.data["settings"] = dict(DEFAULT_SETTINGS)
-        STATE.data["characters"] = [main_mod._sanitize_character({"id": "a", "name": "浔"}),
-                                    main_mod._sanitize_character({"id": "b", "name": "卡厄斯"})]
-        text = "\n".join([
-            "角色列表",                 # 噪音行：无数字
-            "浔 80 10",                 # 标准：名字+等级+异能
-            "卡厄斯 70",                # 只有等级：ability=None
-            "不存在的角色 55 5",        # 未知名字 → 跳过
-            "全角数字：浔６０ ８",      # 归一化后命中（同名取首行，此行忽略）
-        ])
-        r = main_mod.match_character_text(text)
-        chars = {x["name"]: x for x in r["characters"]}
-        assert chars["浔"]["level"] == 80 and chars["浔"]["ability"] == 10, chars
-        assert chars["卡厄斯"]["level"] == 70 and chars["卡厄斯"]["ability"] is None, chars
-        assert "不存在的角色" not in chars
-        assert any("角色列表" in ln or "全角数字" in ln for ln in r["unmatched_lines"]) or \
-            r["unmatched_lines"], "噪音/未命中行应进 unmatched"
-        # 等级越界（>999 三位截断范围内不会出现；1-999 合法）与空文本
-        assert main_mod.match_character_text("")["characters"] == []
-        r3 = main_mod.match_character_text("浔")
-        assert r3["characters"] == [] or r3["characters"][0]["level"] is None
+    cands = main_mod._inventory_candidates()
+    owner = {}
+    for na, mat_id in cands:
+        assert owner.get(na, mat_id) == mat_id, \
+            f"候选实名跨材料重复：{na!r} 同时归属 {owner.get(na)} 与 {mat_id}"
+        owner.setdefault(na, mat_id)
+    # 「无梦果核」唯一归属 city_ability_up（都市特技升级材料，实证口径）
+    hits = sorted({mid for na, mid in cands if na == "无梦果核"})
+    assert hits == ["city_ability_up"], hits
+    # 数据侧：未实证的 dreamless_core 条目已从 targets 删除、实证条目仍在
+    assert all(m.get("id") != "dreamless_core"
+               for m in planner.MATERIALS.get("targets", [])), \
+        "dreamless_core（来源未确认）应已删除——与 city_ability_up 同名撞车"
+    assert any(m.get("id") == "city_ability_up"
+               for m in planner.MATERIALS.get("extra_materials", []))
+    assert "无梦果核" in (planner.MATERIALS.get("item_names") or {}) \
+        .get("city_ability_up", []), "city_ability_up 的无梦果核别名必须在位"
 
 
 # ---------- 背包 OCR v3：数量解析 / 网格坐标 / 窗口枚举与绑定 ----------
@@ -3025,12 +3770,17 @@ def test_ocr_bind_priority():
 
 @case
 def test_ocr_magnitude_in_inventory():
-    """量级词进库存匹配：「雏鸟的希冀 ×1.2万」→12000；单格详情解析（含跨行数量）。"""
+    """量级词进库存匹配：「雏鸟的希冀 ×1.2万」→12000；单格详情解析（含跨行数量）。
+    2026-11-10 手动项机制：manual_only 材料（甲硬币等）不再 OCR 匹配——量级词
+    解析能力改用非手动材料断言。"""
     import app.main as main_mod
     r = main_mod.match_inventory_text("雏鸟的希冀 ×1.2万")
     assert r["matches"].get("ability_2") == 12000, r
-    r2 = main_mod.match_inventory_text("甲硬币 1,234")
-    assert r2["matches"].get("coin") == 1234, r2
+    r2 = main_mod.match_inventory_text("海之泪 1,234")
+    assert r2["matches"].get("boss_sea_tear") == 1234, r2
+    r2b = main_mod.match_inventory_text("甲硬币 1,234")
+    assert r2b["matches"] == {} and any("甲硬币" in ln for ln in r2b["unmatched_lines"]), \
+        (r2b["matches"], r2b["unmatched_lines"])  # manual_only：不进 OCR 候选
     # 既有语义不回归：无量级词照旧、跨行不错配
     r3 = main_mod.match_inventory_text("雏鸟的希冀 ×12\n雏鸟的希冀 5")
     assert r3["matches"].get("ability_2") == 12, r3
@@ -3264,13 +4014,9 @@ def test_ocr_cell_cancel_and_token_isolation():
       不再发起翻页滚动；
     - 代数令牌——对旧代的取消在新一轮（代数 +1）不命中：新一轮正常跑完（旧轮取消
       绝不泄漏）；无活跃遍历时的取消指向最近一代=等效无操作；
-    - 角色遍历——入口登记新代数、哨兵路径按代区分（旧轮残留对新轮不可见），
-      无游戏窗口先抛 _OcrWindowNotFound（全程不触碰 subprocess/PS）；
-    - PS 契约——角色脚本每头像循环头 Test-Path 探测 __CANCEL_FILE__ 哨兵、
-      _run_chars_ocr 注入哨兵路径并配 timeout=240（300→240s 收紧）、渲染等待
-      400ms→300ms；取消端点必须定向代数 + 落哨兵（背包 Event + 角色 PS 哨兵双媒介）；
-    - OCR 单飞锁——两个遍历端点必须非阻塞抢占 + finally 释放（端点级 409 行为由
-      test_ocr_single_flight_409 真服务验证）。"""
+    - OCR 单飞锁——背包遍历端点必须非阻塞抢占 + finally 释放（端点级 409 行为由
+      test_ocr_single_flight_409 真服务验证）。（角色等级 OCR 已整体删除，取消
+      原语只剩背包 Event 一个消费者，/api/ocr/cancel 不再落任何哨兵文件。）"""
     import app.main as main_mod
     import inspect
     with _StateGuard():
@@ -3325,95 +4071,26 @@ def test_ocr_cell_cancel_and_token_isolation():
                 {"boss_sea_tear": 16, "ability_2_p": 9}, \
                 (r2["pages"], r2["matches"], r2["warnings"])
             assert not any("用户取消" in w for w in r2["warnings"]), r2["warnings"]
-            # 角色遍历：入口登记新代数、哨兵路径按代区分（无窗口先抛，全程不触碰
-            # subprocess/PS）
-            g2 = main_mod._OCR_GEN
-            main_mod._bind_game_window = lambda *a, **k: (0, {}, [])
-            raised = False
-            try:
-                main_mod._run_chars_ocr()
-            except main_mod._OcrWindowNotFound:
-                raised = True
-            assert raised, "无游戏窗口时 _run_chars_ocr 必须抛 _OcrWindowNotFound"
-            assert main_mod._OCR_GEN == g2 + 1, "角色遍历入口必须登记新代数"
-            assert main_mod._ocr_cancel_file(g2) != main_mod._ocr_cancel_file(g2 + 1), \
-                "取消哨兵路径必须按代数区分（旧轮残留对新轮不可见）"
-            # 哨兵写/清 helper 往返（按代）
-            main_mod._ocr_cancel_file_write(g2)
-            assert os.path.isfile(main_mod._ocr_cancel_file(g2))
-            main_mod._ocr_cancel_file_clear(g2)
-            assert not os.path.isfile(main_mod._ocr_cancel_file(g2))
-            # PS 契约：每头像循环头探测哨兵 + Python 注入路径 + 耗时收紧
-            char_src = main_mod._OCR_PS_TRAVERSE_CHAR
-            assert "Test-Path -LiteralPath '__CANCEL_FILE__'" in char_src, \
-                "角色脚本必须在每头像循环头探测取消哨兵"
-            run_src = inspect.getsource(main_mod._run_chars_ocr)
-            assert '"__CANCEL_FILE__"' in run_src and \
-                "_ocr_cancel_file(gen)" in run_src and "timeout=240" in run_src, \
-                "角色遍历必须注入按代哨兵路径并配 240s 子进程超时"
-            assert char_src.count("Start-Sleep -Milliseconds $PageWait") == 4, \
-                "角色切换/信息页/弧盘页/异能页四处渲染等待均用可配置 $PageWait" \
-                "（2026-11-06 实机：300ms 截到过渡帧致全空+误判停）"
-            assert '"__PAGE_WAIT__"' in run_src and '"__NAV_INFO__"' in run_src \
-                and '"__SCROLL__"' in run_src, \
-                "角色遍历必须注入页面等待/信息页兜底导航/头像列滚动配置"
-            assert "0x0800" in char_src and "$seen" in char_src \
-                and "$stagPasses" in char_src, \
-                "角色遍历必须支持头像列滚轮下滚+信息页文本去重+整列停滞自停" \
-                "（2026-11-06 用户要求：遍历右侧整列直到最底且自动停止）"
-            assert '"__NAV_ARC__"' in run_src and '"__ROI_ARC_PX__"' in run_src, \
-                "角色遍历必须注入弧盘导航坐标与弧盘页 ROI 像素占位符"
-            # 端点布线：取消=定向代数+落哨兵；两个遍历端点=单飞锁非阻塞抢占+释放
+            # 端点布线：取消=定向代数；背包遍历端点=单飞锁非阻塞抢占+释放
             post_src = inspect.getsource(main_mod.Handler.do_POST)
-            assert "_ocr_cancel_active()" in post_src and \
-                "_ocr_cancel_file_write(" in post_src, \
-                "取消端点必须定向代数并写哨兵文件（角色 PS 循环的取消媒介）"
-            assert post_src.count("_OCR_RUN_LOCK.acquire(blocking=False)") >= 2 and \
-                post_src.count("_OCR_RUN_LOCK.release()") >= 2, \
-                "两个遍历端点必须持 OCR 单飞锁（非阻塞抢占 + finally 释放）"
+            assert "_ocr_cancel_active()" in post_src, \
+                "取消端点必须定向代数（唯一取消媒介：Event 代数令牌）"
+            assert post_src.count("_OCR_RUN_LOCK.acquire(blocking=False)") == 1 and \
+                post_src.count("_OCR_RUN_LOCK.release()") == 1, \
+                "背包遍历端点必须持 OCR 单飞锁（非阻塞抢占 + finally 释放）"
         finally:
             (main_mod._bind_game_window, main_mod._ocr_traverse_page,
              main_mod._ocr_scroll, main_mod._ocr_layout) = orig
             main_mod._OCR_CANCEL.clear()  # 用例收尾卫生复位，不影响其它用例
-            main_mod._ocr_cancel_file_clear(main_mod._OCR_GEN)  # 同上：哨兵残留清掉
-
-
-@case
-def test_char_ocr_layout_missing_file_self_heal():
-    """角色 OCR 布局缺失必须自愈（回归 2026-11-06 真机必崩）：char_ocr_layout.json
-    缺失时 _char_ocr_layout() 必须落盘默认布局并返回默认值。历史缺陷恰在此行：
-    裸调 save_json_atomic（本模块只以别名 _save_json_atomic 导入）→ 每次点击必抛
-    NameError；旧自测只在无窗口 mock 下验证 _run_chars_ocr（提前 raise，到不了
-    布局函数）故漏检——本用例直接调布局函数补上该缺口。布局文件指向临时目录，
-    不写仓库 data/。"""
-    import app.main as main_mod
-    import inspect
-    with tempfile.TemporaryDirectory(prefix="oknte_selftest_") as tmp:
-        layout_file = os.path.join(tmp, "char_ocr_layout.json")
-        orig_file = main_mod._CHAR_OCR_FILE
-        main_mod._CHAR_OCR_FILE = layout_file
-        try:
-            assert not os.path.isfile(layout_file), "用例前提：布局文件必须缺失"
-            layout = main_mod._char_ocr_layout()  # 旧代码在此抛 NameError
-            assert layout == main_mod._sanitize_char_ocr_layout(
-                dict(main_mod._CHAR_OCR_DEFAULT)), layout
-            with open(layout_file, encoding="utf-8") as f:
-                assert json.load(f) == layout, "缺失时必须把默认布局落盘（自愈）"
-        finally:
-            main_mod._CHAR_OCR_FILE = orig_file
-        # 端点兜底：characters/ocr 必须有 except Exception → 500 分支，任何漏网
-        # 异常都要回 HTTP，不能让前端只看到无响应的 Failed to fetch
-        post_src = inspect.getsource(main_mod.Handler.do_POST)
-        assert "except Exception as e:" in post_src and "内部错误" in post_src, \
-            "characters/ocr 端点必须有 except Exception 兜底（漏网异常回 500）"
 
 
 @case
 def test_ocr_single_flight_409():
-    """OCR 单飞锁端点级验证（评审 2026-11-05：两遍历端点可并发执行）：上一轮遍历
-    未结束（单飞锁被持）时，真起面板服务打回环请求——/api/inventory/ocr 与
-    /api/characters/ocr 必须立即 409（error=已有遍历进行中），而非并发进遍历
-    （双遍历共用全局鼠标点击会互相污染）；确认非「规划器运行中」那条 409。"""
+    """OCR 单飞锁端点级验证（评审 2026-11-05：遍历端点可并发执行）：上一轮遍历
+    未结束（单飞锁被持）时，真起面板服务打回环请求——/api/inventory/ocr 必须
+    立即 409（error=已有遍历进行中），而非并发进遍历（双遍历共用全局鼠标点击会
+    互相污染）；确认非「规划器运行中」那条 409。（角色等级 OCR 已删除，
+    /api/characters/ocr 端点不复存在，单飞锁只剩背包一个消费者。）"""
     import http.client
     import threading
     from app import main as main_mod
@@ -3429,22 +4106,26 @@ def test_ocr_single_flight_409():
             ("running", "waiting", "stopping"), "规划器必须空闲后才能验证单飞锁"
         assert main_mod._OCR_RUN_LOCK.acquire(blocking=False), "测试前提：锁未被占用"
         try:
+            # SEC-05：直设全局令牌（生产生成器现生成，零凭据字面量）→ create_server
+            # 的 _ensure_panel_token 空转，零文件写入 repo data/
+            main_mod._PANEL_TOKEN = main_mod._new_panel_token()
             server, _port = create_server(0, auto_range=1)  # 端口 0 → 系统分配
             port = server.server_address[1]
             threading.Thread(target=server.serve_forever, daemon=True,
                              name="selftest-ocr-409").start()
             try:
-                for path in ("/api/inventory/ocr", "/api/characters/ocr"):
-                    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
-                    conn.request("POST", path, json.dumps({"mode": "traverse"}), {
-                        "Content-Type": "application/json",
-                        "Origin": "http://127.0.0.1:%d" % port})  # 回环 Origin 过防线
-                    resp = conn.getresponse()
-                    payload = json.loads(resp.read().decode("utf-8"))
-                    conn.close()
-                    assert resp.status == 409, (path, resp.status, payload)
-                    assert "OCR 遍历进行中" in str(payload.get("error") or ""), \
-                        (path, payload)  # 必须是单飞锁的 409，而非运行中白名单的
+                path = "/api/inventory/ocr"
+                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+                conn.request("POST", path, json.dumps({"mode": "traverse"}), {
+                    "Content-Type": "application/json",
+                    "Origin": "http://127.0.0.1:%d" % port,  # 回环 Origin 过防线
+                    "X-Panel-Token": main_mod._PANEL_TOKEN})  # 面板令牌过 SEC-05 闸
+                resp = conn.getresponse()
+                payload = json.loads(resp.read().decode("utf-8"))
+                conn.close()
+                assert resp.status == 409, (path, resp.status, payload)
+                assert "OCR 遍历进行中" in str(payload.get("error") or ""), \
+                    (path, payload)  # 必须是单飞锁的 409，而非运行中白名单的
             finally:
                 server.shutdown()
                 server.server_close()
@@ -3577,10 +4258,88 @@ def test_ocr_map_unknown():
                 pass
             else:
                 raise AssertionError(f"越界 name_text 必须拒绝: {bad_name}")
+        # 数字噪声拒绝（2026-11-08 用户实测："1519" 这类数字被 OCR 误读成道具名后
+        # 映射成永久别名持续污染库存）：纯数字/数字+分隔符/全角数字一律拒绝（端点
+        # 转 400）；「哇塞1号」有汉字 → 规则是无 CJK 才拒，放行
+        for bad_num in ("1519", "1,519", "×42", "１５１９", "86/1269"):
+            try:
+                main_mod._ocr_map_unknown(bad_num, "fons")
+            except ValueError as e:
+                assert "纯数字不是道具实名" in str(e), str(e)
+            else:
+                raise AssertionError(f"数字噪声 name_text 必须拒绝: {bad_num}")
+        names5 = main_mod._ocr_map_unknown("哇塞1号", "fons")
+        assert "哇塞1号" in names5.get("fons", []), names5.get("fons")
+        # 纵深防御（纯函数直验）：_ocr_numeric_noise 判定口径——含汉字放行、
+        # 纯数字/数字+分隔符/数字占比过高（无 CJK）判噪声
+        f = main_mod._ocr_numeric_noise
+        assert f("1519") and f("１５１９") and f("1,234") and f("×42") and f("86/1269")
+        assert not f("哇塞1号") and not f("1269 道具") and not f("谕石")
+        assert not f("") and not f(None)  # 空文本不算噪声（原行为不变）
+        # 纵深防御（候选表）：手改 materials.json 塞进纯数字别名也会被
+        # _inventory_candidates 跳过，正常别名不受影响（对照物用非手动材料
+        # oracle_stone——fons 已是 manual_only 不进候选，2026-11-10）
+        saved_items = planner.MATERIALS.get("item_names")
+        planner.MATERIALS["item_names"] = {
+            **(saved_items or {}), "oracle_stone": ["1519", "写盘失败甲"]}
+        try:
+            cand = main_mod._inventory_candidates()
+            assert not any(na == "1519" for na, _m in cand), \
+                [na for na, _m in cand if na == "1519"]
+            assert any(na == "写盘失败甲" for na, _m in cand), \
+                "正常别名不得被数字噪声过滤误伤"
+        finally:
+            planner.MATERIALS["item_names"] = saved_items
     finally:
         main_mod.DATA_DIR = orig_main_datadir
         planner.DATA_DIR = orig_planner_datadir
         planner.reload_tables()  # 恢复生产三表内存态（清除测试期内存映射）
+
+
+@case
+def test_ocr_numeric_noise_traverse():
+    """traverse 的 unknown 收集过滤数字噪声（2026-11-08 用户实测）："1519" 这类
+    纯数字首行（无 CJK）不进 unknown_items（否则映射界面会把它登记成实名持续
+    污染），仍进 unmatched_lines 保可见；含汉字的未收录文本照常进 unknown_items。
+    整页纯数字 → 无新信息判停（噪声不算新信息，不得驱动翻页）。"""
+    import app.main as main_mod
+    with _StateGuard():
+        STATE.data["settings"] = dict(DEFAULT_SETTINGS)
+        STATE.settings["game_process_name"] = "HTGame.exe"
+        STATE.settings["game_window_keywords"] = "异环"
+        meta = {"hwnd": 1, "class": "UnrealWindow", "title": "异环  ", "pid": 1,
+                "process": "HTGame", "exe_path": "", "w": 1920, "h": 1080}
+        page1 = ["海之泪 ×16", "1519", "未登记素材甲 ×2"]   # 混合页：实名+噪声+正常未知
+        page2 = ["1519", "×42", "1,234"]                    # 整页纯数字/数字+分隔符
+        seq = {"n": 0}
+
+        def fake_traverse(hwnd, layout, win_size):
+            seq["n"] += 1
+            return list(page1 if seq["n"] == 1 else page2)
+
+        orig = (main_mod._bind_game_window, main_mod._ocr_traverse_page,
+                main_mod._ocr_scroll, main_mod._ocr_layout)
+        main_mod._bind_game_window = lambda *a, **k: (1, meta, [meta])
+        main_mod._ocr_traverse_page = fake_traverse
+        main_mod._ocr_scroll = lambda *a, **k: None
+        main_mod._ocr_layout = lambda: main_mod._sanitize_ocr_layout(
+            dict(main_mod._OCR_LAYOUT_DEFAULT))
+        try:
+            r = main_mod._run_backpack_ocr()
+        finally:
+            (main_mod._bind_game_window, main_mod._ocr_traverse_page,
+             main_mod._ocr_scroll, main_mod._ocr_layout) = orig
+        # 混合页：实名照常命中；"1519" 不进 unknown_items、仍进 unmatched_lines；
+        # 含汉字的未收录文本（未登记素材甲）照常进 unknown_items
+        assert r["matches"] == {"boss_sea_tear": 16}, r["matches"]
+        assert len(r["unknown_items"]) == 1 \
+            and "未登记素材甲" in r["unknown_items"][0]["name_text"], r["unknown_items"]
+        assert "1519" in r["unmatched_lines"], r["unmatched_lines"]
+        # 整页纯数字：第 2 页无新信息（噪声不算新信息）→ 判停，不得白扫后续页
+        assert r["pages"] == 2, (r["pages"], r["warnings"])
+        assert any("新道具" in w for w in r["warnings"]), r["warnings"]
+        for noise in ("1519", "×42", "1,234"):
+            assert noise in r["unmatched_lines"], r["unmatched_lines"]
 
 
 @case
@@ -3601,72 +4360,2507 @@ def test_ocr_scroll_keyword_injection_safe():
     assert "INJECTED_MARKER" not in out, (out[:200], err[:200])
 
 
-# ---------- 角色等级 OCR v2（真实 UI 遍历解析） ----------
+@case
+def test_ocr_scroll_config():
+    """滚轮翻页步距可配置（2026-11-08 用户实测：硬编码 5×-480 每页少半个材料身位）：
+    布局默认 scroll={notches:6, wheel_delta:480} 且经 _sanitize_ocr_layout 钳位
+    （notches 1-20、wheel_delta 120-960，非法回落默认）；_OCR_PS_SCROLL 步距与
+    网格锚点走占位符、由 _ocr_scroll 注入（inspect.getsource 静态校验注入链 +
+    拦截 subprocess.run 解码实编码，无真滚动依赖）。"""
+    import base64
+    import inspect
+    import app.main as main_mod
+    lay = main_mod._sanitize_ocr_layout(dict(main_mod._OCR_LAYOUT_DEFAULT))
+    assert lay["scroll"] == {"notches": 6, "wheel_delta": 480}, lay["scroll"]
+    # 钳位：越界回落边界、非法回落默认（scroll 非对象 → 默认值）
+    big = main_mod._sanitize_ocr_layout({"scroll": {"notches": 99, "wheel_delta": 5000}})
+    assert big["scroll"] == {"notches": 20, "wheel_delta": 960}, big["scroll"]
+    small = main_mod._sanitize_ocr_layout({"scroll": {"notches": 0, "wheel_delta": 10}})
+    assert small["scroll"] == {"notches": 1, "wheel_delta": 120}, small["scroll"]
+    junk = main_mod._sanitize_ocr_layout({"scroll": "bad"})
+    assert junk["scroll"] == {"notches": 6, "wheel_delta": 480}, junk["scroll"]
+    # PS 源：步距/锚点必须走占位符，不再硬编码 5×-480 / 几何中心
+    ps_src = main_mod._OCR_PS_SCROLL
+    for ph in ("__SCROLL_NOTCHES__", "__SCROLL_WDELTA__",
+               "__SCROLL_X_RATIO__", "__SCROLL_Y_RATIO__"):
+        assert ph in ps_src, f"滚动脚本缺占位符 {ph}"
+    assert "-lt 5;" not in ps_src and "-480," not in ps_src, \
+        "滚动脚本不得再硬编码步距"
+    assert "($rect.Left + $rect.Right) / 2" not in ps_src, \
+        "滚轮锚点不得再落在窗口几何中心"
+    # 注入链（inspect.getsource 校验法）：_ocr_scroll 源逐一 replace 占位符，
+    # 调用点把 layout 传进去
+    scroll_src = inspect.getsource(main_mod._ocr_scroll)
+    for ph in ("__SCROLL_NOTCHES__", "__SCROLL_WDELTA__",
+               "__SCROLL_X_RATIO__", "__SCROLL_Y_RATIO__"):
+        assert ph in scroll_src, f"_ocr_scroll 源未注入 {ph}"
+    run_src = inspect.getsource(main_mod._run_backpack_ocr)
+    assert "_ocr_scroll(hwnd, safe_kw, layout)" in run_src, \
+        "遍历调用点必须把 layout 传给 _ocr_scroll"
+    # 行为注入：拦截 subprocess.run，解码 -EncodedCommand 断言实参生效
+    captured = {}
+
+    def fake_run(cmd, **_kw):
+        captured["ps"] = base64.b64decode(cmd[3]).decode("utf-16-le")
+
+        class _R:
+            returncode = 0
+        return _R()
+
+    orig_run = main_mod.subprocess.run
+    main_mod.subprocess.run = fake_run
+    try:
+        main_mod._ocr_scroll(42, "异环", lay)
+    finally:
+        main_mod.subprocess.run = orig_run
+    ps2 = captured["ps"]
+    assert "-lt 6" in ps2 and ", -480," in ps2, "注入后步距应为 6 格×-480"
+    assert "__SCROLL" not in ps2, "占位符必须全部替换"
+    assert "0.1026" in ps2 and "0.2250" in ps2, \
+        "滚轮锚点比例须按 first_cell 注入（默认布局）"
+    # 热调生效：布局 notches=8/wheel_delta=240 → 注入值跟随
+    main_mod.subprocess.run = fake_run
+    try:
+        main_mod._ocr_scroll(42, "异环", main_mod._sanitize_ocr_layout(
+            {"scroll": {"notches": 8, "wheel_delta": 240}}))
+    finally:
+        main_mod.subprocess.run = orig_run
+    assert "-lt 8" in captured["ps"] and ", -240," in captured["ps"], captured["ps"]
+
+
+# ---------- 塔吉多通道（协议纯函数 / 请求构造 / 解析 / 预览应用） ----------
 
 @case
-def test_ocr_char_page_parsers():
-    """角色信息页/异能页/弧盘页解析：名字+Lv+上限、四技能锚定 N/10、都市特技按
-    分母分档、弧盘实名（目录+已绑 weapon）+ Lv: 60/60。"""
+def test_tajiduo_sign_ds_aes_vectors():
+    """签名/ds/AES 断言向量：观测值与 NIST 公开测试向量（协议常量，离线复现）。"""
+    import re
+    from app import tajiduo_client as tc
+    # 1) 老虎签名：参数按 key 排序拼 value + appKey → md5（侦察观测算法）
+    params = {"appId": "10550", "t": "1700000000", "cellphone": "13800138000",
+              "type": "16"}
+    assert tc.laohu_sign(params) == "c9c505637da493c8d4ecbad281e08b13", \
+        tc.laohu_sign(params)
+    # 插入顺序无关（排序后拼值）
+    shuffled = {"type": "16", "cellphone": "13800138000", "t": "1700000000",
+                "appId": "10550"}
+    assert tc.laohu_sign(shuffled) == tc.laohu_sign(params)
+    # 值不同 → 签名不同
+    assert tc.laohu_sign({**params, "t": "1700000001"}) != tc.laohu_sign(params)
+    # 2) ds 头：md5(ts+nonce8+appversion+salt) 格式 "ts,nonce,digest"（注入时钟向量）
+    ds = tc.ds_sign(ts=1700000000, nonce="AB12cd34")
+    assert ds == "1700000000,AB12cd34,791feba72a770fb7c1807b063a2d303f", ds
+    live = tc.ds_sign()
+    m = re.fullmatch(r"(\d{10}),([A-Za-z0-9]{8}),([0-9a-f]{32})", live)
+    assert m, live  # 实时生成同样符合格式
+    # 3) AES-128-ECB：NIST SP800-38A F.1.1 与 FIPS-197 附录 C.1 公开向量
+    import binascii
+    ct = tc.aes128_ecb_encrypt(binascii.unhexlify("6bc1bee22e409f96e93d7e117393172a"),
+                               binascii.unhexlify("2b7e151628aed2a6abf7158809cf4f3c"))
+    assert binascii.hexlify(ct[:16]).decode() == "3ad77bb40d7a3660a89ecaf32466ef97"
+    ct2 = tc.aes128_ecb_encrypt(binascii.unhexlify("00112233445566778899aabbccddeeff"),
+                                binascii.unhexlify("000102030405060708090a0b0c0d0e0f"))
+    assert binascii.hexlify(ct2[:16]).decode() == "69c4e0d86a7b0430d8cdb78070b4c55a"
+    # PKCS7：整块明文补整块 padding（16B → 32B）；ECB 同明文块 → 同密文块
+    import base64
+    key = binascii.unhexlify("2b7e151628aed2a6abf7158809cf4f3c")
+    full = tc.aes128_ecb_encrypt(b"A" * 16, key)
+    assert len(full) == 32, len(full)
+    two = tc.aes128_ecb_encrypt(b"A" * 32, key)  # 前两块同明文（第三块是 padding 块）
+    assert two[:16] == two[16:32], "ECB 相同明文块必须得相同密文块"
+    # 4) 老虎字段加密 = AES-ECB(appKey 后 16 字节) + PKCS7 + base64；与直算一致
+    enc = tc.laohu_aes_encrypt("13800138000")
+    assert enc == base64.b64encode(tc.aes128_ecb_encrypt(
+        b"13800138000", tc.LAOHU_APP_KEY[-16:].encode())).decode()
+    assert len(base64.b64decode(enc)) == 16  # 11 字节明文 + 5 字节 padding
+    # 密钥长度不是 16 字节必须拒绝（防误用）
+    try:
+        tc.aes128_ecb_encrypt(b"x", b"short")
+        raise AssertionError("非法密钥长度必须拒绝")
+    except ValueError:
+        pass
+
+
+@case
+def test_tajiduo_request_construction_and_ssrf():
+    """请求构造打印（不触网）：URL/方法/头(ds 格式、authorization)/签名 body 逐项断言；
+    SSRF 防线：非 https、外域、用户信息、非 443 端口、白名单域解析到环回全拒绝。"""
+    import re
+    import socket as socket_mod
+    import urllib.parse
+    from app import tajiduo_client as tc
+    captured = []
+
+    class _Resp:
+        def __init__(self, payload):
+            self._raw = json.dumps(payload).encode("utf-8")
+
+        def read(self):
+            return self._raw
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    class _FakeOpener:
+        def __init__(self, payloads):
+            self.payloads = list(payloads)  # 每次 open 弹出一个响应
+
+        def open(self, req, timeout=None):
+            captured.append(req)
+            return _Resp(self.payloads.pop(0) if self.payloads else {"code": 0, "data": {}})
+
+    orig_opener, orig_gai = tc._OPENER, socket_mod.getaddrinfo
+    socket_mod.getaddrinfo = lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 443))]
+    try:
+        tc._OPENER = _FakeOpener([
+            {"code": 0, "message": "ok", "result": {}},              # send_sms_code
+            {"code": 0, "message": "ok", "data": {                   # usercenter login
+                "accessToken": "AT1", "refreshToken": "RT1", "uid": 12345}},
+            {"code": 0, "message": "ok", "data": {"accessToken": "AT2",  # refresh
+                                                  "refreshToken": "RT2"}},
+            {"code": 0, "message": "ok", "data": {                   # getGameRoles v2
+                "bindRole": 214075351008,
+                "roles": [{"roleId": 214075351008, "roleName": "旅行者",
+                           "serverName": "测试服", "lev": 60}]}},
+            {"code": 0, "message": "ok", "data": {}},                # roleHome
+            {"code": 0, "message": "ok", "data": []},                # characters
+        ])
+        # ---- 老虎发码：POST form + sign 字段（sign 之外按排序拼值可复算） ----
+        laohu = tc.LaohuClient(device=tc.LaohuDevice("HTTESTDEVICE000001"))
+        laohu.send_sms_code("13800138000")
+        req = captured[-1]
+        assert req.get_full_url() == \
+            "https://user.laohu.com/m/newApi/sendPhoneCaptchaWithOutLogin", req.get_full_url()
+        assert req.get_method() == "POST"
+        body = {k: v[0] for k, v in urllib.parse.parse_qs(
+            req.data.decode("utf-8"), keep_blank_values=True).items()}
+        assert body["appId"] == "10550" and body["type"] == "16" \
+            and body["cellphone"] == "13800138000" and body["areaCodeId"] == "1", body
+        assert body["bid"] == "com.pwrd.htassistant" and body["deviceId"] == "HTTESTDEVICE000001"
+        sign = body.pop("sign")
+        assert sign == tc.laohu_sign(body), (sign, body)
+        # 空串字段在非 keep_empty 提交中被剔除（观测：login 走 keep_empty，其余剔除）
+        assert "imei" not in body and "idfa" not in body, body.keys()
+        # ---- 用户中心登录：POST /usercenter/api/login（appId=10551）+ ds 头 ----
+        client = tc.TajiduoClient("HTTESTDEVICE000001")
+        session = client.user_center_login("laohu-token", 12345)
+        assert session == {"access_token": "AT1", "refresh_token": "RT1",
+                           "center_uid": "12345"}, session
+        req = captured[-1]
+        assert req.get_full_url() == "https://bbs-api.tajiduo.com/usercenter/api/login"
+        body = {k: v[0] for k, v in urllib.parse.parse_qs(req.data.decode("utf-8")).items()}
+        assert body == {"token": "laohu-token", "userIdentity": "12345",
+                        "appId": "10551"}, body
+        headers = {k.lower(): v for k, v in req.headers.items()}
+        assert headers["platform"] == "android" and headers["appversion"] == "1.2.2" \
+            and headers["uid"] == "0" and headers["deviceid"] == "HTTESTDEVICE000001" \
+            and headers["user-agent"] == "okhttp/4.12.0", headers.keys()
+        assert re.fullmatch(r"\d{10},[A-Za-z0-9]{8},[0-9a-f]{32}", headers["ds"]), headers["ds"]
+        # ---- 续期：authorization 传 refreshToken 且双令牌轮换 ----
+        refreshed = client.refresh_session()
+        assert refreshed["access_token"] == "AT2" and refreshed["refresh_token"] == "RT2"
+        req = captured[-1]
+        assert req.get_full_url() == "https://bbs-api.tajiduo.com/usercenter/api/refreshToken"
+        assert req.get_method() == "POST"
+        headers = {k.lower(): v for k, v in req.headers.items()}
+        assert headers["authorization"] == "RT1", headers.get("authorization")
+        # ---- 数据端点：GET + query + authorization=accessToken ----
+        roles = client.get_game_roles("1289")
+        assert roles == [{"roleId": "214075351008", "roleName": "旅行者",
+                          "serverName": "测试服", "lev": 60}], roles
+        req = captured[-1]
+        assert req.get_full_url() == \
+            "https://bbs-api.tajiduo.com/usercenter/api/v2/getGameRoles?gameId=1289"
+        headers = {k.lower(): v for k, v in req.headers.items()}
+        assert headers["authorization"] == "AT2"
+        # ---- code!=0 报错且带服务端 message；鉴权类错误标记 auth ----
+        tc._OPENER = _FakeOpener([{"code": 1001, "message": "令牌无效"}])
+        try:
+            client.get_game_roles("1289")
+            raise AssertionError("code!=0 必须抛错")
+        except tc.TajiduoError as e:
+            assert "令牌无效" in str(e) and e.auth, (str(e), e.auth)
+    finally:
+        tc._OPENER = orig_opener
+        socket_mod.getaddrinfo = orig_gai
+    # ---- SSRF 防线（伪造 DNS，不触网） ----
+    assert tc.host_allowed("user.laohu.com") and tc.host_allowed("bbs-api.tajiduo.com")
+    assert tc.host_allowed("www.bbs-api.tajiduo.com") and tc.host_allowed("user.laohu.com.")
+    for bad in ("localhost", "127.0.0.1", "evil-user.laohu.com",
+                "user.laohu.com.evil.com", "bbs-api.tajiduo.com:8443@", "", None):
+        assert not tc.host_allowed(bad), bad
+    for bad_url in ("http://bbs-api.tajiduo.com/x",                      # 非 https
+                    "https://evil.com/x",                                # 外域
+                    "https://user:pass@bbs-api.tajiduo.com/x",           # 用户信息
+                    "https://bbs-api.tajiduo.com:8443/x",                # 非 443 端口
+                    "https://localhost/x"):                              # 白名单外主机
+        try:
+            tc._validate_url(bad_url)
+            raise AssertionError(f"必须拒绝：{bad_url}")
+        except ValueError:
+            pass
+    # 白名单域解析到环回/私网/链路本地/保留段 → 拒绝（防 DNS 重绑定指向本机面板）
+    def _fake_gai(ip):
+        return lambda *a, **k: [(2, 1, 6, "", (ip, 443))]
+
+    for ip in ("127.0.0.1", "10.0.0.5", "169.254.169.254", "0.0.0.0", "192.168.1.2"):
+        socket_mod.getaddrinfo = _fake_gai(ip)
+        try:
+            tc._validate_url("https://bbs-api.tajiduo.com/x")
+            raise AssertionError(f"解析到 {ip} 必须拒绝")
+        except ValueError:
+            pass
+        finally:
+            socket_mod.getaddrinfo = orig_gai
+
+
+@case
+def test_tajiduo_parse_payloads():
+    """解析器用构造 JSON 断言（字段实样口径：NTEUID tajiduo_model + TaJiDuo-plugin
+    DOCS-API；防御性解析——缺字段/垃圾类型一律 None/跳过，绝不编造）。
+    2026-11-07 四技能修复：type 判别（推断候选表）→ name 锚点 → 顺序兜底（标注
+    skills_inferred）；卡带摘要自 suit 字段（模型实证键）防御性解析。"""
+    from app import tajiduo_client as tc
+    chars = tc.parse_characters([
+        {   # 完整行（技能实名锚定四键；fork.alev 实测是字符串）
+            "id": "player_001", "name": "安魂曲", "alev": 70, "slev": 6,
+            "awakenLev": 2, "elementType": "CHARACTER_ELEMENT_TYPE_CHAOS",
+            "groupType": "CHARACTER_GROUP_TYPE_ONE", "quality": "ITEM_QUALITY_ORANGE",
+            "skills": [{"id": "s1", "name": "普通攻击", "type": "a", "level": 6},
+                       {"id": "s2", "name": "变轨技能", "type": "b", "level": 4},
+                       {"id": "s3", "name": "极轨终结", "type": "c", "level": 5},
+                       {"id": "s4", "name": "援护技", "type": "d", "level": 3},
+                       {"id": "s5", "name": "未锚定技能", "type": "x", "level": 9}],
+            "citySkills": [{"id": "c1", "name": "都市特技甲", "level": 2}],
+            "fork": {"id": "fork_anhunqu", "name": "漆黑青春妄想", "alev": "60",
+                     "blev": "2", "slev": "1",
+                     "properties": [{"id": "atk", "name": "攻击力", "value": "618"}]},
+            "suit": {"suitActivateNum": 2},
+            "properties": [{"id": "hp", "name": "生命值", "value": "15195"}],
+        },
+        {   # 字符串等级（塔吉多字段实测量测形态）+ 缺 fork/skills
+            "id": "player_002", "name": "零", "alev": "55", "slev": None,
+            "awakenLev": None,
+        },
+        {   # 垃圾类型：全部字段不编造
+            "id": "player_003", "name": None, "alev": "abc", "awakenLev": 99,
+            "skills": "garbage", "citySkills": None, "fork": "garbage",
+            "suit": None,
+        },
+        "not-a-dict",
+    ])
+    assert len(chars) == 3, len(chars)
+    r0 = chars[0]
+    assert (r0["name"], r0["level"], r0["awakening"], r0["slev"]) == ("安魂曲", 70, 2, 6)
+    assert r0["skills"] == {"normal": 6, "variable": 4, "orbit": 5, "assist": 3}, r0["skills"]
+    assert r0["skills_inferred"] is False, "实名锚点全命中时不得标顺序推断"
+    assert r0["city_skills"] == ["都市特技甲"]
+    assert r0["fork"] == {"id": "fork_anhunqu", "name": "漆黑青春妄想", "level": 60}
+    assert r0["suit_num"] == 2
+    # 卡带摘要：suit 无 name/core/pie → 如实为 None/[]，activate_num 同 suitActivateNum
+    assert r0["cassette"] == {"set": None, "main": None, "affixes": [],
+                              "activate_num": 2}, r0["cassette"]
+    r1 = chars[1]
+    assert r1["level"] == 55 and r1["awakening"] is None and r1["slev"] is None
+    assert r1["skills"] == {"normal": None, "variable": None, "orbit": None, "assist": None}
+    assert r1["skills_inferred"] is False
+    assert r1["fork"]["name"] is None and r1["fork"]["level"] is None
+    r2 = chars[2]
+    assert r2["name"] == "" and r2["level"] is None, r2
+    assert r2["awakening"] == 6, "越界值按上限 clamp（防御而非丢弃）"
+    assert all(v is None for v in r2["skills"].values()) and r2["suit_num"] is None
+    assert tc.parse_characters("garbage") == [] and tc.parse_characters(None) == []
+    # ---- 四技能修复（2026-11-07 实测：payload 技能名是个性化名，UI 分类标签全落空）----
+    # 1) type 判别优先（候选值表为推断——NTEUID CharacterSkill.type 无公开枚举语义）
+    typed = tc.parse_characters([{
+        "id": "p", "name": "甲",
+        "skills": [{"name": "星轨裁断", "type": "SKILL_TYPE_NORMAL", "level": 6},
+                   {"name": "月轨回旋", "type": "SKILL_TYPE_VARIABLE", "level": 4},
+                   {"name": "日轨轰击", "type": "SKILL_TYPE_ORBIT", "level": 5},
+                   {"name": "伴星协击", "type": "SKILL_TYPE_ASSIST", "level": 3}],
+    }])
+    assert typed[0]["skills"] == {"normal": 6, "variable": 4, "orbit": 5, "assist": 3}, \
+        typed[0]["skills"]
+    assert typed[0]["skills_inferred"] is False
+    # 2) type/name 均判不出 → 按列表顺序固定映射并标「顺序推断」
+    #    （顺序依据：TaJiDuo-plugin profile.js renderPanelSkills 展示名兜底列表前 4 位）
+    ordered = tc.parse_characters([{
+        "id": "q", "name": "乙",
+        "skills": [{"name": "未知技A", "type": "mystery", "level": 1},
+                   {"name": "未知技B", "type": "mystery", "level": 2},
+                   {"name": "未知技C", "type": "mystery", "level": 3},
+                   {"name": "未知技D", "type": "mystery", "level": 4}],
+    }])
+    assert ordered[0]["skills"] == {"normal": 1, "variable": 2, "orbit": 3, "assist": 4}, \
+        ordered[0]["skills"]
+    assert ordered[0]["skills_inferred"] is True, "顺序兜底必须标注 skills_inferred"
+    # 3) 混合：type 命中的槽不参与顺序兜底，剩余技能填剩余空槽
+    mixed = tc.parse_characters([{
+        "id": "r", "name": "丙",
+        "skills": [{"name": "大招收尾", "type": "orbit", "level": 5},
+                   {"name": "平A连段", "type": "?", "level": 6},
+                   {"name": "支援射击", "type": "?", "level": 2},
+                   {"name": "换手突进", "type": "?", "level": 4}],
+    }])
+    assert mixed[0]["skills"]["orbit"] == 5, mixed[0]["skills"]
+    assert mixed[0]["skills"]["normal"] == 6 and mixed[0]["skills"]["variable"] == 2 \
+        and mixed[0]["skills"]["assist"] == 4, mixed[0]["skills"]
+    assert mixed[0]["skills_inferred"] is True
+    # ---- 卡带摘要（A5）：suit.name/core/mainProperties/properties（模型实证键）----
+    cassetted = tc.parse_characters([{
+        "id": "s", "name": "丁",
+        "suit": {"name": "星海回响", "suitActivateNum": 2,
+                 "core": [{"id": "c1", "name": "核心甲", "lev": 5,
+                           "mainProperties": [{"id": "hp", "name": "生命值", "value": "4400"}],
+                           "properties": [{"id": "cr", "name": "暴击率", "value": "8%"},
+                                          {"id": "cd", "name": "暴击伤害", "value": "24%"}]}],
+                 "pie": [{"id": "p1", "name": "辅件甲", "lev": 3,
+                          "mainProperties": [{"id": "atk", "name": "攻击力", "value": "300"}],
+                          "properties": [{"id": "cr", "name": "暴击率", "value": "6%"}]}]},
+    }])
+    cas = cassetted[0]["cassette"]
+    assert cas["set"] == "星海回响" and cas["main"] == "生命值", cas
+    assert cas["affixes"] == ["暴击率", "暴击伤害"], cas  # 跨装备位同名词条去重、保序
+    assert cas["activate_num"] == 2
+    # cartridge 字段防御性探测（真实 payload 未证实前仅作 suit 缺失时的备选，推断）
+    cart = tc.parse_characters([{
+        "id": "t", "name": "戊",
+        "cartridge": {"name": "备用套装", "core": [{"mainProperties": [
+            {"name": "防御力", "value": "100"}]}]},
+    }])
+    assert cart[0]["cassette"]["set"] == "备用套装" \
+        and cart[0]["cassette"]["main"] == "防御力", cart[0]["cassette"]
+    # roleHome 总览（DOCS-API 实样字段）
+    home = tc.parse_role_home({
+        "roleid": "214075351008", "rolename": "旅行者", "servername": "测试服",
+        "lev": 60, "worldlevel": 5, "charidCnt": 12, "roleloginDays": 88,
+        "achieveProgress": {"achievementCnt": 36, "total": 120},
+        "areaProgress": [{"id": "a1", "name": "区域甲", "progress": 8, "total": 20}],
+    })
+    assert home == {"roleid": "214075351008", "rolename": "旅行者",
+                    "servername": "测试服", "lev": 60, "worldlevel": 5,
+                    "charid_cnt": 12, "rolelogin_days": 88,
+                    "achievement": 36, "achievement_total": 120}, home
+    empty = tc.parse_role_home(None)
+    assert empty["lev"] is None and empty["roleid"] == "" and empty["achievement"] is None
+
+
+@case
+def test_tajiduo_token_store_and_sync_orchestration():
+    """凭证存取与同步编排：令牌落盘/读取/清除（临时路径）、续期恰一次、角色去重；
+    原始 payload 诊断落盘（data/tajiduo_last_payload.json，临时路径，A1）。"""
+    from app import tajiduo_client as tc
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        orig_file = tc.TOKEN_FILE
+        orig_dump = tc.LAST_PAYLOAD_FILE
+        tc.TOKEN_FILE = os.path.join(tmp, "tajiduo_token.json")
+        tc.LAST_PAYLOAD_FILE = os.path.join(tmp, "tajiduo_last_payload.json")
+        try:
+            assert tc.load_token_store() is None  # 未绑定
+            tc.save_token_store({"device_id": "HTX", "access_token": "A",
+                                 "refresh_token": "R", "center_uid": "1",
+                                 "bound_at": "2026-11-07 12:00:00"})
+            store = tc.load_token_store()
+            assert store["access_token"] == "A" and store["schema"] == 1, store
+            tc.persist_session({"access_token": "A2", "refresh_token": "R2",
+                                "center_uid": "1"}, "HTX")
+            assert tc.load_token_store()["access_token"] == "A2"
+            assert tc.load_token_store()["bound_at"] == "2026-11-07 12:00:00", \
+                "续期不得丢绑定时间"
+            tc.clear_token_store()
+            assert tc.load_token_store() is None
+            # 凭证必须落在 data/ 下约定文件（安全红线：不进 git、不经前端）
+            assert orig_file.endswith(os.path.join("data", "tajiduo_token.json")), orig_file
+
+            class _FakeClient:
+                """脚本化客户端：首轮鉴权失败 → 续期一次 → 重试成功；顺带验去重。"""
+                device_id = "HTX"
+
+                def __init__(self):
+                    self.roles_calls = 0
+                    self.refresh_calls = 0
+
+                def get_game_roles(self, game_id):
+                    self.roles_calls += 1
+                    if self.roles_calls == 1:
+                        raise tc.TajiduoError("登录已过期", auth=True)
+                    return [{"roleId": "214075351008", "roleName": "旅行者",
+                             "serverName": "测试服", "lev": 60}]
+
+                def refresh_session(self):
+                    self.refresh_calls += 1
+                    return {"access_token": "A3", "refresh_token": "R3",
+                            "center_uid": "1"}
+
+                def get_role_home(self, role_id):
+                    return {"roleid": role_id, "rolename": "旅行者", "lev": 60}
+
+                def get_role_characters(self, role_id):
+                    # 同名同等级两份面板 + 一条不同等级：去重后剩 2 行
+                    return [{"id": "c1", "name": "安魂曲", "alev": 70, "slev": 6,
+                             "skills": [], "fork": {}},
+                            {"id": "c1", "name": "安魂曲", "alev": 70, "slev": 6,
+                             "skills": [], "fork": {}},
+                            {"id": "c1", "name": "安魂曲", "alev": 71, "slev": 6,
+                             "skills": [], "fork": {}}]
+
+            fake = _FakeClient()
+            result = tc.sync_all(fake)
+            assert fake.refresh_calls == 1, fake.refresh_calls  # 续期恰一次
+            assert fake.roles_calls == 2
+            assert [r["level"] for r in result["rows"]] == [70, 71], result["rows"]
+            assert tc.load_token_store()["access_token"] == "A3", "续期后必须落盘"
+            # A1：原始 payload 诊断落盘（含 awapi/yh/characters 原始 JSON，缺请求不编造）
+            with open(tc.LAST_PAYLOAD_FILE, encoding="utf-8") as f:
+                dump = json.load(f)
+            assert dump["schema"] == 1 and dump["fetched_at"], dump
+            role_id = "214075351008"
+            assert dump["per_role"][role_id]["role_home"] == \
+                {"roleid": role_id, "rolename": "旅行者", "lev": 60}, dump
+            assert dump["per_role"][role_id]["characters"][0]["name"] == "安魂曲", dump
+            # 无需续期的路径：一次成功 → refresh_calls 不增
+            fake2 = _FakeClient()
+            fake2.roles_calls = 1  # 跳过首轮失败
+            tc.save_token_store({"device_id": "HTX", "access_token": "A",
+                                 "refresh_token": "R", "center_uid": "1"})
+            tc.sync_all(fake2)
+            assert fake2.refresh_calls == 0
+        finally:
+            tc.TOKEN_FILE = orig_file
+            tc.LAST_PAYLOAD_FILE = orig_dump
+
+
+@case
+def test_tajiduo_laohu_recovery_chain():
+    """三级会话恢复链（离线桩，绝不触网）：①refreshToken 续期失败（auth）→
+    ②落盘 laohu 根凭据同 device_id 重走 user_center_login 重建会话并落盘 →
+    数据重试成功；laohu 重登也抛 → ③友好重绑错误（官方原文进 raw 不透传）；
+    token store 新键 roundtrip 与旧版文件向后兼容；sync_gacha 同规则。"""
+    from app import tajiduo_client as tc
+    with tempfile.TemporaryDirectory() as tmp:
+        orig_file = tc.TOKEN_FILE
+        orig_dump = tc.LAST_PAYLOAD_FILE
+        orig_hist = tc.GACHA_HISTORY_FILE
+        orig_client_cls = tc.TajiduoClient
+        tc.TOKEN_FILE = _safe_path(tmp, "tajiduo_token.json")
+        tc.LAST_PAYLOAD_FILE = _safe_path(tmp, "tajiduo_last_payload.json")
+        tc.GACHA_HISTORY_FILE = _safe_path(tmp, "gacha_history.json")
+        try:
+            # ---- token store 新键 roundtrip：save→load 保留 laohu 凭据；
+            # persist_session（续期/重建路径）不得丢；旧版文件（缺新键）仍可读 ----
+            tc.save_token_store({"device_id": "HTDEV", "access_token": "A1",
+                                 "refresh_token": "R1", "center_uid": "1",
+                                 "laohu_token": "LAOHU_T", "laohu_user_id": "42"})
+            store = tc.load_token_store()
+            assert store["laohu_token"] == "LAOHU_T" \
+                and store["laohu_user_id"] == "42", store
+            tc.persist_session({"access_token": "A2", "refresh_token": "R2",
+                                "center_uid": "1"}, "HTDEV")
+            store = tc.load_token_store()
+            assert store["access_token"] == "A2" \
+                and store["laohu_token"] == "LAOHU_T", "续期不得丢 laohu 根凭据"
+            tc.save_token_store({"device_id": "HTX", "access_token": "A",
+                                 "refresh_token": "R", "center_uid": "1"})
+            assert tc.load_token_store().get("laohu_token") is None, \
+                "旧版文件缺新键 = 无 laohu 凭据（向后兼容，走现有链）"
+
+            # ---- 恢复链成功路径：refresh 抛 auth 错 → laohu 重登成功 → 重试成功 ----
+            class _FakeReloginClient:
+                """顶替 TajiduoClient：脚本化 user_center_login（离线），
+                记录 device_id 与凭据，供同 device_id/凭据复用断言。"""
+                fail = False
+                calls = []      # 每次构造传入的 device_id
+                last_cred = ()
+
+                def __init__(self, device_id, access_token="", refresh_token="",
+                             center_uid=""):
+                    self.device_id = device_id
+                    _FakeReloginClient.calls.append(device_id)
+
+                def user_center_login(self, laohu_token, laohu_user_id):
+                    _FakeReloginClient.last_cred = (laohu_token, laohu_user_id)
+                    if _FakeReloginClient.fail:
+                        raise tc.TajiduoError("[usercenter] laohu token 已失效",
+                                              auth=True)
+                    return {"access_token": "A9", "refresh_token": "R9",
+                            "center_uid": "1"}
+            tc.TajiduoClient = _FakeReloginClient
+
+            class _DeadRefreshClient:
+                device_id = "HTDEV"
+
+                def __init__(self):
+                    self.roles_calls = 0
+
+                def get_game_roles(self, game_id):
+                    self.roles_calls += 1
+                    if self.roles_calls == 1:
+                        raise tc.TajiduoError("[/getGameRoles] FAILED TO TOUCH",
+                                              auth=True)
+                    return [{"roleId": "r1", "roleName": "旅行者",
+                             "serverName": "测试服", "lev": 60}]
+
+                def refresh_session(self):
+                    raise tc.TajiduoError("[/refreshToken] FAILED TO TOUCH",
+                                          auth=True)
+
+                def get_role_home(self, role_id):
+                    return {"roleid": role_id, "rolename": "旅行者", "lev": 60}
+
+                def get_role_characters(self, role_id):
+                    return []
+
+            tc.save_token_store({"device_id": "HTDEV", "access_token": "A1",
+                                 "refresh_token": "R1", "center_uid": "1",
+                                 "laohu_token": "LAOHU_T", "laohu_user_id": "42"})
+            fake = _DeadRefreshClient()
+            result = tc.sync_all(fake)
+            assert fake.roles_calls == 2, fake.roles_calls  # 失败→重建→重试成功
+            assert _FakeReloginClient.calls == ["HTDEV"], \
+                _FakeReloginClient.calls  # 复用持久化 device_id，不新生成
+            assert _FakeReloginClient.last_cred == ("LAOHU_T", "42"), \
+                _FakeReloginClient.last_cred  # 重放落盘的 laohu 根凭据
+            store = tc.load_token_store()
+            assert store["access_token"] == "A9" and store["refresh_token"] == "R9", \
+                "重建后的会话必须落盘"
+            assert store["laohu_token"] == "LAOHU_T", "重建不得丢 laohu 根凭据"
+            assert result["rows"] == [] \
+                and result["roles"][0]["roleId"] == "r1", result
+
+            # ---- 恢复链耗尽：laohu 重登也抛 → 友好重绑错误（原文进 raw 不透传）----
+            _FakeReloginClient.fail = True
+            fake2 = _DeadRefreshClient()
+            try:
+                tc.sync_all(fake2)
+                raise AssertionError("恢复链耗尽必须抛错")
+            except tc.TajiduoError as e:
+                assert e.auth is True and "重新绑定" in str(e), (e.auth, str(e))
+                assert "FAILED TO TOUCH" not in str(e), str(e)  # 官方原文不透传
+                assert "FAILED TO TOUCH" in e.raw.get("origin", ""), e.raw
+                assert "laohu" in e.raw.get("origin", ""), e.raw
+            assert fake2.roles_calls == 1, fake2.roles_calls
+
+            # ---- sync_gacha 同规则（同 _recover_auth）：refresh 抛 → laohu 重建 → 成功 ----
+            _FakeReloginClient.fail = False
+            _FakeReloginClient.calls = []
+
+            class _DeadRefreshGachaClient:
+                device_id = "HTDEV"
+
+                def __init__(self):
+                    self.calls = 0
+
+                def get_gacha_summary(self):
+                    self.calls += 1
+                    if self.calls == 1:
+                        raise tc.TajiduoError("[/gacha] FAILED TO TOUCH", auth=True)
+                    return {"roleid": "r1", "rolename": "旅行者", "lev": 60,
+                            "gachaDetails": []}
+
+                def refresh_session(self):
+                    raise tc.TajiduoError("[/refreshToken] FAILED TO TOUCH",
+                                          auth=True)
+
+            tc.save_token_store({"device_id": "HTDEV", "access_token": "A1",
+                                 "refresh_token": "R1", "center_uid": "1",
+                                 "laohu_token": "LAOHU_T", "laohu_user_id": "42"})
+            gfake = _DeadRefreshGachaClient()
+            gresult = tc.sync_gacha(gfake)
+            assert gfake.calls == 2, gfake.calls
+            assert _FakeReloginClient.calls == ["HTDEV"], _FakeReloginClient.calls
+            assert gresult["summary"]["roleid"] == "r1", gresult["summary"]
+            # 无 laohu 凭据（旧版文件）→ 恢复链退化为现状：refresh 失败即友好重绑错误
+            tc.save_token_store({"device_id": "HTDEV", "access_token": "A1",
+                                 "refresh_token": "R1", "center_uid": "1"})
+            gfake2 = _DeadRefreshGachaClient()
+            try:
+                tc.sync_gacha(gfake2)
+                raise AssertionError("无 laohu 凭据时恢复链耗尽必须抛错")
+            except tc.TajiduoError as e:
+                assert e.auth is True and "重新绑定" in str(e), (e.auth, str(e))
+                assert gfake2.calls == 1, gfake2.calls
+        finally:
+            tc.TOKEN_FILE = orig_file
+            tc.LAST_PAYLOAD_FILE = orig_dump
+            tc.GACHA_HISTORY_FILE = orig_hist
+            tc.TajiduoClient = orig_client_cls
+
+
+@case
+def test_tajiduo_http_error_wrapping():
+    """会话恢复可达根因修复（2026-11-09 工作包1）：_http 捕 urllib.error.HTTPError →
+    TajiduoError——401/402/403 标 auth（三级恢复链从此对 HTTP 层 401 可达），
+    其余状态码非 auth 且带路径；URL 校验仍在包装前执行（SSRF 防线不变）。
+    离线桩：替换 _OPENER 抛真 HTTPError（BytesIO 响应体），绝不触网。"""
+    from app import tajiduo_client as tc
+    import io as io_mod
+    import urllib.error as ue
+
+    class _FakeOpener:
+        opened = []  # open 实际到达的 URL（证明外域在校验层被拒、未触 open）
+
+        def __init__(self, code):
+            self.code = code
+
+        def open(self, req, timeout=None):
+            _FakeOpener.opened.append(req.full_url)
+            body = io_mod.BytesIO(b'{"code":401,"msg":"token expired"}')
+            raise ue.HTTPError(req.full_url, self.code, "HTTP Error", {}, body)
+
+    orig_opener = tc._OPENER
+    orig_validate = tc._validate_url
+    calls = []
+    _FakeOpener.opened = []
+
+    def _spy_validate(url):
+        calls.append(url)
+        return orig_validate(url)
+
+    try:
+        tc._validate_url = _spy_validate
+        # 500 用无 token 关键词的路径：_auth_keyword 的既有启发式（消息含
+        # "token"/"登录" 等即归 auth）会对 refreshToken 路径的任意错误标 auth
+        # ——属设计内行为（歧义错误宁可多试一次恢复链），非本用例关注点
+        for code, url, want_auth in (
+                (401, "https://bbs-api.tajiduo.com/usercenter/api/refreshToken", True),
+                (402, "https://bbs-api.tajiduo.com/usercenter/api/refreshToken", True),
+                (403, "https://bbs-api.tajiduo.com/usercenter/api/refreshToken", True),
+                (500, "https://bbs-api.tajiduo.com/apihub/awapi/yh/roleHome", False)):
+            tc._OPENER = _FakeOpener(code)
+            try:
+                tc._http(url, method="POST")
+                raise AssertionError(f"HTTP {code} 必须抛 TajiduoError")
+            except tc.TajiduoError as e:
+                assert e.auth is want_auth, (code, e.auth, want_auth)
+                assert e.status_code == code, (code, e.status_code)
+                assert url.rsplit("/", 1)[1] in str(e), (code, str(e))  # 路径进错误消息
+                if want_auth:
+                    assert e.raw.get("body") == '{"code":401,"msg":"token expired"}' \
+                        or "token expired" in e.raw.get("body", ""), e.raw
+        # 非白名单 URL 仍在请求前拒绝（防线前置于 HTTPError 转换；open 从未到达）
+        tc._OPENER = _FakeOpener(401)
+        try:
+            tc._http("https://evil.com/x")
+            raise AssertionError("外域必须被拒")
+        except ValueError:
+            pass
+        assert calls[-1].startswith("https://evil.com/"), calls  # 校验层拦下
+        assert "https://evil.com/x" not in _FakeOpener.opened, _FakeOpener.opened
+        assert any(c.startswith("https://bbs-api.tajiduo.com")
+                   for c in _FakeOpener.opened), _FakeOpener.opened
+    finally:
+        tc._OPENER = orig_opener
+        tc._validate_url = orig_validate
+    # 401 的 TajiduoError 经 sync_all 入口必须能进恢复链（死代码复活的可达性断言）
+    err = tc.TajiduoError("接口 HTTP 401（/x）", status_code=401)
+    assert err.auth is True, err.auth
+
+
+@case
+def test_avatar_path_whitelist():
+    """头像系统（2026-11-09 工作包2）离线白名单：/avatars 路由文件名严格正则 +
+    realpath 归属；sites_fetch.download_avatars 的 slug/扩展名拒绝与 manifest
+    合并语义（2026-11-10：临时目录，不触网——离线桩失败计入 failed 名单、
+    既往条目不掉出，绝不抛）。"""
     import app.main as main_mod
+    from app import sites_fetch as sf
+    import tempfile
+    # 路由白名单：合法 webp/avif 通过（目录未建时 realpath 归属校验仍成立）；
+    # 大写/路径穿越/双扩展名/其它扩展名全拒
+    assert main_mod._avatar_file_path("nanally.webp") is not None
+    assert main_mod._avatar_file_path("nanally.avif") is not None
+    for bad in ("nanally.gif", "NaNally.webp", "../state.json", "a/b.webp",
+                "a.webp.avif%00", "", "x.webp.", ".webp", "a.avif.webp", "a-webp"):
+        assert main_mod._avatar_file_path(bad) is None, bad
+    with tempfile.TemporaryDirectory() as tmp:
+        orig_dir, orig_manifest = sf.AVATARS_DIR, sf.AVATAR_MANIFEST_JSON
+        sf.AVATARS_DIR = os.path.join(tmp, "avatars")
+        sf.AVATAR_MANIFEST_JSON = os.path.join(sf.AVATARS_DIR, "manifest.json")
+        try:
+            # 拒绝路径（2026-11-10 起下载按 slug 拼 mysqil URL，image 字段不再采信）：
+            # 坏 slug（大小写/下划线/空/非 dict）一律跳过，绝不拼 URL
+            dn, sk, fd = sf.download_avatars([
+                {"slug": "Bad_Slug"}, {"slug": "nan ally"}, {"slug": ""},
+                "junk", {}], timeout=1)
+            assert dn == 0 and sk == 0 and fd == [], (dn, sk, fd)
+            # 合法 slug：离线桩（_http_get_bytes 抛 OSError，绝不触网——本机可能
+            # 真可达 wiki.mysqil.com，不桩则用例结果随网络抖动）→ 立绘/图标两路
+            # 都断 → 单张失败静默计入 failed，绝不抛
+            orig_get = sf._http_get_bytes
+
+            def _offline(*_a, **_k):
+                raise OSError("offline stub")
+
+            sf._http_get_bytes = _offline
+            try:
+                dn, sk, fd = sf.download_avatars([{"slug": "nanally"}], timeout=1)
+                assert dn == 0 and sk == 0 and fd == ["nanally"], (dn, sk, fd)
+                # 手工造 manifest+文件 → 同源条目幂等跳过（skip 判定在下载前，
+                # 桩在位也到不了网络）→ avatar_files 只回报磁盘实存
+                os.makedirs(sf.AVATARS_DIR, exist_ok=True)
+                Path(os.path.join(sf.AVATARS_DIR, "nanally.webp")).write_bytes(b"x")
+                sf.save_json_atomic(sf.AVATAR_MANIFEST_JSON, {
+                    "schema": 1, "updated_at": "", "avatars": {
+                        "nanally": {"file": "nanally.webp",
+                                    "source": f"{sf.MYSQIL_IMAGES_BASE}nanally.webp",
+                                    "fetched_at": "2026-11-09 00:00:00"},
+                        "ghost": {"file": "ghost.webp", "source": "/x.webp",
+                                  "fetched_at": ""}}})
+                dn, sk, fd = sf.download_avatars([{"slug": "nanally"}], timeout=1)
+                assert dn == 0 and sk == 1 and fd == [], (dn, sk, fd)
+                files = sf.avatar_files()
+                assert files == {"nanally": "nanally.webp"}, files
+            finally:
+                sf._http_get_bytes = orig_get
+        finally:
+            sf.AVATARS_DIR, sf.AVATAR_MANIFEST_JSON = orig_dir, orig_manifest
+
+
+@case
+def test_tajiduo_phone_persist_and_mask():
+    """手机号记忆（2026-11-09 工作包1）：_tajiduo_mask_phone 只露前3后4
+    （138****1234），完整号码/令牌绝不出本机凭证文件；token store phone 键
+    roundtrip。纯函数 + 临时路径，不触网。"""
+    import app.main as main_mod
+    from app import tajiduo_client as tc
+    assert main_mod._tajiduo_mask_phone("13812341234") == "138****1234"
+    for bad in ("", None, "1381234", "abc12341234", "23812341234"):
+        assert main_mod._tajiduo_mask_phone(bad) == "", bad
+    with tempfile.TemporaryDirectory() as tmp:
+        orig_file = tc.TOKEN_FILE
+        tc.TOKEN_FILE = os.path.join(tmp, "tajiduo_token.json")
+        try:
+            tc.save_token_store({"device_id": "HTX", "access_token": "A",
+                                 "refresh_token": "R", "center_uid": "1",
+                                 "phone": "13812341234"})
+            store = tc.load_token_store()
+            assert store["phone"] == "13812341234", store  # 只落本机
+            # status 视图脱敏（直接调 mask，不启 HTTP 服务）
+            assert main_mod._tajiduo_mask_phone(store["phone"]) == "138****1234"
+        finally:
+            tc.TOKEN_FILE = orig_file
+
+
+@case
+def test_tajiduo_annotate_apply_endpoints():
+    """预览匹配（纯读）与应用写库（点「应用」才写 state）：实名/弧盘匹配、clamp、
+    跳过明细；塔吉多无此数据标注；未绑定同步拒绝。"""
+    import app.main as main_mod
+    from app import growth as growth_mod
+    from app import tajiduo_client as tc
     with _StateGuard():
         STATE.data["settings"] = dict(DEFAULT_SETTINGS)
-        STATE.data["characters"] = [main_mod._sanitize_character({"id": "a", "name": "安魂曲"})]
-        # 信息页（2026-11-03 截图口径）：名字在右上，Lv.70/70；正文含属性数值噪音
-        info = ("\u203b 信息 养成指南 安魂曲 暗 液态 输出 Lv.70/70 "
-                "属性 效果 生命值 15195 攻击力 618 防御力 798")
-        info_r = main_mod._parse_char_info_text(info)
-        assert info_r == {"name": "安魂曲", "level": 70, "level_cap": 70}, info_r
-        # 等级=斜杠前的当前值；上限段进 level_cap（仅展示，不参与应用）
-        # 异能页：四技能锚定 N/10 + 都市特技两档 N/5、N/2（分母区分槽位）
-        abil = ("异能 都市特技 普通攻击 2/10 变轨技能 4/10 极轨终结 4/10 "
-                "援护技 2/10 角色特性 0/5 0/2")
-        abil_r = main_mod._parse_char_ability_text(abil)
-        assert abil_r["normal"] == 2 and abil_r["variable"] == 4 \
-            and abil_r["orbit"] == 4 and abil_r["assist"] == 2, abil_r
-        assert abil_r["talent1"] == 0 and abil_r["talent2"] == 0, abil_r
-        # 技能名缺失 → None 不编造；未知文本不产生档位
-        empty = main_mod._parse_char_ability_text("完全无关的界面文本 3/7")
-        assert all(empty[k] is None for k in ("normal", "variable", "orbit", "assist")), empty
-        assert empty["talent1"] is None and empty["talent2"] is None
-        # 名字未收录 → name=None（前端标注不可应用）
-        unk = main_mod._parse_char_info_text("陌生角色 Lv.55/70")
-        assert unk == {"name": None, "level": 55, "level_cap": 70}, unk
-        # 无斜杠的 "Lv.70"：只给等级，不编造上限
-        nos = main_mod._parse_char_info_text("安魂曲 Lv.70")
-        assert nos == {"name": "安魂曲", "level": 70, "level_cap": None}, nos
-        # 弧盘页（2026-11-06 截图口径）："漆黑青春妄想 Lv: 60/60"——实名从
-        # data/game_data.json weapons 目录取真名（子串匹配，容 "…" 等 OCR 噪声）
-        arc = main_mod._parse_char_arc_text("…漆黑青春妄想 Lv: 60/60…")
-        assert arc == {"arc_name": "漆黑青春妄想", "arc_level": 60,
-                       "arc_level_cap": 60}, arc
-        # 弧盘等级 clamp 0-999：0（未升级）合法
-        arc0 = main_mod._parse_char_arc_text("休息日 Lv: 0/60")
-        assert arc0["arc_name"] == "休息日" and arc0["arc_level"] == 0 \
-            and arc0["arc_level_cap"] == 60, arc0
-        # 本系统角色已绑 weapon 亦可作实名候选（目录未收录的绑定名兜底）
+        char = main_mod._sanitize_character({"id": "a", "name": "安魂曲",
+                                             "weapon": "测试弧盘甲"})
+        char["tracks"]["char_level"]["cur"] = 60
+        char["tracks"]["arc_level"]["cur"] = 30
+        char["skills"]["normal"]["cur"] = 5
+        char["awakening"] = 1
+        # 单字名（塔吉多实名「异能者·零」包含匹配用，A3）+ 歧义对（同长多命中 → None）
+        STATE.data["characters"] = [
+            char,
+            main_mod._sanitize_character({"id": "b", "name": "零"}),
+            main_mod._sanitize_character({"id": "c", "name": "零白"}),
+            main_mod._sanitize_character({"id": "d", "name": "夜零"}),
+        ]
+        STATE.data["weapon_library"] = ["测试弧盘乙"]  # 手动映射下拉的数据源之一
+        # ---- 预览匹配：命中 + 现值回显；未命中 matched_name=None ----
+        rows = main_mod._tajiduo_annotate([
+            {"name": "安魂曲", "level": 70, "awakening": 2,
+             "skills": {"normal": 6, "variable": None, "orbit": 5, "assist": None},
+             "fork": {"name": "测试弧盘甲", "level": 60}},
+            {"name": "陌生角色", "level": 10, "awakening": None, "skills": {},
+             "fork": {"name": None, "level": None}},
+        ])
+        assert rows[0]["matched_name"] == "安魂曲"
+        assert rows[0]["cur_level"] == 60 and rows[0]["cur_awakening"] == 1
+        assert rows[0]["cur_skills"] == {"normal": 5, "variable": 0, "orbit": 0,
+                                         "assist": 0}, rows[0]["cur_skills"]
+        assert rows[0]["arc"] == {"name": "测试弧盘甲", "level": 60,
+                                  "matched_name": "测试弧盘甲", "registered": False,
+                                  "cur_name": "测试弧盘甲",
+                                  "cur_level": 30}, rows[0]["arc"]
+        assert rows[1]["matched_name"] is None and rows[1]["cur_level"] is None
+        assert rows[1]["arc"]["matched_name"] is None
+        assert rows[1]["arc"]["registered"] is False, \
+            "fork.name 为空（payload 无弧盘）时绝不登记"
+        # ---- A3 实名包含匹配 fallback（2026-11-07 实测：「异能者·零」未命中「零」）----
+        rows2 = main_mod._tajiduo_annotate([
+            {"name": "异能者·零", "level": 55},       # 前缀名 → 最长优先包含命中「零」
+            {"name": "异能者·零白", "level": 44},     # 「零白」(2) 与「零」(1) 同现 → 取最长
+            {"name": "异能者·白零", "level": 33},     # 「零白」?否；「夜零」?否；「零」命中
+        ])
+        assert rows2[0]["matched_name"] == "零", rows2[0]["matched_name"]
+        assert rows2[1]["matched_name"] == "零白", rows2[1]["matched_name"]
+        assert rows2[2]["matched_name"] == "零", rows2[2]["matched_name"]
+        # 同长多命中 = 歧义 → None 走手动下拉（绝不猜）：补一对等长候选
+        STATE.data["characters"].append(
+            main_mod._sanitize_character({"id": "e", "name": "测试零乙"}))
+        rows3 = main_mod._tajiduo_annotate([{"name": "异能者·测试零甲", "level": 1}])
+        # 「测试零乙」不在「异能者·测试零甲」内 → 只剩单字「零」 → 命中
+        assert rows3[0]["matched_name"] == "零"
+        rows4 = main_mod._tajiduo_annotate([{"name": "零白夜零特别版", "level": 1}])
+        # 「零白」与「夜零」同为 2 字且都包含 → 歧义 → None
+        assert rows4[0]["matched_name"] is None, rows4[0]["matched_name"]
+        # ---- 应用：命中行逐字段写入（clamp），未收录弧盘/未知目标如实跳过 ----
+        payload = main_mod._tajiduo_apply_rows([
+            {"target": "安魂曲", "level": 70, "awakening": 3,
+             "skills": {"normal": 6, "orbit": 99, "bogus": 7, "assist": "abc"},
+             "arc_weapon": "测试弧盘乙", "arc_level": 45},
+            {"target": "不存在的人", "level": 1},
+            {"target": "安魂曲", "level": "垃圾"},
+        ])
+        assert payload["ok"] is True
+        saved = payload["characters"][0]
+        assert saved["tracks"]["char_level"]["cur"] == 70, saved["tracks"]
+        assert saved["tracks"]["arc_level"]["cur"] == 45
+        assert saved["awakening"] == 3
+        assert saved["skills"]["normal"]["cur"] == 6
+        assert saved["skills"]["orbit"]["cur"] == growth_mod.skill_max(), "越界 clamp 到上限"
+        assert saved["skills"]["assist"]["cur"] == 0, "非数字不应用"
+        assert "bogus" not in saved["skills"], "未知技能键不得写入"
+        assert saved["weapon"] == "测试弧盘乙", saved["weapon"]
+        # A4 目标≥当前（用户偏好）：cur 更新时 tgt 同步抬到 max(现有tgt, 同步值)
+        assert saved["tracks"]["char_level"]["tgt"] == 70, saved["tracks"]
+        assert saved["tracks"]["arc_level"]["tgt"] == 45, saved["tracks"]
+        assert saved["skills"]["normal"]["tgt"] == 6, saved["skills"]
+        assert saved["skills"]["orbit"]["tgt"] == growth_mod.skill_max(), saved["skills"]
+        assert saved["skills"]["variable"]["tgt"] == 0, "未同步的技能目标不动"
+        assert payload["applied"] == [{"target": "安魂曲",
+                                       "changed": ["等级→70", "等级目标→70", "觉醒→3",
+                                                   "normal→6", "normal目标→6",
+                                                   f"orbit→{growth_mod.skill_max()}",
+                                                   f"orbit目标→{growth_mod.skill_max()}",
+                                                   "弧盘→测试弧盘乙", "弧盘等级→45",
+                                                   "弧盘目标→45"]}], \
+            payload["applied"]
+        assert [s["target"] for s in payload["skipped"]] == ["不存在的人"], payload["skipped"]
+        # 未收录弧盘：绑定不动（绝不写入没有依据的实名）
+        payload2 = main_mod._tajiduo_apply_rows(
+            [{"target": "安魂曲", "arc_weapon": "查无此弧盘", "arc_level": 50}])
+        assert payload2["characters"][0]["weapon"] == "测试弧盘乙"
+        assert "未收录" in payload2["skipped"][0]["reason"]
+        assert payload2["characters"][0]["tracks"]["arc_level"]["cur"] == 50
+        assert payload2["characters"][0]["tracks"]["arc_level"]["tgt"] == 50
+        # ---- A5 卡带（塔吉多 suit 字段）：套装/主属性覆盖，词条不落库、stigma 不动 ----
+        STATE.data["characters"][0]["stigma_groups"] = [{"label": "用户自维护"}]
+        payload3 = main_mod._tajiduo_apply_rows([
+            {"target": "安魂曲",
+             "cassette": {"set": "星海回响", "main": "生命值",
+                          "affixes": ["暴击率", "暴击伤害"]}}])
+        saved3 = payload3["characters"][0]
+        assert saved3["cassette"] == {"set": "星海回响", "main": "生命值"}, saved3["cassette"]
+        assert "卡带套装→星海回响" in payload3["applied"][0]["changed"]
+        assert "卡带主属性→生命值" in payload3["applied"][0]["changed"]
+        assert saved3["stigma_groups"] == [{"label": "用户自维护"}], \
+            "stigma_groups 用户自维护，塔吉多同步绝不写"
+        # payload 缺卡带字段 → 现值不动（预览行标「塔吉多无此数据」由前端处理）
+        payload4 = main_mod._tajiduo_apply_rows([{"target": "安魂曲", "level": 70}])
+        assert payload4["characters"][0]["cassette"] == {"set": "星海回响",
+                                                         "main": "生命值"}
+        assert payload4["applied"] == [], "无变化时不产生应用明细"
+        # rows 非法形态
+        for bad in (None, "rows", {"a": 1}):
+            try:
+                main_mod._tajiduo_apply_rows(bad)
+                raise AssertionError(f"非法 rows 必须拒绝: {bad!r}")
+            except ValueError:
+                pass
+        # ---- 未绑定同步拒绝（ValueError → 端点 400） ----
+        orig_load = tc.load_token_store
+        tc.load_token_store = lambda: None
+        try:
+            main_mod._tajiduo_sync()
+            raise AssertionError("未绑定必须拒绝同步")
+        except ValueError as e:
+            assert "尚未绑定" in str(e), e
+        finally:
+            tc.load_token_store = orig_load
+        # ---- 手动同步 payload（离线：client/sync_all 打桩） ----
+        orig_client, orig_sync = tc.build_client, tc.sync_all
+        tc.build_client = lambda: object()
+        tc.sync_all = lambda client: {
+            "roles": [{"roleId": "214075351008", "roleName": "旅行者",
+                       "serverName": "测试服", "lev": 60}],
+            "role_home": {"roleid": "214075351008", "rolename": "旅行者",
+                          "servername": "测试服", "lev": 60, "worldlevel": 5,
+                          "charid_cnt": 12, "rolelogin_days": 88, "achievement": 36,
+                          "achievement_total": 120},
+            "rows": [{"name": "安魂曲", "level": 70, "awakening": 2, "slev": 6,
+                      "skills": {"normal": 6, "variable": 4, "orbit": 5, "assist": 3},
+                      "city_skills": [], "fork": {"name": "测试弧盘甲", "level": 60},
+                      "suit_num": 2}],
+            "warnings": []}
+        try:
+            sync = main_mod._tajiduo_sync()
+        finally:
+            tc.build_client, tc.sync_all = orig_client, orig_sync
+        assert sync["ok"] is True and sync["rows"][0]["matched_name"] == "安魂曲"
+        assert sync["weapon_options"], "弧盘手动映射下拉必须有数据源"
+        # 塔吉多通道没有的数据必须如实标注（绝不编造）
+        assert sync["no_data"] == ["材料库存", "背包道具", "突破材料余额",
+                                   "体力/本性像素消耗记录"], sync["no_data"]
+        # 手机号/验证码消毒
+        for bad_phone in ("", "12345", "1380013800a", "23800138000", None):
+            try:
+                main_mod._tajiduo_check_phone(bad_phone)
+                raise AssertionError(f"非法手机号必须拒绝: {bad_phone!r}")
+            except ValueError:
+                pass
+        for bad_cap in ("", "abc", "123456789", None):
+            try:
+                main_mod._tajiduo_check_captcha(bad_cap)
+                raise AssertionError(f"非法验证码必须拒绝: {bad_cap!r}")
+            except ValueError:
+                pass
+
+
+@case
+def test_tajiduo_endpoints_http():
+    """HTTP 层冒烟（真实 Handler，端口 0 随机分配，绝不触网）：status 只读、
+    非法输入 400、未绑定 sync 400、apply 写库 200、鉴权失败映射 401（续期恰一次）。"""
+    import http.client
+    import threading
+    import tempfile
+    from app import main as main_mod
+    from app import tajiduo_client as tc
+    from app.main import create_server
+
+    def call(port, method, path, body=None):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        headers = {"Origin": "http://127.0.0.1:%d" % port,  # 回环 Origin 过防线
+                   "X-Panel-Token": main_mod._PANEL_TOKEN}  # 面板令牌过 SEC-05 闸
+        payload = json.dumps(body).encode("utf-8") if body is not None else None
+        if payload is not None:
+            headers["Content-Type"] = "application/json"
+        conn.request(method, path, payload, headers)
+        resp = conn.getresponse()
+        data = json.loads(resp.read().decode("utf-8"))
+        conn.close()
+        return resp.status, data
+
+    class _AuthFailClient:
+        """getGameRoles 恒抛鉴权错误：验证 sync_all 续期恰一次后端点回 401。"""
+        device_id = "HTX"
+
+        def get_game_roles(self, game_id):
+            raise tc.TajiduoError("登录已过期", auth=True)
+
+        def refresh_session(self):
+            return {"access_token": "A2", "refresh_token": "R2", "center_uid": "1"}
+
+    with _StateGuard():
+        STATE.data["settings"] = dict(DEFAULT_SETTINGS)
         STATE.data["characters"] = [main_mod._sanitize_character(
-            {"id": "b", "name": "安魂曲", "weapon": "测试弧盘甲"})]
-        arc2 = main_mod._parse_char_arc_text("测试弧盘甲 Lv: 45/60")
-        assert arc2 == {"arc_name": "测试弧盘甲", "arc_level": 45,
-                        "arc_level_cap": 60}, arc2
-        # 实名未收录 → arc_name=None（前端 data-arcmap 下拉手动指定）
-        arc3 = main_mod._parse_char_arc_text("完全无关的界面 12/34")
-        assert arc3 == {"arc_name": None, "arc_level": 12,
-                        "arc_level_cap": 34}, arc3
-        # 2026-11-06 实机 WinRT OCR 真实形态：字符间带空格、斜杠两侧带空格、
-        # "L"误读为"廴"（"廴 v ： 75 / 80"）——等级提取不依赖 Lv 前缀，锚点用
-        # 去空格文本，特技两档靠档位间空格分隔
-        spaced_info = "伊 洛 伊 养 成 指 南 液 态 ． 生 存 廴 v ： 75 / 80 属 性 效 果"
-        spaced_info_r = main_mod._parse_char_info_text(spaced_info)
-        assert spaced_info_r["level"] == 75 and spaced_info_r["level_cap"] == 80, spaced_info_r
-        spaced_abil = ("异 能 都 市 特 技 普 通 攻 击 6 / 10 变 轨 技 能 6 / 10 "
-                       "极 轨 终 结 6 / 10 援 护 技 6 / 10 角 色 特 性 2 / 5 0 / 2")
-        spaced_abil_r = main_mod._parse_char_ability_text(spaced_abil)
-        assert spaced_abil_r["normal"] == 6 and spaced_abil_r["variable"] == 6 \
-            and spaced_abil_r["orbit"] == 6 and spaced_abil_r["assist"] == 6, spaced_abil_r
-        assert spaced_abil_r["talent1"] == 2 and spaced_abil_r["talent2"] == 0, spaced_abil_r
-        spaced_arc = main_mod._parse_char_arc_text("漆 黑 青 春 妄 想 廴 v ： 60 / 60")
-        assert spaced_arc["arc_level"] == 60 and spaced_arc["arc_level_cap"] == 60, spaced_arc
+            {"id": "a", "name": "安魂曲"})]
+        STATE.data["characters"][0]["tracks"]["char_level"]["cur"] = 60
+        with tempfile.TemporaryDirectory() as tmp:
+            orig_file, orig_client = tc.TOKEN_FILE, tc.build_client
+            tc.TOKEN_FILE = os.path.join(tmp, "tajiduo_token.json")
+            # SEC-05：直设全局令牌（现生成，零凭据字面量）→ _ensure_panel_token 空转
+            main_mod._PANEL_TOKEN = main_mod._new_panel_token()
+            server, _port = create_server(0, auto_range=1)
+            port = server.server_address[1]
+            threading.Thread(target=server.serve_forever, daemon=True,
+                             name="selftest-tajiduo-http").start()
+            try:
+                # status：未绑定（不泄露任何令牌字段；phone_masked 为空=无手机号可露）
+                code, data = call(port, "GET", "/api/tajiduo/status")
+                assert code == 200 and data == {"bound": False, "bound_at": "",
+                                                "uid": "", "phone_masked": ""}, (code, data)
+                # 非法手机号/验证码：400，且绝不触网（校验在客户端构造前）
+                code, data = call(port, "POST", "/api/tajiduo/send-captcha",
+                                  {"phone": "12345"})
+                assert code == 400 and "手机号" in data["error"], (code, data)
+                code, data = call(port, "POST", "/api/tajiduo/bind",
+                                  {"phone": "13800138000", "captcha": "abc"})
+                assert code == 400 and "验证码" in data["error"], (code, data)
+                # 合法形态但未发过验证码：400（不触网——pending 为空直接拒绝）
+                code, data = call(port, "POST", "/api/tajiduo/bind",
+                                  {"phone": "13800138000", "captcha": "123456"})
+                assert code == 400 and "先获取短信验证码" in data["error"], (code, data)
+                # 未绑定 sync：400（凭证文件在临时目录，等效未绑定）
+                code, data = call(port, "POST", "/api/tajiduo/sync", {})
+                assert code == 400 and "尚未绑定" in data["error"], (code, data)
+                # 令牌过期：续期恰一次（fake 记录）→ 仍失败 → 401 提示重绑
+                tc.build_client = lambda: _AuthFailClient()
+                code, data = call(port, "POST", "/api/tajiduo/sync", {})
+                assert code == 401 and "登录已过期" in data["error"], (code, data)
+                assert data.get("needs_rebind") is True, data  # 前端据此渲染重绑引导
+                # 官方会话彻底失效（续期也失败，如 "FAILED TO TOUCH"）→ 同样 401+
+                # 友好文案（原始错误不透传，raw 留诊断）
+                class _DeadSessionClient(_AuthFailClient):
+                    def refresh_session(self):
+                        raise tc.TajiduoError("[/refresh] FAILED TO TOUCH")
+                tc.build_client = lambda: _DeadSessionClient()
+                code, data = call(port, "POST", "/api/tajiduo/sync", {})
+                assert code == 401 and "重新绑定" in data["error"] \
+                    and "FAILED TO TOUCH" not in data["error"] \
+                    and data.get("needs_rebind") is True, (code, data)
+                # apply：写入（60→70）并回传消毒后的角色（目标线同步抬高：目标≥当前）
+                code, data = call(port, "POST", "/api/tajiduo/apply", {"rows": [
+                    {"target": "安魂曲", "level": 70}]})
+                assert code == 200 and data["ok"] is True, (code, data)
+                assert data["characters"][0]["tracks"]["char_level"]["cur"] == 70, data
+                assert data["applied"] == [{"target": "安魂曲",
+                                            "changed": ["等级→70", "等级目标→70"]}], \
+                    data["applied"]
+                # apply 非法 rows：400
+                code, data = call(port, "POST", "/api/tajiduo/apply", {"rows": "x"})
+                assert code == 400, (code, data)
+                # ---- logout：有凭证 → 登出（删凭证文件）→ status 复位未绑定 ----
+                tc.save_token_store({"device_id": "HTX", "access_token": "A",
+                                     "refresh_token": "R", "center_uid": "1",
+                                     "laohu_token": "LT", "laohu_user_id": "9"})
+                assert tc.load_token_store() is not None
+                code, data = call(port, "POST", "/api/tajiduo/logout", {})
+                assert code == 200 and data == {"ok": True}, (code, data)
+                assert tc.load_token_store() is None, "登出必须删除凭证文件"
+                code, data = call(port, "GET", "/api/tajiduo/status")
+                assert code == 200 and data == {"bound": False, "bound_at": "",
+                                                "uid": "", "phone_masked": ""}, (code, data)
+                # ---- 运行中白名单：logout 在规划器运行中仍可用；未列白名单仍 409 ----
+                class _RunningRunner:
+                    def snapshot(self):
+                        return {"state": "running"}
+
+                orig_runner = main_mod.RUNNER
+                main_mod.RUNNER = _RunningRunner()
+                try:
+                    tc.save_token_store({"device_id": "HTX", "access_token": "A",
+                                         "refresh_token": "R", "center_uid": "1"})
+                    code, data = call(port, "POST", "/api/tajiduo/logout", {})
+                    assert code == 200 and data == {"ok": True}, (code, data)
+                    code, data = call(port, "POST", "/api/tajiduo/sync", {})
+                    assert code == 409, (code, data)
+                    assert tc.load_token_store() is None
+                finally:
+                    main_mod.RUNNER = orig_runner
+            finally:
+                server.shutdown()
+                server.server_close()
+                # tmp 目录由上方 with tempfile.TemporaryDirectory() 上下文自清理
+                # （tmp 是 str 路径，误调 .cleanup() 曾致 dist 内自测 85/86）
+                tc.TOKEN_FILE = orig_file
+                tc.build_client = orig_client
+
+
+@case
+def test_tajiduo_gacha_parse_and_merge():
+    """抽卡解析（构造 TajiduoGachaSummary 形态 payload）+ 本地累积合并：
+    并集/幂等/180 天旧数据保留/键冲突快照胜出/坏键跳过/未识别池/tab 缺失跳过；
+    存档存取 roundtrip 与容错（_safe_path 临时路径，夹具一律经库内原子写，
+    绝不触碰真实 data/）。"""
+    import tempfile
+    from app import tajiduo_client as tc
+    from app.state import save_json_atomic
+    # ---- 解析：完整 payload（字段实样口径 NTEUID tajiduo_model.py）----
+    payload = {
+        "roleid": "214075351008", "rolename": "旅行者", "lev": 60,
+        "userid": "9_12345", "luckType": 7, "luckTitle": "陪跑常客",
+        "gachaDetails": [
+            {"tab": "限定卡池", "m": 90, "drawCount": 120, "rareCount": 2,
+             "average": "56.0", "playerOver": "45%",
+             "details": [
+                 {"charid": "21015", "rareCount": 78, "luckyType": 3,
+                  "time": "2026-05-01", "timeStamp": 1746105600000},
+                 {"charid": "fork_test01", "rareCount": 90, "luckyType": 1,
+                  "time": "2026-06-01", "timeStamp": 1748784000000},
+             ]},
+            {"tab": "常驻卡池", "m": 90, "drawCount": 30, "rareCount": 0,
+             "average": "", "playerOver": "",
+             "details": []},
+            {"tab": "弧盘池", "m": 60, "drawCount": 55, "rareCount": 1,
+             "average": "55.0", "playerOver": "80%",
+             "details": [
+                 {"charid": "fork_arc99", "rareCount": 55, "luckyType": 0,
+                  "time": "2026-07-01", "timeStamp": 1751668800000},
+             ]},
+        ],
+    }
+    s = tc.parse_gacha_summary(payload)
+    assert s["roleid"] == "214075351008" and s["rolename"] == "旅行者" \
+        and s["lev"] == 60 and s["userid"] == "9_12345", s
+    assert s["luck_type"] == 7 and s["luck_title"] == "陪跑常客"
+    assert [p["tab"] for p in s["pools"]] == ["限定卡池", "常驻卡池", "弧盘池"], s["pools"]
+    p0 = s["pools"][0]
+    assert (p0["m"], p0["draw_count"], p0["rare_count"]) == (90, 120, 2)
+    assert p0["average"] == "56.0" and p0["player_over"] == "45%"
+    assert p0["details"][0] == {"charid": "21015", "pity": 78, "lucky_type": 3,
+                                "time": "2026-05-01", "time_ms": 1746105600000}, p0["details"]
+    assert s["pools"][1]["details"] == [] and s["pools"][1]["rare_count"] == 0
+    assert s["pools"][2]["details"][0]["charid"] == "fork_arc99"
+    # 垃圾形态：不编造（缺字段 None/[]，字符串数字照常转 int，越界 clamp）
+    junk = tc.parse_gacha_summary({
+        "gachaDetails": [
+            {"tab": None, "drawCount": "88", "details": [
+                {"charid": "x", "rareCount": "12", "luckyType": 9,
+                 "timeStamp": "1746105600000"}],   # luckyType 越界 → clamp 3
+            },
+            "not-a-dict",
+            {"details": "garbage"},                 # 无 tab → 归池时跳过
+        ],
+        "luckType": "not-int", "lev": None,
+    })
+    assert junk["luck_type"] is None and junk["lev"] is None and junk["roleid"] == ""
+    jp = junk["pools"]
+    assert jp[0]["draw_count"] == 88 and jp[0]["m"] is None
+    assert jp[0]["details"] == [{"charid": "x", "pity": 12, "lucky_type": 3,
+                                 "time": "", "time_ms": 1746105600000}], jp[0]["details"]
+    assert len(jp) == 2 and jp[1]["tab"] == "" and jp[1]["details"] == []
+    assert tc.parse_gacha_summary(None) == {
+        "roleid": "", "rolename": "", "lev": None, "userid": "",
+        "luck_type": None, "luck_title": "", "pools": []}
+    # ---- 合并：空档 + 快照 → 全量新增 ----
+    empty = {"schema": tc.GACHA_HISTORY_SCHEMA, "roleid": "", "rolename": "",
+             "updated_at": "", "pools": {}}
+    merged, new_counts, unknown = tc.merge_gacha_history(empty, s, updated_at="T1")
+    assert new_counts == {"limited": 2, "permanent": 0, "weapon": 1}, new_counts
+    assert unknown == [] and merged["roleid"] == "214075351008"
+    lim = merged["pools"]["limited"]["records"]
+    assert len(lim) == 2 and lim[0]["item_id"] == "21015" and lim[0]["pity"] == 78
+    assert lim[0]["lucky_type"] == 3 and lim[0]["time"] == "2026-05-01"
+    assert merged["pools"]["weapon"]["records"][0]["item_id"] == "fork_arc99"
+    # ---- 合并：幂等（同键不重复；同快照再合并 new_counts 全 0）----
+    merged2, _nc2, _unk2 = tc.merge_gacha_history(merged, s, updated_at="T2")
+    assert _nc2 == {"limited": 0, "permanent": 0, "weapon": 0}, _nc2
+    assert merged2["pools"] == merged["pools"], "幂等：同快照重复合并不得改记录"
+    assert merged2["updated_at"] == "T2"
+    # ---- 合并：并集（快照新记录 + 本地旧记录 → 都保留；窗口外旧记录不丢）----
+    year_old = {"item_id": "21015", "time_ms": 1714521600000, "pity": 90,
+                "lucky_type": 2, "time": "2024-05-01"}  # 官方 180 天窗口之外
+    base = {"schema": 1, "roleid": "214075351008", "rolename": "旅行者",
+            "updated_at": "T0",
+            "pools": {"limited": {"records": [dict(year_old)]},
+                      "weapon": {"records": []}}}
+    fresh_only = {"roleid": "", "rolename": "", "lev": None, "userid": "",
+                  "luck_type": None, "luck_title": "", "pools": [
+                      {"tab": "限定卡池", "m": 90, "draw_count": 1, "rare_count": 1,
+                       "average": "", "player_over": "",
+                       "details": [{"charid": "21015", "pity": 45, "lucky_type": 1,
+                                    "time": "2026-11-01", "time_ms": 1790000000000}]}]}
+    merged3, new_counts3, _u3 = tc.merge_gacha_history(base, fresh_only, updated_at="T3")
+    lim3 = merged3["pools"]["limited"]["records"]
+    assert len(lim3) == 2, lim3
+    assert lim3[0]["time_ms"] == 1714521600000, "180 天窗口外旧记录必须保留"
+    assert new_counts3 == {"limited": 1, "permanent": 0, "weapon": 0}, new_counts3
+    # 仅本地存在的未识别池键照常保留（快照没有也不丢）
+    base2 = {"schema": 1, "roleid": "", "rolename": "", "updated_at": "",
+             "pools": {"tab_活动池": {"records": [
+                 {"item_id": "9", "time_ms": 1, "pity": 1, "lucky_type": 0,
+                  "time": ""}]}}}
+    merged4, _nc4, _u4 = tc.merge_gacha_history(base2, {"pools": []})
+    assert "tab_活动池" in merged4["pools"], merged4["pools"].keys()
+    assert merged4["pools"]["tab_活动池"]["records"][0]["item_id"] == "9"
+    # ---- 合并：键冲突（同 charid+time_ms+pity，快照 luckyType 更新）→ 快照胜出 ----
+    # （merge 输入契约 = parse_gacha_summary 输出的解析后键形 charid/pity/time_ms）
+    snap_conflict = {"pools": [{"tab": "限定卡池", "details": [
+        {"charid": "21015", "pity": 78, "lucky_type": 0, "time": "2026-05-01",
+         "time_ms": 1746105600000}]}]}
+    merged5, nc5, _u5 = tc.merge_gacha_history(merged, snap_conflict, updated_at="T5")
+    lim5 = merged5["pools"]["limited"]["records"]
+    assert len(lim5) == 2 and nc5 == {"limited": 0, "permanent": 0, "weapon": 0}
+    hit = next(r for r in lim5 if r["item_id"] == "21015"
+               and r["time_ms"] == 1746105600000 and r["pity"] == 78)
+    assert hit["lucky_type"] == 0, hit  # 快照记录胜出（展示字段以最新拉取为准）
+    # ---- 合并：坏键跳过 + 未识别 tab 照常累积 + 无 tab 丢弃 ----
+    bad = {"pools": [
+        {"tab": "限定卡池", "details": [
+            {"charid": "", "pity": 5, "time_ms": 1},      # 空 charid → 跳过
+            {"charid": "x", "pity": 0, "time_ms": 1},     # pity<1 → 跳过
+            {"charid": "x", "pity": 1, "time_ms": 0},     # time_ms≤0 → 跳过
+            {"charid": "x", "pity": True, "time_ms": 1},  # bool → 跳过
+            {"charid": "x", "pity": 1, "time_ms": 5},     # 合法
+        ]},
+        {"tab": "活动池", "details": [
+            {"charid": "9", "pity": 1, "time_ms": 9}]},   # 未识别 tab → tab_活动池
+        {"details": [{"charid": "y", "pity": 1, "time_ms": 8}]},  # 无 tab → 丢弃
+    ]}
+    merged6, nc6, unknown6 = tc.merge_gacha_history(empty, bad, updated_at="T6")
+    assert nc6 == {"limited": 1, "permanent": 0, "weapon": 0, "tab_活动池": 1}, nc6
+    assert unknown6 == ["活动池"], unknown6
+    assert len(merged6["pools"]["limited"]["records"]) == 1
+    assert merged6["pools"]["tab_活动池"]["records"][0]["item_id"] == "9"
+    # ---- 存取 roundtrip + 形态容错（夹具一律经 save_json_atomic 库内原子写）----
+    with tempfile.TemporaryDirectory() as tmp:
+        orig_hist = tc.GACHA_HISTORY_FILE
+        tc.GACHA_HISTORY_FILE = _safe_path(tmp, "gacha_history.json")
+        try:
+            assert tc.load_gacha_history()["pools"] == {}  # 缺失 → 空骨架
+            save_json_atomic(tc.GACHA_HISTORY_FILE, ["not", "dict"])
+            assert tc.load_gacha_history()["pools"] == {}  # 形态不对 → 空骨架
+            save_json_atomic(tc.GACHA_HISTORY_FILE, {"pools": "garbage"})
+            assert tc.load_gacha_history()["pools"] == {}  # pools 段坏 → 空骨架
+            tc.save_gacha_history(merged)
+            loaded = tc.load_gacha_history()
+            assert loaded["pools"] == merged["pools"] \
+                and loaded["roleid"] == merged["roleid"], loaded
+        finally:
+            tc.GACHA_HISTORY_FILE = orig_hist
+    # ---- sync_gacha 编排：续期恰一次 + 幂等 roundtrip（离线桩，绝不触网）----
+    with tempfile.TemporaryDirectory() as tmp:
+        orig_hist, orig_tok = tc.GACHA_HISTORY_FILE, tc.TOKEN_FILE
+        tc.GACHA_HISTORY_FILE = _safe_path(tmp, "gacha_history.json")
+        tc.TOKEN_FILE = _safe_path(tmp, "tajiduo_token.json")
+        try:
+            class _AuthThenOkClient:
+                device_id = "HTX"
+
+                def __init__(self):
+                    self.calls, self.refreshes = 0, 0
+
+                def get_gacha_summary(self):
+                    self.calls += 1
+                    if self.calls == 1:
+                        raise tc.TajiduoError("登录已过期", auth=True)
+                    return payload
+
+                def refresh_session(self):
+                    self.refreshes += 1
+                    return {"access_token": "A9", "refresh_token": "R9",
+                            "center_uid": "1"}
+
+            tc.save_token_store({"device_id": "HTX", "access_token": "A",
+                                 "refresh_token": "R", "center_uid": "1"})
+            fake = _AuthThenOkClient()
+            result = tc.sync_gacha(fake)
+            assert fake.calls == 2 and fake.refreshes == 1, (fake.calls, fake.refreshes)
+            assert tc.load_token_store()["access_token"] == "A9", "续期后必须落盘"
+            assert result["new_counts"] == {"limited": 2, "permanent": 0, "weapon": 1}
+            assert result["warnings"] == []
+            fake2 = _AuthThenOkClient()  # 再同步：无新增（并集幂等 roundtrip）
+            fake2.calls = 1
+            result2 = tc.sync_gacha(fake2)
+            assert result2["new_counts"]["limited"] == 0
+            assert result2["warnings"] == []
+        finally:
+            tc.GACHA_HISTORY_FILE, tc.TOKEN_FILE = orig_hist, orig_tok
+
+
+@case
+def test_tajiduo_gacha_endpoints_http():
+    """HTTP 层冒烟（真实 Handler，端口 0 随机分配，绝不触网）：gacha-history 本地
+    只读 200、未绑定 sync-gacha 400、鉴权失败 401 提示重绑、成功同步 200+落盘
+    +charid 实名映射。夹具路径经 _safe_path、内容经 save_json_atomic 库内写。"""
+    import http.client
+    import threading
+    import tempfile
+    from app import main as main_mod
+    from app import tajiduo_client as tc
+    from app.main import create_server
+    from app.state import save_json_atomic
+
+    def call(port, method, path, body=None):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        headers = {"Origin": "http://127.0.0.1:%d" % port,  # 回环 Origin 过防线
+                   "X-Panel-Token": main_mod._PANEL_TOKEN}  # 面板令牌过 SEC-05 闸
+        payload = json.dumps(body).encode("utf-8") if body is not None else None
+        if payload is not None:
+            headers["Content-Type"] = "application/json"
+        conn.request(method, path, payload, headers)
+        resp = conn.getresponse()
+        data = json.loads(resp.read().decode("utf-8"))
+        conn.close()
+        return resp.status, data
+
+    with tempfile.TemporaryDirectory() as tmp:
+        orig_hist = tc.GACHA_HISTORY_FILE
+        orig_tok = tc.TOKEN_FILE
+        orig_dump = tc.LAST_PAYLOAD_FILE
+        orig_client = tc.build_client
+        tc.GACHA_HISTORY_FILE = _safe_path(tmp, "gacha_history.json")
+        tc.TOKEN_FILE = _safe_path(tmp, "tajiduo_token.json")
+        tc.LAST_PAYLOAD_FILE = _safe_path(tmp, "tajiduo_last_payload.json")
+        # SEC-05：直设全局令牌（现生成，零凭据字面量）→ _ensure_panel_token 空转
+        main_mod._PANEL_TOKEN = main_mod._new_panel_token()
+        server, _port = create_server(0, auto_range=1)
+        port = server.server_address[1]
+        threading.Thread(target=server.serve_forever, daemon=True,
+                         name="selftest-tajiduo-gacha-http").start()
+        try:
+            # gacha-history：本地只读（无网络路径），缺存档 → 空池骨架 + note
+            code, data = call(port, "GET", "/api/tajiduo/gacha-history")
+            assert code == 200 and data["ok"] is True, (code, data)
+            assert data["note"].startswith("仅含已出 S 记录"), data["note"]
+            assert data["pools"] == [], data["pools"]
+            # 未绑定 sync-gacha：400（凭证文件在临时目录，等效未绑定）
+            code, data = call(port, "POST", "/api/tajiduo/sync-gacha", {})
+            assert code == 400 and "尚未绑定" in data["error"], (code, data)
+            # 令牌过期：续期恰一次 → 仍失败 → 401 提示重绑
+            class _AuthFailClient:
+                device_id = "HTX"
+
+                def get_gacha_summary(self):
+                    raise tc.TajiduoError("登录已过期", auth=True)
+
+                def refresh_session(self):
+                    raise tc.TajiduoError("续期失败", auth=True)
+
+            tc.build_client = lambda: _AuthFailClient()
+            code, data = call(port, "POST", "/api/tajiduo/sync-gacha", {})
+            assert code == 401 and "登录已过期" in data["error"], (code, data)
+            assert data.get("needs_rebind") is True, data  # 续期也失败→重绑引导
+            # 成功同步：拉取 → 合并 → 落盘 → 三池汇总与新增计数；charid 实名映射
+            tc.save_token_store({"device_id": "HTX", "access_token": "A",
+                                 "refresh_token": "R", "center_uid": "1"})
+            save_json_atomic(tc.LAST_PAYLOAD_FILE, {"schema": 1, "per_role": {
+                "214075351008": {"characters": [
+                    {"id": "21015", "name": "安魂曲",
+                     "fork": {"id": "fork_arc99", "name": "测试弧盘甲"}}]}}})
+            gacha_payload = {
+                "roleid": "214075351008", "rolename": "旅行者", "lev": 60,
+                "luckType": 7, "luckTitle": "陪跑常客",
+                "gachaDetails": [
+                    {"tab": "限定卡池", "m": 90, "drawCount": 120,
+                     "rareCount": 2, "average": "56.0", "playerOver": "45%",
+                     "details": [
+                         {"charid": "21015", "rareCount": 78, "luckyType": 3,
+                          "time": "2026-05-01", "timeStamp": 1746105600000},
+                         {"charid": "99999", "rareCount": 90, "luckyType": 1,
+                          "time": "2026-06-01", "timeStamp": 1748784000000},
+                     ]},
+                    {"tab": "弧盘池", "m": 60, "drawCount": 55, "rareCount": 1,
+                     "average": "55.0", "playerOver": "80%",
+                     "details": [{"charid": "fork_arc99", "rareCount": 55,
+                                  "luckyType": 0, "time": "2026-07-01",
+                                  "timeStamp": 1751668800000}]},
+                ]}
+            class _OkClient:
+                device_id = "HTX"
+
+                def get_gacha_summary(self):
+                    return gacha_payload
+
+            tc.build_client = lambda: _OkClient()
+            code, data = call(port, "POST", "/api/tajiduo/sync-gacha", {})
+            assert code == 200 and data["ok"] is True, (code, data)
+            assert data["new_total"] == 3, data["new_total"]  # 2+0+1
+            assert data["role"] == {"roleid": "214075351008", "rolename": "旅行者",
+                                    "lev": 60}, data["role"]
+            assert data["luck"] == {"type": 7, "title": "陪跑常客"}, data["luck"]
+            assert [p["key"] for p in data["pools"]] == \
+                ["limited", "permanent", "weapon"], data["pools"]
+            by_key = {p["key"]: p for p in data["pools"]}
+            lim = by_key["limited"]
+            assert (lim["draw_count"], lim["rare_count"], lim["m"],
+                    lim["average"], lim["player_over"]) == (120, 2, 90, "56.0", "45%")
+            assert lim["s_count"] == 2 and lim["new_count"] == 2
+            recs = lim["records"]  # 时间倒序：99999 在前
+            assert recs[1]["item_name"] == "安魂曲" and recs[1]["item_id"] == "21015"
+            assert recs[0]["item_name"] is None and recs[0]["item_id"] == "99999", \
+                "映射不到的 charid 必须置 None（前端显示原 ID 并标注）"
+            assert by_key["weapon"]["records"][0]["item_name"] == "测试弧盘甲"
+            assert by_key["permanent"]["records"] == [] \
+                and by_key["permanent"]["draw_count"] is None
+            # 落盘核对（经 load_gacha_history 读回，不裸开文件）
+            saved = tc.load_gacha_history()
+            assert saved["roleid"] == "214075351008" and saved["schema"] == 1, saved
+            assert len(saved["pools"]["limited"]["records"]) == 2
+            assert len(saved["pools"]["weapon"]["records"]) == 1
+            # 再同步：无新增（并集幂等）
+            code, data = call(port, "POST", "/api/tajiduo/sync-gacha", {})
+            assert code == 200 and data["new_total"] == 0, (code, data["new_total"])
+            # gacha-history 只读视图与存档一致；不带快照 → 官方窗口统计字段为 None
+            code, data = call(port, "GET", "/api/tajiduo/gacha-history")
+            assert code == 200 and len(data["pools"]) == 3, (code, data)
+            lim_hist = next(p for p in data["pools"] if p["key"] == "limited")
+            assert lim_hist["s_count"] == 2 and lim_hist["draw_count"] is None, \
+                "只读视图不得携带官方窗口统计（那是本次快照字段）"
+        finally:
+            server.shutdown()
+            server.server_close()
+            tc.GACHA_HISTORY_FILE = orig_hist
+            tc.TOKEN_FILE = orig_tok
+            tc.LAST_PAYLOAD_FILE = orig_dump
+            tc.build_client = orig_client
+
+
+@case
+def test_materials_stamina_blocks_loaded():
+    """materials.json 顶层 stamina_blocks 段加载用例（2026-11-08 材料副本页数据表）：
+    六块齐全、必填字段形态、mat_id 全部可解析到 targets/extra（绝不悬空 ID）、
+    周本块 weekly_times=3 且材料全为 EXTRA（无每轮产量）、空幕块 dual_channel、
+    追猎块与 BOSS_MAT 映射联动（planner.py:35-36 口径）；reload_tables() 重载后
+    段仍在（内存表与盘上文件一致）。生产 data/materials.json 只读校验，不写盘。"""
+    blocks = planner.MATERIALS.get("stamina_blocks")
+    assert isinstance(blocks, list) and len(blocks) == 6, blocks
+    assert [b.get("block") for b in blocks] == \
+        ["经验及甲硬币", "异能升级材料", "弧盘突破材料", "空幕", "异象巡礼", "异象追猎"], \
+        [b.get("block") for b in blocks]
+    known = set(planner.TARGETS) | set(planner.EXTRA)
+    for b in blocks:
+        assert b.get("block") and b.get("entry") and b.get("note"), b
+        assert b.get("stamina_per_run") in (40, 60), b.get("stamina_per_run")
+        ids = b.get("mat_ids") or []
+        assert ids and all(m in known for m in ids), (b.get("block"), ids)
+    weekly = blocks[4]
+    assert weekly.get("weekly_times") == 3, weekly
+    assert set(weekly["mat_ids"]) <= set(planner.EXTRA), \
+        "周本块材料必须全为 EXTRA（无每轮产量，走周次数口径）"
+    assert blocks[3].get("dual_channel") is True, blocks[3]  # 空幕双通道
+    boss_ids = set(blocks[5]["mat_ids"])
+    assert boss_ids == set(planner.BOSS_MAT.values()), \
+        (sorted(boss_ids), sorted(planner.BOSS_MAT.values()))
+    planner.reload_tables()
+    assert len(planner.MATERIALS.get("stamina_blocks") or []) == 6, "重载后段丢失"
+
+
+@case
+def test_source_crosscheck_json_valid():
+    """独立来源交叉核对快照与冷却表 JSON 合法性（2026-11-09 落盘，生产 data 只读）：
+    source_crosscheck.json 可解析且含 fetched_at/sources/crosscheck；条目 target_id
+    与体力本目标全集重合不重不漏、verdict ∈ {一致,不一致,无数据}；不一致条目带
+    https evidence_url 且对应 targets 注记「独立来源标注…以游戏内实测为准」（快照与
+    materials.json 联动，防注记丢失）；character_cooldowns.json 可解析、characters
+    非空且每条 e_sec/q_sec 为数值或 null。"""
+    snap = json.load(open(os.path.join(planner.DATA_DIR, "sites",
+                                       "source_crosscheck.json"), encoding="utf-8"))
+    assert isinstance(snap.get("fetched_at"), str) and snap["fetched_at"].strip(), snap
+    assert isinstance(snap.get("sources"), dict) and snap["sources"], snap.get("sources")
+    entries = snap.get("crosscheck")
+    assert isinstance(entries, list) and len(entries) == len(planner.TARGET_ORDER), \
+        (len(entries), len(planner.TARGET_ORDER))
+    ids = [e.get("target_id") for e in entries]
+    assert len(ids) == len(set(ids)), "快照 target_id 不得重复"
+    assert set(ids) == set(planner.TARGET_ORDER), "快照应覆盖全部体力本目标（重合不遗漏）"
+    for e in entries:
+        assert e.get("verdict") in ("一致", "不一致", "无数据"), e
+        if e["verdict"] in ("一致", "不一致"):
+            assert str(e.get("evidence_url", "")).startswith("https://"), e
+        if e["verdict"] == "不一致":
+            note = planner.TARGETS[e["target_id"]].get("note") or ""
+            assert "独立来源标注" in note and "以游戏内实测为准" in note, \
+                (e["target_id"], note)
+    cd = json.load(open(os.path.join(planner.DATA_DIR, "character_cooldowns.json"),
+                        encoding="utf-8"))
+    chars = cd.get("characters")
+    assert isinstance(chars, dict) and chars, "冷却表 characters 不得为空"
+    for name, c in chars.items():
+        assert isinstance(name, str) and name.strip(), c
+        for key in ("e_sec", "q_sec"):
+            assert c.get(key) is None or isinstance(c.get(key), (int, float)), (name, c)
+    assert any(c.get("e_sec") is not None for c in chars.values()), "至少应有 E 冷却实测值"
+
+
+@case
+def test_dungeon_gaps_blocks_and_endpoint():
+    """材料缺口分块聚合（2026-11-08 材料副本页）：planner.dungeon_gaps() 用构造
+    state 断言六块分组、需/持/差、轮数与合计（含追猎按 hunter_yield 折算、周本
+    只走周次数口径、未入块缺口落外部来源区）+ 确定性（两次调用同结果）；再真起
+    面板服务打回环 GET /api/dungeon-gaps 验证 200 与分组形态（绝不触网）。"""
+    import http.client
+    import threading
+    from app import main as main_mod
+    from app.main import create_server
+    with _StateGuard():
+        STATE.data["settings"] = dict(DEFAULT_SETTINGS)
+        STATE.data["today"] = _day_today()
+        STATE.data["inventory"] = {"ability_1": 10}
+        STATE.data["characters"] = [
+            _char("c1", "角色甲", {
+                "ability_1": 40,      # 技能本块：需40 持10 差30（夹具产量7）→ 5轮
+                "console_1": 5,       # 空幕块：差5（夹具产量7）→ 1轮
+                "boss_sea_tear": 20,  # 追猎块：差20，海囚 hunter_yield=8 → 3局
+                "wk_memory": 2,       # 巡礼块：差2，无每轮产量 → runs=0
+                "exp_arc": 300000,    # 染剂：未入任何块 → 外部区（体力本·未入块）
+                "coin": 9,            # 甲硬币：块1只挂 exp_char → 外部区
+            }),
+        ]
+        d = planner.dungeon_gaps()
+        assert d == planner.dungeon_gaps(), "dungeon_gaps 必须确定性（纯读两次同结果）"
+        blocks = {b["block"]: b for b in d["blocks"]}
+        assert len(blocks) == 6, list(blocks)
+        ec = blocks["经验及甲硬币"]
+        assert ec["total_runs"] == 0 and ec["total_stamina"] == 0, ec
+        assert {x["mat_id"]: x for x in ec["mats"]}["exp_char"]["gap"] == 0, ec
+        ab = blocks["异能升级材料"]
+        ma = {x["mat_id"]: x for x in ab["mats"]}
+        assert (ma["ability_1"]["need"], ma["ability_1"]["have"],
+                ma["ability_1"]["gap"]) == (40, 10, 30), ma["ability_1"]
+        assert (ma["ability_1"]["yield"], ma["ability_1"]["runs"]) == (7, 5), \
+            ma["ability_1"]  # 缺口30 / 夹具产量7 → ceil=5 轮 ×40 体力
+        assert ab["total_runs"] == 5 and ab["total_stamina"] == 200, ab
+        assert all(ma[f"ability_{i}"]["gap"] == 0 and ma[f"ability_{i}"]["runs"] == 0
+                   for i in range(2, 6)), "无需求系列仍须列出（块=掉落清单）且缺口 0"
+        nm = blocks["空幕"]
+        mc = {x["mat_id"]: x for x in nm["mats"]}
+        assert (mc["console_1"]["gap"], mc["console_1"]["runs"]) == (5, 1), mc["console_1"]
+        assert nm["total_runs"] == 1 and nm["total_stamina"] == 40, nm
+        assert nm.get("dual_channel") is True, "空幕块必须带双通道标注"
+        bs = blocks["异象追猎"]
+        mb = {x["mat_id"]: x for x in bs["mats"]}
+        assert (mb["boss_sea_tear"]["gap"], mb["boss_sea_tear"]["yield"],
+                mb["boss_sea_tear"]["runs"]) == (20, 8, 3), mb["boss_sea_tear"]
+        assert bs["total_runs"] == 3 and bs["total_stamina"] == 180, bs
+        wk = blocks["异象巡礼"]
+        assert (wk["weekly_times"], wk["weekly_stamina"]) == (3, 180), wk
+        assert wk["total_runs"] == 0 and wk["total_stamina"] == 0, \
+            "周本材料无每轮产量，不计入轮数合计（周次数口径单独返回）"
+        mw = {x["mat_id"]: x for x in wk["mats"]}
+        assert (mw["wk_memory"]["gap"], mw["wk_memory"]["runs"]) == (2, 0), mw["wk_memory"]
+        exp = {x["mat_id"]: x for x in d["external"]}
+        assert set(exp) == {"exp_arc", "coin"}, set(exp)
+        assert (exp["coin"]["need"], exp["coin"]["gap"], exp["coin"]["extra"]) \
+            == (9, 9, False), exp["coin"]
+        assert exp["coin"]["source"], "外部区必须带来源字段（不静默丢缺口）"
+        assert (exp["exp_arc"]["gap"], exp["exp_arc"]["extra"]) == (300000, False), \
+            exp["exp_arc"]
+        # cycle_item（2026-11-12 总计划具名渲染）：带 config 的 TARGETS 材料附
+        # {任务类型, 序号键, entry, label}；EXTRA（周本/BOSS）与外部区不带；
+        # gap=0 的块内材料仍附（块=掉落清单，勾选整块写入时取全集）
+        ci3 = ma["ability_3"]["cycle_item"]
+        assert "异能升级材料·3" in ci3["label"] and "黑帽子" in ci3["label"], ci3
+        assert ci3["entry"] == "异能升级材料: 3", ci3  # 与 ok-nte 实样同格式（冒号+空格）
+        assert ci3["任务类型"] == "异能升级材料" and ci3["异能材料序号"] == 3, ci3
+        ec_m = {x["mat_id"]: x for x in ec["mats"]}
+        assert ec_m["exp_char"]["cycle_item"]["label"] == "经验与甲硬币·角色经验", \
+            ec_m["exp_char"]
+        assert mc["console_1"]["cycle_item"]["entry"] == "空幕: 1", mc["console_1"]
+        assert "cycle_item" not in mw["wk_memory"], "周本材料（EXTRA）不带 cycle_item"
+        assert "cycle_item" not in mb["boss_sea_tear"], "BOSS 材料（EXTRA）不带 cycle_item"
+        assert all("cycle_item" not in x for x in exp.values()), "外部区条目不带 cycle_item"
+        # ---- HTTP 层：真实 Handler 回环请求（端口 0 随机分配）----
+        # SEC-05：直设全局令牌（现生成，零凭据字面量）→ _ensure_panel_token 空转
+        main_mod._PANEL_TOKEN = main_mod._new_panel_token()
+        server, _port = create_server(0, auto_range=1)
+        port = server.server_address[1]
+        threading.Thread(target=server.serve_forever, daemon=True,
+                         name="selftest-dungeon-gaps").start()
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+            conn.request("GET", "/api/dungeon-gaps", None,
+                         {"Origin": "http://127.0.0.1:%d" % port,  # 回环 Origin 过防线
+                          "X-Panel-Token": main_mod._PANEL_TOKEN})  # 面板令牌过 SEC-05 闸
+            resp = conn.getresponse()
+            payload = json.loads(resp.read().decode("utf-8"))
+            conn.close()
+            assert resp.status == 200, (resp.status, payload)
+            assert [b["block"] for b in payload["blocks"]] == \
+                ["经验及甲硬币", "异能升级材料", "弧盘突破材料", "空幕",
+                 "异象巡礼", "异象追猎"], payload.get("blocks")
+            by = {b["block"]: b for b in payload["blocks"]}
+            ab_http = {x["mat_id"]: x for x in by["异能升级材料"]["mats"]}
+            assert ab_http["ability_3"]["cycle_item"]["entry"] == "异能升级材料: 3", \
+                ab_http["ability_3"]
+            assert by["异能升级材料"]["total_stamina"] == 200, by["异能升级材料"]
+            assert by["异象追猎"]["total_runs"] == 3, by["异象追猎"]
+            assert {x["mat_id"] for x in payload["external"]} == {"exp_arc", "coin"}
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
+@case
+def test_rev_returned_by_write_endpoints():
+    """base_rev 乐观锁回归（复审阻断 #1，2026-11-08）：state.py:153-154 契约是
+    『写端点响应回传 rev』，此前仅 5 处带 rev——/api/inventory、/api/characters/
+    reorder、/api/teams/save、/api/common-costs/*、/api/settings、/api/libraries、
+    /api/import、/api/history/confirm、/api/today/clear-blacklist 等只 bump 不回传，
+    同页下一步「保存角色」必被 base_rev 误判陈旧 409（按报错刷新会丢表单编辑）。
+    修复=上述写端点统一回传 rev（前端 api() 见 rev 自动跟进基线，index.html:331）。
+    真起服务回环复现原 409 路径：bootstrap rev=N → inventory 写（响应须带 rev=N+1）
+    → characters 带 base_rev=N 必须放行 200 而非 409；其余写端点逐一断言响应带 rev。
+    /api/ocr/select（需真游戏窗口）与 /api/sites/sync-guide（触网）受 selftest 不触网/
+    不碰真窗口约束未做 HTTP 覆盖，代码与下述端点同款一行回传。"""
+    import http.client
+    import threading
+    from app import main as main_mod
+    from app.main import create_server
+
+    def call(port, method, path, body=None):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        headers = {"Origin": "http://127.0.0.1:%d" % port,  # 回环 Origin 过防线
+                   "X-Panel-Token": main_mod._PANEL_TOKEN}  # 面板令牌过 SEC-05 闸
+        payload = json.dumps(body).encode("utf-8") if body is not None else None
+        if payload is not None:
+            headers["Content-Type"] = "application/json"
+        conn.request(method, path, payload, headers)
+        resp = conn.getresponse()
+        data = json.loads(resp.read().decode("utf-8"))
+        conn.close()
+        return resp.status, data
+
+    with _StateGuard():
+        # apply_import 会把导出的数据表原子落盘 data/yields.json 与 requirements.json
+        # （main.py apply_import 尾部），而 _StateGuard 只恢复 state.json——须自行备份
+        # 恢复这两张表，否则夹具产量（全 7）会污染生产数据表（2026-11-08 实测踩中）
+        table_backup = {}
+        for name in ("yields.json", "requirements.json"):
+            # apply_import 的实际落盘目标是 DATA_DIR 本身（main.py:933-934），
+            # 『父目录+data』只在 DATA_DIR 恒以 data 为 basename 时碰巧正确——直接锚定 DATA_DIR
+            p = _safe_path(planner.DATA_DIR, name)
+            table_backup[p] = Path(p).read_bytes() if os.path.isfile(p) else None
+        # 规划器必须空闲：运行中写端点会被白名单 409，用例失去意义
+        deadline = time.time() + 10
+        while time.time() < deadline and runner_mod.RUNNER.snapshot()["state"] \
+                in ("running", "waiting", "stopping"):
+            runner_mod.RUNNER.stop()
+            time.sleep(0.2)
+        STATE.data["settings"] = dict(DEFAULT_SETTINGS)
+        STATE.data["today"] = _day_today()
+        STATE.data["characters"] = [main_mod._sanitize_character(
+            {"id": "a", "name": "安魂曲"})]
+        # SEC-05：直设全局令牌（现生成，零凭据字面量）→ _ensure_panel_token 空转。
+        # 下方 DEFAULT_SETTINGS 整包回写 /api/settings 因值相同不过指纹闸，仅加头
+        main_mod._PANEL_TOKEN = main_mod._new_panel_token()
+        server, _port = create_server(0, auto_range=1)
+        port = server.server_address[1]
+        threading.Thread(target=server.serve_forever, daemon=True,
+                         name="selftest-rev-echo").start()
+        try:
+            code, boot = call(port, "GET", "/api/bootstrap")
+            assert code == 200 and isinstance(boot.get("rev"), int), (code, boot.get("rev"))
+            rev0 = boot["rev"]
+            # ---- 复现原阻断路径：写库存（旧实现响应无 rev）→ 同页保存角色 ----
+            code, inv = call(port, "POST", "/api/inventory", {"inventory": {"coin": 5}})
+            assert code == 200 and inv.get("ok") is True, (code, inv)
+            assert inv.get("rev") == rev0 + 1, \
+                f"写端点响应必须回传 rev（基线自增），实际 rev={inv.get('rev')}"
+            # 判 0 端点级语义（未识别材料判 0，纯前端勾选的后端承接）：/api/inventory
+            # 是整表替换——前端把清 0 项从 payload 省略（v>0 过滤），缺失键=清 0；
+            # 已存 coin:5 的库存整表替换为空表后 coin 必须消失而非保留
+            code, r0 = call(port, "POST", "/api/inventory", {"inventory": {}})
+            assert code == 200 and "coin" not in (r0.get("inventory") or {}), (code, r0)
+            inv = r0  # 后续 base_rev 用最新 rev（整表替换同样是一次写、同样回传 rev）
+            # 前端 api() 见响应 rev 即跟进基线（index.html:331）：同页下一次保存带
+            # 新基线 inv["rev"] → 放行 200（修复前响应无 rev、基线停在 rev0 → 409）
+            code, chars = call(port, "POST", "/api/characters", {
+                "base_rev": inv["rev"],
+                "characters": [{"id": "a", "name": "安魂曲"}]})
+            assert code == 200 and chars.get("rev") == inv["rev"] + 1, (code, chars)
+            # 反向：真正陈旧的基线（落后多版）仍必须 409——锁本身不被拆掉
+            code, stale = call(port, "POST", "/api/characters", {
+                "base_rev": rev0,  # 已落后 2 版
+                "characters": [{"id": "a", "name": "安魂曲"}]})
+            assert code == 409 and "其他窗口" in stale.get("error", ""), (code, stale)
+            # ---- 其余写端点逐一断言响应带 rev（state.py:153-154 契约）----
+            code, r = call(port, "POST", "/api/characters/reorder", {"ids": ["a"]})
+            assert code == 200 and isinstance(r.get("rev"), int), (code, r)
+            code, r = call(port, "POST", "/api/teams/save", {"teams": []})
+            assert code == 200 and isinstance(r.get("rev"), int), (code, r)
+            code, r = call(port, "POST", "/api/common-costs/save", {"char_exp": 1000})
+            assert code == 200 and isinstance(r.get("rev"), int), (code, r)
+            code, r = call(port, "POST", "/api/today/clear-blacklist", {})
+            assert code == 200 and isinstance(r.get("rev"), int), (code, r)
+            code, r = call(port, "POST", "/api/settings", dict(DEFAULT_SETTINGS))
+            assert code == 200 and isinstance(r.get("rev"), int), (code, r.get("rev"))
+            code, r = call(port, "POST", "/api/libraries", {"char_library": ["甲"]})
+            assert code == 200 and isinstance(r.get("rev"), int), (code, r)
+            # history/confirm：预置一条 done 记录走确认成功路径
+            STATE.data["history"].append({
+                "day": DAY, "time": "12:00", "mat_id": "coin", "runs": 1,
+                "status": "done"})
+            STATE.save()
+            rev_h = STATE.rev
+            code, r = call(port, "POST", "/api/history/confirm",
+                           {"day": DAY, "time": "12:00", "mat_id": "coin",
+                            "actual_gain": 7})
+            assert code == 200 and isinstance(r.get("rev"), int), (code, r)
+            # import：全量导出回灌（apply_import 校验最严的写端点）
+            payload = main_mod.build_export()
+            assert isinstance(payload, dict) and payload.get("schema") == 3, payload
+            code, r = call(port, "POST", "/api/import", payload)
+            assert code == 200 and isinstance(r.get("rev"), int), (code, r.get("rev"))
+            # 闭环：最后一步写完后，前端基线=最新 rev 再保存角色不再 409
+            code, r = call(port, "POST", "/api/characters", {
+                "base_rev": r["rev"],
+                "characters": [{"id": "a", "name": "安魂曲"}]})
+            assert code == 200, (code, r)
+        finally:
+            server.shutdown()
+            server.server_close()
+            # 恢复被 /api/import 落盘的数据表（原本不存在则删除）
+            for p, raw in table_backup.items():
+                if raw is None:
+                    if os.path.isfile(p):
+                        os.remove(p)
+                else:
+                    Path(p).write_bytes(raw)
+            planner.reload_tables()  # 内存表回到盘上真实内容
+
+
+# ---------- 2026-11-12：读取健壮化 + 执行计划覆盖（GET/POST /api/oknte/plan） + 数据订正 ----------
+
+@case
+def test_read_json_robust():
+    """_read_json_robust（2026-11-12 读取健壮化，针对「ok-nte GUI 运行中写文件→
+    面板并发读到半截→瞬态 502」实锤）：①半截文件在重试间隔内变完整→重试后成功
+    （time.sleep 首次被调时把文件写完整——确定性模拟并发写，不靠真实时序）；
+    ②持续损坏/不存在→ValueError 带完整路径与最后一次异常原文；③最多尝试 3 次
+    （重试间隔 sleep 恰好 2 次）。"""
+    import time as time_mod
+    from app import main as main_mod
+    tmp = tempfile.mkdtemp(prefix="oknte_robust_")
+    try:
+        p = Path(tmp) / "DailyRoutineTaskConfigs.json"
+        p.write_text('{"daily_anomaly": {"任务类型": "经验', encoding="utf-8")  # 半截 JSON
+        calls = {"sleep": 0}
+        real_sleep = time_mod.sleep
+
+        def flip_sleep(_seconds):
+            calls["sleep"] += 1
+            if calls["sleep"] == 1 and not p.read_text(encoding="utf-8").endswith("}"):
+                p.write_text(json.dumps({"daily_anomaly": {"任务类型": "经验与甲硬币"}}),
+                             encoding="utf-8")
+            return real_sleep(0)
+
+        time_mod.sleep = flip_sleep
+        try:
+            cfg = main_mod._read_json_robust(str(p))
+            assert cfg["daily_anomaly"]["任务类型"] == "经验与甲硬币", cfg
+            assert calls["sleep"] == 1, calls  # 第一次重试即成功
+        finally:
+            time_mod.sleep = real_sleep
+        # 最终失败：不存在 / 持续损坏，均带完整路径与最后一次异常
+        missing = str(Path(tmp) / "missing.json")
+        p.write_text('{"daily_anomaly": broken', encoding="utf-8")
+        for bad, last_frag in ((missing, "FileNotFoundError"),
+                               (str(p), "JSONDecodeError")):
+            try:
+                main_mod._read_json_robust(str(bad))
+                raise AssertionError(f"应抛 ValueError: {bad}")
+            except ValueError as e:
+                assert str(bad) in str(e), str(e)
+                assert "最后一次异常" in str(e) and last_frag in str(e), str(e)
+        # 尝试次数=3 → 重试 sleep 恰好 2 次
+        calls["sleep"] = 0
+        time_mod.sleep = lambda _s: calls.__setitem__("sleep", calls["sleep"] + 1)
+        try:
+            try:
+                main_mod._read_json_robust(str(p))
+            except ValueError:
+                pass
+            assert calls["sleep"] == 2, calls
+        finally:
+            time_mod.sleep = real_sleep
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_oknte_plan_endpoints():
+    """GET/POST /api/oknte/plan（2026-11-12 新端点）：GET=_oknte_plan_tree 读真实
+    configs 全选项树（9 开关+bot_notify+exit_after_task / daily_anomaly 全键含循环
+    序列 / hunter / misc 六段 / source_paths）+ data/oknte_plan.json 覆盖现值合并；
+    daily_anomaly 缺失→ValueError（端点转 502 带路径），AnomalyHunter.json 缺失→
+    warning 不 502（compat 同口径）。POST=_sanitize_oknte_plan_overrides 键白名单/
+    类型拒绝矩阵 + 合法对象经 save_oknte_plan_overrides 落 OKNTE_PLAN_FILE（tempdir
+    隔离，绝不碰项目 data/）+ schema/version/fetched_at + 被覆盖时 .bak。
+    端点无出站请求，FakeOpener 不适用——沿用既有 tempdir 伪造 ok-nte 树模式；
+    do_GET/do_POST 路由源静态校验。"""
+    import inspect
+    from app import main as main_mod
+    from app import oknte_adapter as adapter_mod
+    tmp = tempfile.mkdtemp(prefix="oknte_plan_ep_")
+    real_plan_file = adapter_mod.OKNTE_PLAN_FILE
+    plan_file = Path(tmp) / "oknte_plan.json"
+    try:
+        adapter_mod.OKNTE_PLAN_FILE = plan_file
+        root = os.path.join(tmp, "root")
+        cfg = {**FAKE_ROUTINE_CONFIG, "furniture": {"挑战玛门": True},
+               "store_purchase": {"九百九十九夜": False}}
+        ok = _build_fake_oknte(root, cfg=cfg)
+        items_path = _safe_path(root, "data", "apps", "ok-nte", "working", "configs",
+                                "DailyRoutineTask.json")
+        Path(items_path).write_text(json.dumps(
+            {"Routine Items": [{"id": i, "enabled": True}
+                               for i in main_mod.OKNTE_ROUTINE_ITEM_IDS],
+             "存在失败时发送 BOT 通知": True, "Exit After Task": False},
+            ensure_ascii=False, indent=4), encoding="utf-8")
+        # GET：全选项树 + 空覆盖
+        tree = main_mod._oknte_plan_tree(ok)
+        assert set(tree["routine_items"]) == \
+            set(main_mod.OKNTE_ROUTINE_ITEM_IDS) | {"bot_notify", "exit_after_task"}
+        assert tree["routine_items"]["daily_anomaly"] is True
+        assert tree["routine_items"]["bot_notify"] is True
+        assert tree["routine_items"]["exit_after_task"] is False
+        assert tree["daily_anomaly"]["循环序列"] == \
+            FAKE_ROUTINE_CONFIG["daily_anomaly"]["循环序列"]
+        assert tree["hunter"] == {"追猎目标": "海囚", "领取奖励次数": 0}
+        assert tree["misc"]["coffee"]["模式"] == "领取/补货"
+        assert tree["misc"]["furniture"] == {"挑战玛门": True}
+        assert tree["misc"]["store_purchase"] == {"九百九十九夜": False}
+        assert tree["misc"]["gift"] == {}
+        assert tree["source_paths"]["routine_configs"] == ok.routine_config
+        assert tree["overrides"] == {}
+        assert tree["overrides_path"].endswith("oknte_plan.json")
+        # cycle_options（2026-11-12 总计划）：19 项全集具名，entry 与 ok-nte 实样
+        # 同格式（半角冒号+空格），label 全部带「·」且含具体名/奖励目标
+        co = tree["cycle_options"]
+        assert len(co) == 19, co
+        assert all("·" in o["label"] for o in co), co
+        assert co[0] == {"entry": "角色经验", "label": "经验与甲硬币·角色经验"}, co[0]
+        by_entry = {o["entry"]: o["label"] for o in co}
+        assert by_entry["异能升级材料: 3"] == "异能升级材料·3（黑帽子）", by_entry
+        assert by_entry["弧盘突破材料: 1"] == "弧盘突破材料·1（典藏级戏剧芯）", by_entry
+        assert by_entry["空幕: 6"] == "空幕·6（铁轨之夜）", by_entry
+        assert by_entry["甲硬币"] == "经验与甲硬币·甲硬币", by_entry
+        # GET：daily_anomaly 缺失 → ValueError 带路径（端点转 502）
+        Path(_contained(ok.routine_config, ok.root)).write_text('{"coffee": {}}',
+                                                                encoding="utf-8")
+        try:
+            main_mod._oknte_plan_tree(ok)
+            raise AssertionError("缺 daily_anomaly 应抛 ValueError")
+        except ValueError as e:
+            assert ok.routine_config in str(e) and "daily_anomaly" in str(e), str(e)
+        Path(_contained(ok.routine_config, ok.root)).write_text(
+            json.dumps(cfg, ensure_ascii=False, indent=4), encoding="utf-8")
+        # POST：校验拒绝矩阵（键白名单 + 类型约束）
+        refusals = [
+            ({"nope": {}}, "未知键"),
+            ({"routine_items": {"whatever": True}}, "未知键"),
+            ({"routine_items": {"coffee": "yes"}}, "布尔值"),
+            ({"daily_anomaly": {"循环序列": "角色经验"}}, "字符串数组"),
+            ({"daily_anomaly": {"循环序列": [1, 2]}}, "字符串数组"),
+            ({"daily_anomaly": {"目标消耗体力": "60"}}, "整数"),
+            ({"daily_anomaly": {"异能材料序号": True}}, "整数"),
+            ({"daily_anomaly": {"循环模式": "自动"}}, "不可覆盖"),
+            ({"hunter": {"领取奖励次数": -1}}, "非负整数"),
+            ({"hunter": {"追猎目标": 5}}, "非空字符串"),
+            ({"misc": {"daily_claim": {}}}, "未知段"),
+            ({"misc": {"coffee": {"价格表": {"nested": 1}}}}, "类型不支持"),
+            ({"plan_targets": ["not_a_mat"]}, "未知材料"),
+            ({"plan_targets": "coin"}, "字符串数组"),
+            ("not a dict", "JSON 对象"),
+        ]
+        for bad, frag in refusals:
+            try:
+                main_mod._sanitize_oknte_plan_overrides(bad)
+                raise AssertionError(f"应拒绝: {bad!r}")
+            except ValueError as e:
+                assert frag in str(e), (bad, str(e))
+        # POST：合法覆盖保存（tempdir 隔离）+ schema/version/fetched_at
+        clean = main_mod._sanitize_oknte_plan_overrides({
+            "routine_items": {"coffee": False, "daily_anomaly": True,
+                              "bot_notify": False, "exit_after_task": True},
+            "daily_anomaly": {"任务类型": "弧盘经验",
+                              "循环序列": ["弧盘经验", "甲硬币"],
+                              "目标消耗体力": 360},
+            "hunter": {"追猎目标": "黑之书", "领取奖励次数": 2},
+            "misc": {"coffee": {"模式": "仅领取"}},
+            "plan_targets": ["coin", "coin", "ability_1"],
+        })
+        assert clean["plan_targets"] == ["coin", "ability_1"], clean  # 去重保序
+        saved = adapter_mod.save_oknte_plan_overrides(clean)
+        assert saved == str(plan_file) and plan_file.is_file(), saved
+        payload = json.loads(plan_file.read_text(encoding="utf-8"))
+        assert payload["schema"] == 1 and payload["version"] == 1, payload
+        assert payload["fetched_at"], payload
+        assert payload["overrides"]["hunter"] == {"追猎目标": "黑之书", "领取奖励次数": 2}
+        # 第二次保存 → 被覆盖时 .bak（save_json_atomic 既有契约）
+        adapter_mod.save_oknte_plan_overrides({"misc": {"gift": {}}})
+        assert Path(str(plan_file) + ".bak").is_file()
+        # GET：合并 overrides 现值
+        tree2 = main_mod._oknte_plan_tree(ok)
+        assert tree2["overrides"]["misc"]["gift"] == {}
+        # GET：hunter 文件缺失 → warning 非 502
+        Path(_contained(ok.hunter_config, ok.root)).unlink()
+        tree3 = main_mod._oknte_plan_tree(ok)
+        assert tree3["hunter"] == {}
+        assert any("AnomalyHunter.json" in w for w in tree3["warnings"]), tree3["warnings"]
+        # 路由源静态校验（GET/POST 薄壳存在）
+        get_src = inspect.getsource(main_mod.Handler.do_GET)
+        assert '"/api/oknte/plan"' in get_src and "_oknte_plan_tree(self._oknte())" in get_src
+        post_src = inspect.getsource(main_mod.Handler.do_POST)
+        assert '"/api/oknte/plan"' in post_src
+        assert "_sanitize_oknte_plan_overrides(body)" in post_src
+        assert "save_oknte_plan_overrides(clean)" in post_src
+    finally:
+        adapter_mod.OKNTE_PLAN_FILE = real_plan_file
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_prepare_daily_profile_overrides():
+    """prepare_daily_profile 覆盖消费（2026-11-12 执行链消费覆盖）：临时 configs 树 +
+    OKNTE_PLAN_FILE 指向 tempdir，断言 configs_planner 副本——①routine_items 按覆盖
+    enabled（不再强制只开 daily_anomaly，未点名条目沿用副本值）+ 顶层 BOT 通知/
+    Exit After Task；②daily_anomaly 覆盖键生效（循环序列=用户多选列表、目标体力=
+    覆盖值，手写覆盖里的循环模式被忽略仍强制「停用」）；③hunter 写入副本
+    AnomalyHunter.json；④misc.coffee 同段 update（其余键不动）；用户原 configs
+    字节级零写入；无覆盖/覆盖损坏=现有行为（损坏打印 [oknte-plan] 告警不中断）。"""
+    import contextlib
+    import hashlib
+    import io
+    from app import oknte_adapter as adapter_mod
+    tmp = tempfile.mkdtemp(prefix="oknte_profile_ovr_")
+    real_plan_file = adapter_mod.OKNTE_PLAN_FILE
+    plan_file = Path(tmp) / "oknte_plan.json"
+    try:
+        adapter_mod.OKNTE_PLAN_FILE = plan_file
+        root = os.path.join(tmp, "root")
+        cfg = {**FAKE_ROUTINE_CONFIG, "furniture": {"挑战玛门": True},
+               "store_purchase": {"九百九十九夜": False}}
+        ok = _build_fake_oknte(root, cfg=cfg)
+        items_path = _safe_path(root, "data", "apps", "ok-nte", "working", "configs",
+                                "DailyRoutineTask.json")
+        items_full = {"Routine Items": [
+            {"id": "coffee", "enabled": True},
+            {"id": "cinema_date", "enabled": True},
+            {"id": "furniture", "enabled": True},
+            {"id": "gift", "enabled": True},
+            {"id": "daily_anomaly", "enabled": True},
+            {"id": "daily_anomaly_hunter", "enabled": False},
+            {"id": "daily_claim", "enabled": True},
+            {"id": "fountain", "enabled": True},
+            {"id": "store_purchase", "enabled": False}],
+            "存在失败时发送 BOT 通知": True, "Exit After Task": False}
+        Path(items_path).write_text(json.dumps(items_full, ensure_ascii=False, indent=4),
+                                    encoding="utf-8")
+
+        def _hash(path):
+            return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+        src_items, src_cfg, src_hunter = (_hash(items_path), _hash(ok.routine_config),
+                                          _hash(ok.hunter_config))
+        # 覆盖文件（手写形态：故意包含循环模式，验证仍被强制「停用」）
+        plan_file.write_text(json.dumps(
+            {"schema": 1, "version": 1, "fetched_at": "t", "overrides": {
+                "routine_items": {"coffee": False, "daily_anomaly": True,
+                                  "store_purchase": True, "daily_claim": False,
+                                  "bot_notify": False, "exit_after_task": True},
+                "daily_anomaly": {"任务类型": "弧盘经验",
+                                  "循环序列": ["弧盘经验", "甲硬币"],
+                                  "目标消耗体力": 360,
+                                  "循环模式": "自动循环序号/目标"},
+                "hunter": {"追猎目标": "黑之书", "领取奖励次数": 3},
+                "misc": {"coffee": {"模式": "仅领取", "补货货物": True}},
+            }}, ensure_ascii=False), encoding="utf-8")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            launcher = ok.prepare_daily_profile({"任务类型": "经验与甲硬币"}, 240)
+        out = buf.getvalue()
+        assert "[oknte-plan] 应用执行计划覆盖" in out, out
+        assert os.path.isfile(launcher), launcher
+        prof_items = json.loads(Path(ok.profile_items).read_text(encoding="utf-8"))
+        by_id = {e["id"]: e["enabled"] for e in prof_items["Routine Items"]}
+        assert by_id == {"coffee": False, "cinema_date": True, "furniture": True,
+                         "gift": True, "daily_anomaly": True,
+                         "daily_anomaly_hunter": False, "daily_claim": False,
+                         "fountain": True, "store_purchase": True}, by_id
+        assert prof_items["存在失败时发送 BOT 通知"] is False
+        assert prof_items["Exit After Task"] is True
+        prof_daily = json.loads(Path(ok.profile_daily).read_text(encoding="utf-8"))
+        da = prof_daily["daily_anomaly"]
+        assert da["任务类型"] == "弧盘经验", da              # 覆盖键生效
+        assert da["循环序列"] == ["弧盘经验", "甲硬币"], da  # 用户多选列表
+        assert da["目标消耗体力"] == 360, da                # 覆盖值（非 runner 计算的 240）
+        assert da["循环模式"] == "停用", da                 # 仍强制「停用」
+        assert da["具体奖励目标"] == "弧盘经验", da         # 未覆盖键沿用 target_config 原值
+        assert prof_daily["coffee"]["模式"] == "仅领取"
+        assert prof_daily["coffee"]["补货货物"] is True
+        assert prof_daily["coffee"]["领取收益"] is True     # 同段未覆盖键不动
+        prof_hunter = json.loads(Path(ok.profile_hunter).read_text(encoding="utf-8"))
+        assert prof_hunter["追猎目标"] == "黑之书"
+        assert prof_hunter["领取奖励次数"] == 3
+        # 用户原 configs 零写入（字节级）
+        assert _hash(items_path) == src_items
+        assert _hash(ok.routine_config) == src_cfg
+        assert _hash(ok.hunter_config) == src_hunter
+        # 无覆盖 = 现有行为（只开 daily_anomaly；每次重建副本，上轮覆盖不残留）
+        plan_file.unlink()
+        ok.prepare_daily_profile({"任务类型": "经验与甲硬币"}, 240)
+        prof_items2 = json.loads(Path(ok.profile_items).read_text(encoding="utf-8"))
+        assert {e["id"]: e["enabled"] for e in prof_items2["Routine Items"]} == {
+            "coffee": False, "cinema_date": False, "furniture": False, "gift": False,
+            "daily_anomaly": True, "daily_anomaly_hunter": False, "daily_claim": False,
+            "fountain": False, "store_purchase": False}
+        prof_daily2 = json.loads(Path(ok.profile_daily).read_text(encoding="utf-8"))
+        assert prof_daily2["daily_anomaly"]["目标消耗体力"] == 240
+        assert prof_daily2["coffee"]["模式"] == "领取/补货"
+        # 覆盖损坏 = 告警不中断，走现有行为
+        plan_file.write_text("{broken", encoding="utf-8")
+        buf2 = io.StringIO()
+        with contextlib.redirect_stdout(buf2):
+            ok.prepare_daily_profile({"任务类型": "经验与甲硬币"}, 240)
+        assert "[oknte-plan] 覆盖文件无法解析" in buf2.getvalue(), buf2.getvalue()
+        prof_daily3 = json.loads(Path(ok.profile_daily).read_text(encoding="utf-8"))
+        assert prof_daily3["daily_anomaly"]["目标消耗体力"] == 240
+    finally:
+        adapter_mod.OKNTE_PLAN_FILE = real_plan_file
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_make_plan_plan_targets():
+    """make_plan plan_targets + _plan_options 端到端（2026-11-12 计划覆盖）：非空列表
+    按列表顺序、仅列内材料生成步骤（沿用同一贪心/额度防线），未知 id 告警忽略绝不
+    静默；空/缺省=现有行为（角色优先级序，首步 arc_1）；列内全部无缺口→如实
+    all_targets_completed；_plan_options 经 oknte_plan_target_ids 读 data/oknte_plan.json
+    覆盖传入（first_step=列表首项）。"""
+    from app import main as main_mod
+    from app import oknte_adapter as adapter_mod
+    tmp = tempfile.mkdtemp(prefix="oknte_plan_targets_")
+    real_plan_file = adapter_mod.OKNTE_PLAN_FILE
+    try:
+        adapter_mod.OKNTE_PLAN_FILE = Path(tmp) / "absent.json"  # 无覆盖
+        with _StateGuard():
+            STATE.data["settings"] = dict(DEFAULT_SETTINGS)  # 限额180
+            STATE.data["inventory"] = {"coin": 0, "ability_1": 0, "arc_1": 0}
+            STATE.data["today"] = _day_today()
+            STATE.data["characters"] = [
+                _char("c1", "角色甲", {"arc_1": 30}),
+                _char("c2", "角色乙", {"ability_1": 14, "coin": 14}),
+            ]
+            # 缺省=现有行为：角色甲优先 → 首步 arc_1
+            plan0 = planner.make_plan(None, now=NOW)
+            ids0 = [s["mat_id"] for s in plan0["steps"]]
+            assert ids0 and ids0[0] == "arc_1", ids0
+            # 覆盖列表：仅列内材料、按列表顺序；未知 id 告警
+            plan = planner.make_plan(None, now=NOW,
+                                     plan_targets=["ability_1", "coin", "not_a_mat"])
+            ids = [s["mat_id"] for s in plan["steps"]]
+            assert ids == ["ability_1", "coin"], (ids, plan["warnings"])
+            assert any("not_a_mat" in w for w in plan["warnings"]), plan["warnings"]
+            # 列内全部无缺口 → 如实 all_targets_completed
+            plan2 = planner.make_plan(None, now=NOW, plan_targets=["exp_arc"])
+            assert plan2["no_op_reason"] == "all_targets_completed", plan2["no_op_reason"]
+            # 端到端：_plan_options 读 overrides.plan_targets（save→loader 同链路）
+            adapter_mod.OKNTE_PLAN_FILE = Path(tmp) / "oknte_plan.json"
+            adapter_mod.save_oknte_plan_overrides({"plan_targets": ["coin", "not_a_mat"]})
+            ok = _build_fake_oknte(os.path.join(tmp, "root"))
+            ok.is_running_cached = lambda: False
+            payload = main_mod._plan_options(ok)
+            assert payload["first_step"]["mat_id"] == "coin", payload["first_step"]
+            assert payload["steps_count"] == 1, payload
+    finally:
+        adapter_mod.OKNTE_PLAN_FILE = real_plan_file
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_materials_official_names():
+    """materials 订正断言（2026-11-12 tools/everness_ingest.py，data/sites/
+    everness_refs.json 为证）：manual 3 项 item_names 含用户写法（OCR/手工输入仍
+    命中）；display 维持用户写法——niefu_dice 官方名经实抓=用户写法（DiceNormal=
+    捏造骰子），huan_stone/zhishi_dice 官方名未确认（OracleStone 实抓=谕石，与本表
+    oracle_stone 同名而非环石；Dicelimite 页无中文名）→ 不冒充官方名；
+    guide_sites arcs 已增 fork_worldrain（source=everness，名称=实抓 <title>）。
+    refs 缺失（fresh checkout，data/sites/* 不入库）→ 打印 SKIP 如实说明，不伪造通过。"""
+    refs_path = os.path.join(_ROOT, "data", "sites", "everness_refs.json")
+    if not os.path.isfile(refs_path):
+        print("SKIP test_materials_official_names: data/sites/everness_refs.json 不存在"
+              "（everness 抓取未在本机执行；data/sites/* 不入库，fresh checkout 属预期）")
+        return
+    refs = load_json(refs_path)
+    assert isinstance(refs, dict) and isinstance(refs.get("items"), dict), type(refs)
+    planner.reload_tables()  # 以盘上订正后数据为准
+    user_wording = {"huan_stone": "环石", "niefu_dice": "捏造骰子", "zhishi_dice": "质实骰子"}
+    for mid, wording in user_wording.items():
+        entry = planner.EXTRA[mid]
+        assert entry.get("manual_only") is True, mid
+        assert wording in planner.MATERIALS["item_names"].get(mid, []), \
+            (mid, planner.MATERIALS["item_names"].get(mid))
+        assert entry["display_name"] == wording, (mid, entry["display_name"])
+    # 官方名实抓口径
+    assert refs["items"]["DiceNormal"]["zh"] == "捏造骰子", refs["items"]["DiceNormal"]
+    assert planner.EXTRA["niefu_dice"]["display_name"] == \
+        refs["items"]["DiceNormal"]["zh"]
+    assert refs["items"]["OracleStone"]["zh"] == "谕石", refs["items"]["OracleStone"]
+    assert planner.EXTRA["huan_stone"]["display_name"] == "环石"
+    assert "谕石" not in planner.MATERIALS["item_names"].get("huan_stone", []), \
+        "谕石属 oracle_stone，不得混入 huan_stone 别名"
+    # 弧盘订正：arcs 含 fork_worldrain（source=everness，名称=实抓 <title>）
+    guide = load_json(os.path.join(_ROOT, "data", "sites", "guide_sites.json"))
+    arcs = [a for a in (guide.get("arcs") or []) if a.get("code") == "fork_worldrain"]
+    assert len(arcs) == 1 and arcs[0]["source"] == "everness", arcs
+    assert arcs[0]["name"] == refs["arcs"]["fork_worldrain"]["zh"], arcs[0]
+    assert refs["espers"].get("1090") == "曳尔沐", refs["espers"].get("1090")
+
+
+# ---------- 2026-11-12：用户数据目录迁移（打包态 %LOCALAPPDATA% 重定向 + 迁移 CLI + 打包闸门） ----------
+
+@case
+def test_user_data_seed_and_migration():
+    """state.ensure_user_data/_copy_tree_no_clobber 契约回归（2026-11-12 用户数据目录
+    迁移）：①整树复制后源目录逐文件字节不变、全部仍在（只复制不删/不移动）；
+    ②no-clobber 预置哨兵文件内容不被覆盖；③幂等（marker 在→skip；删 marker 重调只补
+    缺失文件）；④零失败才写 .migrated（内容=时间戳/来源/计数），有失败抛 OSError
+    且 marker 不写；⑤成功路径无 *.tmp 残留；⑥dry-run 零写入；⑦bundled 缺失/为空
+    分支不写 marker（自愈门保持开启）；⑧_ensure_user_data_boot
+    吞 OSError 不抛（失败不阻断启动）。全部伪造占位内容、无任何真实凭据。"""
+    from app import state as state_mod
+
+    def make_tree(root):
+        os.makedirs(_safe_path(root, "backups"), exist_ok=True)
+        os.makedirs(_safe_path(root, "mysqil"), exist_ok=True)
+        # 伪造出厂数据表 + 伪造用户文件（占位内容，无任何真实数据/凭据）
+        Path(_safe_path(root, "materials.json")).write_text(
+            json.dumps({"placeholder": "seed"}), encoding="utf-8")
+        Path(_safe_path(root, "yields.json")).write_text("{}", encoding="utf-8")
+        Path(_safe_path(root, "backups", "a.json")).write_text("{}", encoding="utf-8")
+        Path(_safe_path(root, "mysqil", "cassettes.json")).write_text("{}", encoding="utf-8")
+
+    def snapshot(root):
+        snap = {}
+        for base, _dirs, files in os.walk(root):
+            for name in files:
+                p = os.path.join(base, name)
+                snap[p] = Path(p).read_bytes()
+        return snap
+
+    tmp = tempfile.mkdtemp(prefix="oknte_userdata_")
+    try:
+        bundled = _safe_path(tmp, "bundled", "data")
+        make_tree(bundled)
+        src_snapshot = snapshot(bundled)
+
+        # ---- 首启：整树迁移（播种=全新安装的退化情形：EXE 旁只含出厂数据表）----
+        user = _safe_path(tmp, "user", "data")
+        result = state_mod.ensure_user_data(user, bundled)
+        assert result["action"] == "migrated", result
+        # 源目录逐文件字节不变、全部仍在（只复制不删/不移动）
+        assert snapshot(bundled) == src_snapshot, "源目录必须逐字节原样保留"
+        # 用户目录拿到全部文件，.migrated 已写
+        for p, raw in src_snapshot.items():
+            rel = os.path.relpath(p, bundled)  # 源绝对路径 → 相对 bundled 的相对路径
+            assert Path(_safe_path(user, rel)).read_bytes() == raw, rel
+        marker = _safe_path(user, ".migrated")
+        marker_data = json.loads(Path(marker).read_text(encoding="utf-8"))
+        assert set(marker_data) <= {"migrated_at", "source", "dirs", "copied", "skipped"}, marker_data
+        assert os.path.isabs(marker_data["source"]), marker_data
+        # 成功路径无 *.tmp 残留（单文件原子）
+        for base, _dirs, files in os.walk(user):
+            for name in files:
+                assert not name.endswith(".tmp"), name
+
+        # ---- 幂等：marker 在 → skip，用户目录中被删的文件不被补回 ----
+        Path(_safe_path(user, "yields.json")).unlink()
+        result = state_mod.ensure_user_data(user, bundled)
+        assert result["action"] == "skip", result
+        assert not os.path.isfile(_safe_path(user, "yields.json"))
+        # 删 marker 重调：只补缺失文件（no-clobber）；预置哨兵不被覆盖
+        Path(marker).unlink()
+        Path(_safe_path(user, "materials.json")).write_text(
+            '{"sentinel": "user-owned"}', encoding="utf-8")
+        result = state_mod.ensure_user_data(user, bundled)
+        assert result["action"] == "migrated", result
+        assert Path(_safe_path(user, "materials.json")).read_text(encoding="utf-8") \
+            == '{"sentinel": "user-owned"}', "materials.json must keep user-owned"
+        assert os.path.isfile(_safe_path(user, "yields.json"))  # 缺失文件已补
+
+        # ---- dry_run：只计划零写入 ----
+        other = _safe_path(tmp, "other", "data")
+        os.makedirs(other)
+        Path(_safe_path(other, "runtime.json")).write_text(
+            json.dumps({"placeholder": "dryrun"}), encoding="utf-8")
+        stats = state_mod._copy_tree_no_clobber(other, user, dry_run=True)
+        assert stats["copied"] == 1 and stats["failed"] == 0, stats
+        assert not os.path.isfile(os.path.join(user, "runtime.json"))  # 演练零写入
+        stats = state_mod._copy_tree_no_clobber(other, user)  # dry_run 默认 False
+        assert stats["copied"] == 1, stats
+        assert os.path.isfile(_safe_path(user, "runtime.json"))
+        # 重复整树：已全部存在 → 全部跳过
+        stats = state_mod._copy_tree_no_clobber(bundled, user)
+        assert stats["copied"] == 0 and stats["skipped"] == len(src_snapshot), stats
+        # 源目标同目录防自拷：零复制零失败
+        stats = state_mod._copy_tree_no_clobber(bundled, bundled)
+        assert stats == {"dirs": 0, "copied": 0, "skipped": 0, "failed": 0, "errors": []}, stats
+
+        # ---- 失败路径：目标被同名目录占位 → failed>0，ensure 抛 OSError、marker 不写 ----
+        clash = _safe_path(tmp, "clash", "data")
+        os.makedirs(clash)
+        Path(_safe_path(clash, "blocked.json")).write_text("{}", encoding="utf-8")  # 源：文件
+        Path(_safe_path(clash, "good.json")).write_text("{}", encoding="utf-8")
+        user2 = _safe_path(tmp, "user2", "data")
+        os.makedirs(_safe_path(user2, "blocked.json"))  # 目标：同名目录占位 → 复制必失败
+        try:
+            state_mod.ensure_user_data(user2, clash)
+            raise AssertionError("有失败项时 ensure_user_data 必须抛 OSError")
+        except OSError:
+            pass
+        assert not os.path.isfile(_safe_path(user2, ".migrated"))  # marker 未写 → 下次启动自愈重试
+
+        # ---- bundled 缺失/为空：不写 marker（自愈门保持开启）----
+        empty = _safe_path(tmp, "empty", "data")
+        os.makedirs(empty)
+        assert state_mod.ensure_user_data(
+            _safe_path(tmp, "user3", "data"), empty)["action"] == "empty"
+        assert not os.path.isfile(_safe_path(tmp, "user3", "data", ".migrated"))
+        r = state_mod.ensure_user_data(_safe_path(tmp, "user4", "data"), None)
+        assert r["action"] == "empty", r
+        assert not os.path.isfile(_safe_path(tmp, "user4", "data", ".migrated"))
+
+        # ---- boot 包装：吞 OSError 不抛（失败不阻断启动）——临时改道到 temp 目标 ----
+        boot_user = _safe_path(tmp, "boot", "user", "data")
+        boot_src = _safe_path(tmp, "bootsrc", "data")
+        os.makedirs(boot_src)
+        Path(_safe_path(boot_src, "x.json")).write_text("{}", encoding="utf-8")
+        os.makedirs(_safe_path(boot_user, "x.json"))  # 同名目录占位：boot 必失败
+        real_user = state_mod.USER_DATA_DIR
+        real_bund = state_mod.BUNDLED_DATA_DIR
+        state_mod.USER_DATA_DIR = boot_user
+        state_mod.BUNDLED_DATA_DIR = boot_src
+        try:
+            state_mod._ensure_user_data_boot()  # 不得抛
+        finally:
+            state_mod.USER_DATA_DIR, state_mod.BUNDLED_DATA_DIR = real_user, real_bund
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_user_data_cli():
+    """tools.migrate_user_data CLI 契约回归（2026-11-12）：--from 可重复按序
+    （no-clobber 先到先得）；--apply 必需（缺失或单传 --dry-run → exit 2 绝不写盘）；
+    --dry-run --apply 演练零写入；源目录不存在 → exit 2；正式迁移只复制不删源、
+    不覆盖已有文件、不写 .migrated；输出只有计数与路径、无文件内容。
+    SKIP 守卫：dist 不携带 tools/（build_dist 仅复制 app/ 与 tests/），仓库根运行
+    才有效。子进程 env LOCALAPPDATA=临时目录、cwd=_ROOT，绝不碰真实 %LOCALAPPDATA%。"""
+    import subprocess as _sp
+    if not os.path.isdir(os.path.join(_ROOT, "tools")):
+        print("SKIP test_user_data_cli: dist 不携带 tools/（build_dist 仅复制"
+              " app/ 与 tests/），仓库根运行才有效")
+        return
+
+    def run_cli(env_dir, *cli_args):
+        env = {**os.environ, "LOCALAPPDATA": env_dir}
+        r = _sp.run([sys.executable, "-m", "tools.migrate_user_data", *cli_args],
+                    cwd=_ROOT, env=env, capture_output=True, text=True, timeout=120)
+        return r.returncode, (r.stdout or "") + (r.stderr or "")
+
+    tmp = tempfile.mkdtemp(prefix="oknte_cli_")
+    try:
+        src1 = _safe_path(tmp, "src1")
+        src2 = _safe_path(tmp, "src2")
+        os.makedirs(_safe_path(src1, "sites"))
+        Path(_safe_path(src1, "state.json")).write_text(
+            json.dumps({"placeholder": "cli-src1"}), encoding="utf-8")
+        Path(_safe_path(src1, "sites", "guide_sites.json")).write_text(
+            json.dumps({"placeholder": "cli-src1"}), encoding="utf-8")
+        os.makedirs(src2)
+        Path(_safe_path(src2, "state.json")).write_text(
+            json.dumps({"placeholder": "cli-src2"}), encoding="utf-8")
+        Path(_safe_path(src2, "runtime.json")).write_text(
+            json.dumps({"placeholder": "cli-src2"}), encoding="utf-8")
+        missing = os.path.join(tmp, "no_such_dir")
+
+        # 缺 --apply → exit 2，绝不写盘
+        code, out = run_cli(_safe_path(tmp, "env_noapply"), "--from", src1)
+        assert code == 2, (code, out)
+        assert not os.path.isdir(_safe_path(tmp, "env_noapply", "OKntePlanner")), out
+        # 无 --apply 单传 --dry-run → exit 2
+        code, out = run_cli(_safe_path(tmp, "env_dryonly"), "--from", src1, "--dry-run")
+        assert code == 2, (code, out)
+        # 源目录不存在 → exit 2
+        code, out = run_cli(_safe_path(tmp, "env_missing"), "--from", missing, "--apply")
+        assert code == 2, (code, out)
+        # --dry-run --apply：演练零写入、exit 0
+        env_run = _safe_path(tmp, "env_run")
+        code, out = run_cli(env_run, "--from", src1, "--from", src2, "--dry-run", "--apply")
+        assert code == 0, (code, out)
+        assert not os.path.isdir(_safe_path(env_run, "OKntePlanner")), out
+        # 正式迁移：src1 先处理 → 同路径文件以 src1 为准（no-clobber 先到先得）
+        code, out = run_cli(env_run, "--from", src1, "--from", src2, "--apply")
+        assert code == 0, (code, out)
+        user = _safe_path(env_run, "OKntePlanner", "data")
+        assert json.loads(Path(_safe_path(user, "state.json")).read_text(
+            encoding="utf-8"))["placeholder"] == "cli-src1", "先处理的源必须获胜"
+        assert os.path.isfile(_safe_path(user, "runtime.json"))
+        assert os.path.isfile(_safe_path(user, "sites", "guide_sites.json"))
+        # 源目录原样保留（只复制不删/不动）
+        assert os.path.isfile(_safe_path(src1, "state.json"))
+        assert os.path.isfile(_safe_path(src2, "state.json"))
+        assert os.path.isfile(_safe_path(src2, "runtime.json"))
+        # CLI 不写 .migrated（首启 ensure_user_data 保持单一事实源）
+        assert not os.path.isfile(_safe_path(user, ".migrated"))
+        # 输出只有计数与路径，无文件内容
+        assert "cli-src1" not in out and "cli-src2" not in out, out
+        # 重复 --apply：全部跳过且 exit 0
+        code, out = run_cli(env_run, "--from", src1, "--from", src2, "--apply")
+        assert code == 0 and "复制文件 0" in out, (code, out)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_frozen_data_dir_relocation():
+    """打包态数据目录重定向全链回归（2026-11-12 state.py 分支重写）：①sys.frozen+
+    假 EXE → DATA_DIR=%LOCALAPPDATA%\\\\OKntePlanner\\\\data，EXE 旁 data（伪造
+    state.json 存根+出厂数据表+伪造用户文件）整树迁入且源原样保留、.migrated 已写；
+    ②同场景二次运行幂等（marker 在 → 用户目录中被删的文件不被补回）；③设
+    OKNTE_PLANNER_USER_DATA=1（启动器档路径）同归用户目录（以临时 app 副本+伪造
+    EXE 旁 data 验证，不复制真实仓库 data）；④两者皆不设 → DATA_DIR==仓库 data
+    （源码分支不变）。子进程 env LOCALAPPDATA=临时目录，绝不碰真实 %LOCALAPPDATA%；
+    C# 侧接线不在此覆盖（由构建期 _launch_and_probe 断言承担）。"""
+    import subprocess as _sp
+
+    def run_py(env_dir, script, env_extra, cwd):
+        env = {**os.environ, "LOCALAPPDATA": env_dir, **env_extra}
+        return _sp.run([sys.executable, "-c", script], cwd=cwd, env=env,
+                       capture_output=True, text=True, timeout=120)
+
+    tmp = tempfile.mkdtemp(prefix="oknte_frozen_")
+    try:
+        # 伪造 EXE 旁 data：出厂数据表 + 伪造旧用户数据（占位内容，无真实凭据）
+        fake_exe_dir = _safe_path(tmp, "fake_exe")
+        bundled = _safe_path(fake_exe_dir, "data")
+        os.makedirs(_safe_path(bundled, "backups"))
+        Path(_safe_path(bundled, "materials.json")).write_text(
+            json.dumps({"placeholder": "frozen-table"}), encoding="utf-8")
+        Path(_safe_path(bundled, "state.json")).write_text(
+            json.dumps({"settings": {"oknte_root": "FAKE-ROOT-PLACEHOLDER"}}),
+            encoding="utf-8")
+        Path(_safe_path(bundled, "backups", "a.json")).write_text("{}", encoding="utf-8")
+        fake_exe = os.path.join(fake_exe_dir, "OKntePlanner.exe")
+        src_snapshot = {}
+        for base, _dirs, files in os.walk(fake_exe_dir):
+            for name in files:
+                p = os.path.join(base, name)
+                src_snapshot[p] = Path(p).read_bytes()
+
+        # ① frozen：import 前设 sys.frozen+假 EXE 路径 → 用户数据目录+首启迁移
+        script = (
+            "import os, sys\n"
+            "sys.frozen = True\n"
+            "sys.executable = %r\n"
+            "import app.state as s\n"
+            "print(s.DATA_DIR)\n"
+            "print(os.path.isfile(os.path.join(s.DATA_DIR, '.migrated')))\n"
+            "print(os.path.isfile(os.path.join(s.DATA_DIR, 'materials.json')))\n"
+        ) % fake_exe
+        env_frozen = _safe_path(tmp, "env_frozen")
+        r = run_py(env_frozen, script, {}, _ROOT)
+        assert r.returncode == 0, (r.returncode, r.stdout, r.stderr)
+        lines = r.stdout.strip().splitlines()
+        assert len(lines) == 3, r.stdout
+        user_dir = lines[0]
+        assert user_dir.lower() == os.path.join(
+            env_frozen, "OKntePlanner", "data").lower(), user_dir
+        assert lines[1] == "True", r.stdout  # .migrated 已写
+        assert lines[2] == "True", r.stdout  # 出厂数据表已播种
+        # 源目录逐文件字节不变、全部仍在；用户目录拿到全部文件（旧数据全链迁移）
+        for base, _dirs, files in os.walk(fake_exe_dir):
+            for name in files:
+                p = os.path.join(base, name)
+                assert Path(p).read_bytes() == src_snapshot[p], p
+                rel = os.path.relpath(p, bundled)
+                assert Path(_safe_path(user_dir, rel)).read_bytes() == src_snapshot[p], rel
+        # ② 二次运行幂等：marker 在 → 被删的用户文件不被补回
+        os.remove(os.path.join(user_dir, "materials.json"))
+        r = run_py(env_frozen, script, {}, _ROOT)
+        assert r.returncode == 0, (r.returncode, r.stdout, r.stderr)
+        lines = r.stdout.strip().splitlines()
+        assert lines[0] == user_dir, r.stdout
+        assert lines[1] == "True", r.stdout   # marker 仍在
+        assert lines[2] == "False", r.stdout  # 被删文件未补回（幂等门生效）
+
+        # ③ 启动器档路径：OKNTE_PLANNER_USER_DATA=1 → 同归用户目录
+        #    （以临时 app 副本伪造 BaseDir：state.py 的 ROOT 派生自 __file__ 的上级，
+        #     直接跑仓库根会把真实 data/ 整树当播种源，故隔离）
+        base = _safe_path(tmp, "fake_base")
+        shutil.copytree(os.path.join(_ROOT, "app"), _safe_path(base, "app"),
+                        ignore=shutil.ignore_patterns("__pycache__"))
+        os.makedirs(_safe_path(base, "data"), exist_ok=True)
+        Path(_safe_path(base, "data", "materials.json")).write_text(
+            json.dumps({"placeholder": "launcher-table"}), encoding="utf-8")
+        env_launcher = _safe_path(tmp, "env_launcher")
+        r = run_py(env_launcher, "import app.state as s\nprint(s.DATA_DIR)",
+                   {"OKNTE_PLANNER_USER_DATA": "1"}, base)
+        assert r.returncode == 0, (r.returncode, r.stdout, r.stderr)
+        assert r.stdout.strip().lower() == os.path.join(
+            env_launcher, "OKntePlanner", "data").lower(), r.stdout
+        seeded = _safe_path(env_launcher, "OKntePlanner", "data", "materials.json")
+        assert json.loads(Path(seeded).read_text(encoding="utf-8"))["placeholder"] \
+            == "launcher-table", "打包态首启应播种 BaseDir data"
+        assert os.path.isfile(_safe_path(base, "data", "materials.json"))  # 源原样保留
+
+        # ④ 两者皆不设：源码分支不变（DATA_DIR==仓库 data，不触发任何迁移）
+        env_plain = _safe_path(tmp, "env_plain")
+        r = run_py(env_plain, "import app.state as s\nprint(s.DATA_DIR)", {}, _ROOT)
+        assert r.returncode == 0, (r.returncode, r.stdout, r.stderr)
+        assert r.stdout.strip() == os.path.join(_ROOT, "data"), r.stdout
+        assert not os.path.isdir(_safe_path(env_plain, "OKntePlanner"))  # 未做任何迁移
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_build_dist_data_gate():
+    """tools.build_exe.check_dist_data_clean 打包前数据闸门回归（2026-11-12）：
+    仅含 keepList 出厂集（含 mysqil/.bak、sites/source_crosscheck.json）的假 dist
+    树零 offender；掺入个人/运行时数据（state.json*/backups//tajiduo_token.json/
+    edge_profile//sites/guide_sites.json/avatars//game_data_custom.json/
+    ocr_layout.json/materials.json.pre-manual.bak）的假 dist 树 offender 全列出、
+    mysqil 子树不误报；纯检查不删/不改任何文件（树前后逐字节一致）；结构断言：
+    main 源码中 check_dist_data_clean 调用点先于 build_dist() 调用点（gate 必须发
+    生在 rmtree 之前，否则闸门形同虚设而全部用例仍绿）。
+    SKIP 守卫：dist 不携带 tools/（build_dist 仅复制 app/ 与 tests/），仓库根运行才有效。"""
+    import inspect
+    if not os.path.isdir(os.path.join(_ROOT, "tools")):
+        print("SKIP test_build_dist_data_gate: dist 不携带 tools/（build_dist 仅复制"
+              " app/ 与 tests/），仓库根运行才有效")
+        return
+    from tools import build_exe as build_mod
+
+    def fake_dist(root, personal):
+        data = _safe_path(root, "data")
+        os.makedirs(_safe_path(data, "mysqil"))
+        os.makedirs(_safe_path(data, "sites"))
+        # keepList 出厂集（与 copy_data_tables 写入一一对应）
+        for rel in ("materials.json", "yields.json", "requirements.json",
+                    "game_data.json", "build_info.json", "character_cooldowns.json"):
+            Path(_safe_path(data, rel)).write_text("{}", encoding="utf-8")
+        Path(_safe_path(data, "mysqil", "cassettes.json")).write_text("{}", encoding="utf-8")
+        Path(_safe_path(data, "mysqil", "cassettes.json.bak")).write_text("{}", encoding="utf-8")
+        Path(_safe_path(data, "sites", "source_crosscheck.json")).write_text("{}", encoding="utf-8")
+        if personal:  # 个人/运行时数据（占位内容，无真实凭据）
+            for rel in ("state.json", "state.json.bak", "game_data_custom.json",
+                        "ocr_layout.json", "materials.json.pre-manual.bak",
+                        "tajiduo_token.json"):
+                Path(_safe_path(data, rel)).write_text("{}", encoding="utf-8")
+            for rel_dir, name in (("backups", "a.json"), ("edge_profile", "p"),
+                                  ("avatars", "a.webp")):
+                os.makedirs(_safe_path(data, rel_dir), exist_ok=True)
+                Path(_safe_path(data, rel_dir, name)).write_text("{}", encoding="utf-8")
+            Path(_safe_path(data, "sites", "guide_sites.json")).write_text("{}", encoding="utf-8")
+        return root
+
+    tmp = tempfile.mkdtemp(prefix="oknte_gate_")
+    try:
+        clean_root = fake_dist(_safe_path(tmp, "OKntePlanner"), personal=False)
+        dirty_root = fake_dist(_safe_path(tmp, "OKntePlanner_single"), personal=True)
+        snap = {}
+        for base, _dirs, files in os.walk(tmp):
+            for name in files:
+                p = os.path.join(base, name)
+                snap[p] = Path(p).read_bytes()
+        # 干净树：零 offender（mysqil 子树与 sites/source_crosscheck.json 不误报）
+        offenders = build_mod.check_dist_data_clean((clean_root,))
+        assert offenders == [], offenders
+        # 脏树：个人/运行时数据全列出，出厂集与 mysqil 子树不误报
+        offenders = build_mod.check_dist_data_clean((dirty_root,))
+        prefix = os.path.basename(dirty_root)
+        expected = {os.path.join(prefix, "data", rel) for rel in (
+            "state.json", "state.json.bak", "game_data_custom.json",
+            "ocr_layout.json", "materials.json.pre-manual.bak", "tajiduo_token.json",
+            os.path.join("backups", "a.json"),
+            os.path.join("edge_profile", "p"),
+            os.path.join("avatars", "a.webp"),
+            os.path.join("sites", "guide_sites.json"),
+        )}
+        assert set(offenders) == expected, (sorted(offenders), sorted(expected))
+        # 双树同扫：干净树仍零误报
+        both = build_mod.check_dist_data_clean((clean_root, dirty_root))
+        assert set(both) == expected, sorted(both)
+        # 纯检查不删/不改任何文件（树前后逐字节一致）
+        snap2 = {}
+        for base, _dirs, files in os.walk(tmp):
+            for name in files:
+                p = os.path.join(base, name)
+                snap2[p] = Path(p).read_bytes()
+        assert snap2 == snap, "check_dist_data_clean 必须是纯检查，不得动任何文件"
+        # 结构断言：gate 调用点必须先于 build_dist()（先于其 rmtree(DIST)）
+        src = inspect.getsource(build_mod.main)
+        i_gate = src.find("check_dist_data_clean")
+        i_build = src.find("build_dist()")
+        assert i_gate != -1 and i_build != -1 and i_gate < i_build, \
+            "check_dist_data_clean 必须在 main() 中先于 build_dist() 调用（gate 须在 rmtree 之前）"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 # ---------- 汇总 ----------

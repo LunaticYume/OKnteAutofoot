@@ -58,9 +58,85 @@ def reload_tables():
 
 
 def display_name(mat_id):
-    """材料的展示名：优先实名 display_name，回退旧 name，再回退 id。"""
+    """材料的展示名：系列养成材料（targets 的 ability_N/arc_N，带 concrete_names
+    三档实名）优先返回紫档具体道具名（2026-11-08 用户实测：「技能书·帽子系（…）」
+    系名风格不指向具体道具——实际要刷的是「黑帽子」这类实名）；无 concrete_names
+    时维持原回退链 display_name→name→id（exp_char 等非系列材料与分档 extra 条目
+    不受影响）。折算语义不变：四档口径仍在 title/备注/等价折算里表达。"""
     entry = TARGETS.get(mat_id) or EXTRA.get(mat_id) or {}
+    purple = (entry.get("concrete_names") or {}).get("purple")
+    if purple:
+        return purple
     return entry.get("display_name") or entry.get("name") or mat_id
+
+
+# ok-nte 循环序列 entry 分隔符（2026-11-12 实读 ok-nte
+# working\configs\DailyRoutineTaskConfigs.json 循环序列实样确认：
+# "异能升级材料: 1"/"空幕: 2"=半角冒号+空格；经验族无序号，entry=具体奖励目标
+# 原词（"角色经验"/"弧盘经验"/"甲硬币"）。
+CYCLE_SEQ_SEPARATOR = ": "
+
+# targets config 的三种序号键（解析顺序固定，与materials.json targets 口径一致）
+_CYCLE_INDEX_KEYS = ("异能材料序号", "弧盘材料序号", "空幕序号")
+
+
+def cycle_entry(mat_id):
+    """材料 id → ok-nte 循环序列 entry（与 DailyRoutineTaskConfigs.json 循环序列实样
+    同格式，2026-11-12 实读确认）：经验族（有具体奖励目标）entry=目标原词；带序号
+    目标 entry=「任务类型: 序号」（分隔符见 CYCLE_SEQ_SEPARATOR）。无法派生（无
+    config / 无序号键）返回 None——调用方据此跳过，绝不生成「异能材料序号=5」这类
+    内部写法。"""
+    cfg = (TARGETS.get(mat_id) or {}).get("config") or {}
+    goal = cfg.get("具体奖励目标")
+    if goal:
+        return str(goal)
+    for key in _CYCLE_INDEX_KEYS:
+        if key in cfg:
+            return f"{cfg.get('任务类型', '')}{CYCLE_SEQ_SEPARATOR}{cfg[key]}"
+    return None
+
+
+def cycle_label(mat_id):
+    """材料 id → 循环序列具名 label：「任务类型·序号（具体名）」/「任务类型·具体奖励目标」。
+
+    具体名取紫档实名（display_name 同源）并剥掉书名号（用户口径：括号后缀为裸具名，
+    如「异能升级材料·3（黑帽子）」）；无紫档（空幕系列）取 display_name 去尾部（…）
+    注记与「任务类型·」前缀后的短名（空幕·钟表把戏（兔子洞节点1）→ 钟表把戏）。
+    无法派生返回 None。"""
+    target = TARGETS.get(mat_id) or {}
+    cfg = target.get("config") or {}
+    task = str(cfg.get("任务类型") or "")
+    goal = cfg.get("具体奖励目标")
+    if goal:
+        return f"{task}·{goal}" if task else str(goal)
+    idx = next((cfg[k] for k in _CYCLE_INDEX_KEYS if k in cfg), None)
+    if idx is None:
+        return None
+    purple = (target.get("concrete_names") or {}).get("purple")
+    suffix = str(purple).strip("「」").strip() if purple else ""
+    if not suffix:
+        disp = str(target.get("display_name") or target.get("name") or "").strip()
+        if disp.endswith("）") and "（" in disp:
+            disp = disp[:disp.rindex("（")].strip()
+        if task and disp.startswith(f"{task}·"):
+            disp = disp[len(task) + 1:]
+        suffix = disp
+    return f"{task}·{idx}（{suffix}）" if suffix else f"{task}·{idx}"
+
+
+def cycle_item_of(mat_id):
+    """材料 id → 循环序列具名条目：config 原键原值（任务类型/序号键/具体奖励目标）
+    + entry（ok-nte 循环序列实值，前端收集去重后直接合并进循环序列）+ label（具名
+    展示）。无 config / 无法派生 entry 的材料返回 None（EXTRA 周本/BOSS 材料天然
+    无 config，external 区条目由调用方口径不加该字段）。"""
+    cfg = TARGETS.get(mat_id, {}).get("config") or {}
+    entry_id = cycle_entry(mat_id)
+    if not cfg or entry_id is None:
+        return None
+    item = dict(cfg)
+    item["entry"] = entry_id
+    item["label"] = cycle_label(mat_id)
+    return item
 
 
 def equivalent_inventory(raw_inv):
@@ -244,6 +320,83 @@ def snapshot():
     return {"characters": characters, "gaps": gaps}
 
 
+def dungeon_gaps():
+    """材料缺口按体力副本分块聚合（纯读、确定性；GET /api/dungeon-gaps 数据源，
+    selftest 直测分组与合计）。
+
+    数据 = stamina_blocks（materials.json 顶层段，2026-11-08 新增六块副本分块）
+    + snapshot() 的缺口聚合。每块返回每材料 需/持/差 与轮数估算：
+    - 体力本目标（TARGETS 带 config）：runs = ceil(缺口 / yield_of)，与 make_plan 同口径；
+    - 追猎材料（EXTRA obtain=hunter）：按 hunter_bosses 的 BOSS_MAT 反查 boss 名，
+      runs = ceil(缺口 / hunter_yield_of(boss))（产量口径同 make_hunter_plan）；
+    - 周本材料（EXTRA wk_*）：无每轮产量数据 → runs=0，块级 weekly_times（用户口径
+      每周限次）与 weekly_stamina 单独返回，不计入块总轮数；
+    - 双通道块（空幕 dual_channel）：缺口只计体力通道（倒带通道不参与，前端标注）。
+    - 循环序列具名条目（2026-11-12 总览页总计划）：带 config 的 mat 附 cycle_item
+      {任务类型, <序号键>:值, entry, label}（planner.cycle_item_of；entry 与 ok-nte
+      DailyRoutineTaskConfigs.json 循环序列实样同格式），前端「纳入循环序列」勾选块
+      直接收集 entry；EXTRA（周本/BOSS）与 external 区不带该字段。
+    不在任何块里的缺口 → external 区（EXTRA 外部来源 + 未入块的体力本目标，如
+    染剂 exp_arc），带来源字段，绝不静默丢失缺口。
+    """
+    snap = snapshot()
+    inventory = equivalent_inventory(STATE.inventory)
+    need = {}
+    for character in snap["characters"]:
+        for row in character["rows"]:
+            need[row["mat_id"]] = need.get(row["mat_id"], 0) + row["need"]
+    blocks_spec = MATERIALS.get("stamina_blocks") or []
+    covered = {m for b in blocks_spec for m in (b.get("mat_ids") or [])}
+    blocks = []
+    for b in blocks_spec:
+        per_run = max(0, int(b.get("stamina_per_run") or 0))
+        mats, total_runs = [], 0
+        for mat_id in (b.get("mat_ids") or []):
+            n = need.get(mat_id, 0)
+            have = int(inventory.get(mat_id, 0) or 0)
+            gap = max(0, n - have)
+            yld = 0
+            if gap > 0:
+                if mat_id in TARGETS and "config" in TARGETS[mat_id]:
+                    yld = yield_of(mat_id)
+                elif mat_id in EXTRA and EXTRA[mat_id].get("obtain") == "hunter":
+                    boss = next((bn for bn, bm in BOSS_MAT.items() if bm == mat_id), None)
+                    yld = hunter_yield_of(boss) if boss else 0
+            runs = math.ceil(gap / yld) if gap > 0 and yld > 0 else 0
+            row = {"mat_id": mat_id, "name": display_name(mat_id),
+                   "need": n, "have": have, "gap": gap,
+                   "yield": yld, "runs": runs}
+            ci = cycle_item_of(mat_id)  # 带 config 的体力本目标附具名循环条目（EXTRA 无）
+            if ci:
+                row["cycle_item"] = ci
+            mats.append(row)
+            total_runs += runs
+        out = {"block": b.get("block"), "entry": b.get("entry"),
+               "stamina_per_run": per_run, "task_type": b.get("task_type"),
+               "drops": b.get("drops"), "limits": b.get("limits"), "note": b.get("note"),
+               "mats": mats, "total_runs": total_runs, "total_stamina": total_runs * per_run}
+        if b.get("weekly_times"):
+            # 巡礼周次数口径（用户口径）：面板不追踪本周已刷次数，只展示上限
+            out["weekly_times"] = int(b["weekly_times"])
+            out["weekly_stamina"] = int(b["weekly_times"]) * per_run
+        if b.get("dual_channel"):
+            out["dual_channel"] = True
+        blocks.append(out)
+    external = []
+    for mat_id in ALL_ORDER:
+        n = need.get(mat_id, 0)
+        have = int(inventory.get(mat_id, 0) or 0)
+        gap = max(0, n - have)
+        if gap <= 0 or mat_id in covered:
+            continue
+        entry = TARGETS.get(mat_id) or EXTRA.get(mat_id) or {}
+        external.append({"mat_id": mat_id, "name": display_name(mat_id),
+                         "need": n, "have": have, "gap": gap,
+                         "source": entry.get("source") or "",
+                         "extra": mat_id in EXTRA})
+    return {"blocks": blocks, "external": external}
+
+
 # ---- 计划为空（no-op）原因枚举 ----
 # UI 直接展示 reason 中文文案，no_op_reason 为机器可读枚举（详情见 detail）。
 # 不含 upstream_incompatible：不兼容时 runner 在兼容性检查处已终止（runner._run_loop 开头），
@@ -289,7 +442,7 @@ def _ordered_gaps(snap):
     return ordered
 
 
-def make_plan(oknte=None, now=None):
+def make_plan(oknte=None, now=None, plan_targets=None):
     """生成当日执行计划（预览与实跑共用）。
 
     纯读且确定性：同 inventory/target/体力额度/配置与同一注入 now → 完全相同的计划；
@@ -298,6 +451,11 @@ def make_plan(oknte=None, now=None):
     计划为空时 no_op_reason 为 NO_OP_REASONS 枚举，reason 为可直接展示的中文文案；
     每个步骤（steps[].reason）与计划整体（detail）都携带结构化解释，UI 不得自行重算。
     追猎预留开启时每次计划都扣留当日份额（不记当日标记），预览与等待重试都不会吃掉预留。
+    plan_targets：材料 id 列表（来自 data/oknte_plan.json overrides.plan_targets，
+    由调用方经 oknte_adapter.oknte_plan_target_ids() 传入）——非空时按列表顺序、
+    仅列内材料生成步骤（映射 TARGETS；有缺口且可刷的才出步骤，沿用同一贪心与
+    额度/拉黑/产量防线），空/缺省=现有行为（按角色优先级展开全部缺口）。
+    列表内未知 id 告警忽略，绝不静默。
     """
     day = STATE.day_key(now)
     today = _today_view(day)
@@ -315,6 +473,18 @@ def make_plan(oknte=None, now=None):
     for item in ordered:
         if yield_of(item["mat_id"]) <= 0:
             warnings.append(f"{item['name']}：产量未校准（为0），已跳过，请在『数据表』填写每轮产出")
+
+    # 计划覆盖（data/oknte_plan.json overrides.plan_targets）：按用户列表顺序、
+    # 仅列内材料生成步骤。放在产量预扫描之后——覆盖外的材料缺口照常告警可见，
+    # 只是不再进入排程；放在 no-op 判定之前——列内全部无缺口时如实报"已达标"。
+    target_ids = [str(m).strip() for m in (plan_targets or []) if str(m).strip()]
+    if target_ids:
+        target_ids = list(dict.fromkeys(target_ids))
+        for m in [m for m in target_ids if m not in TARGETS]:
+            warnings.append(f"计划覆盖目标 {m}：不是可规划的体力本材料，已忽略")
+        keep = [m for m in target_ids if m in TARGETS]
+        by_id = {item["mat_id"]: item for item in ordered}
+        ordered = [by_id[m] for m in keep if m in by_id]
 
     local_used = int(today.get("used_stamina", 0) or 0)
     hunter_spent = int(today.get("hunter_spent", 0) or 0)
@@ -473,7 +643,7 @@ def yield_suggestions():
         measured = actual / runs
         suggestions.append({
             "mat_id": mat_id,
-            "name": target["name"],
+            "name": display_name(mat_id),
             "configured_yield": yield_of(mat_id),
             "confirmed_runs": runs,
             "confirmed_gain": actual,

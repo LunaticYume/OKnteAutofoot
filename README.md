@@ -57,18 +57,26 @@ app/               Python 源码（纯标准库，无第三方依赖）
   planner.py         缺口计算与当日计划
   runner.py          单循环执行器
   state.py           状态持久化
-data/
+data/               源码方式的数据位 + 出厂数据表（materials/yields/requirements/
+                     game_data/mysqil 等；EXE 方式运行时用户数据不在此处，见下）
   materials.json     副本目标定义（与 ok-nte AnomalyTask 一一对应）
   yields.json        每轮产出表（可校准）
   requirements.json  养成需求表（可校准）
-  state.json         角色/库存/历史
+  state.json         角色/库存/历史（源码方式）
   backups/           ok-nte 配置自动备份
 ```
+
+> **EXE 方式运行时的数据位置**：用户数据（角色/库存/设置/图鉴覆盖层/塔吉多凭证/OCR
+> 标定/panel.log 等）统一在 `%LOCALAPPDATA%\OKntePlanner\data`——两个 EXE 共用同一份，
+> 可整体备份/迁移；**勿同时双开两个 EXE**（并发写会互相覆盖）。EXE 旁 `data\` 仅为
+> 出厂数据表模板。旧版（数据在 EXE 旁 `data\`）首次启动自动整树迁移且原目录原样保留；
+> 手动迁移/合并可用 `python -m tools.migrate_user_data --from <旧数据目录> --apply`。
+> 以其他管理员账户提权运行时，数据落提权账户的 LocalAppData（与原账户不共享）。
 
 ## EXE 双击打不开 / 闪退排查
 
 1. **UAC 弹窗**要点"是"（面板需要与 ok-nte 同级的管理员权限）。
 2. **杀毒/SmartScreen 拦截**：EXE 为本机构建的未签名程序，被拦截时加入信任/白名单。
-3. **窗口一闪而过**：看 EXE 同目录日志——启动器档看 `launcher.log`（记录解析到的 Python 与退出码），两类档共同看 `crash.log`（面板自身异常）。启动器任何退出路径都会暂停窗口显示原因。
-4. **端口占用**（8765 被旧面板实例占用）：关闭旧实例，或改 `data/state.json` 的 `port`。
-5. **找不到 Python**：放一份完整 Python 3.10+ 到 EXE 目录 `python\` 子目录，或安装 ok-nte（复用其内嵌 Python），或把 python.exe 加入 PATH（启动器会依次探测）。
+3. **窗口一闪而过**：看日志——`launcher.log`（启动器档，记录解析到的 Python 与退出码）与 `crash.log`（面板自身异常）在 EXE 旁；`panel.log`（面板运行日志）在用户数据目录（EXE 方式：`%LOCALAPPDATA%\OKntePlanner\data`；源码方式：`data\`）。启动器任何退出路径都会暂停窗口显示原因。
+4. **端口占用**（8765 被旧面板实例占用）：关闭旧实例，或改 `state.json` 的 `port`——EXE 方式改 `%LOCALAPPDATA%\OKntePlanner\data\state.json`，源码方式仍改 `data\state.json`。
+5. **找不到 Python**：放一份完整 Python 3.10+ 到 EXE 目录 `python\` 子目录，或安装 ok-nte（复用其内嵌 Python），或把 python.exe 加入 PATH。启动器依次探测：EXE 旁 `python\` 子目录 → EXE 旁 `data\state.json`（旧布局）与用户数据目录 `state.json` 里的 `oknte_root` → 默认安装位置 → PATH。

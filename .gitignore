@@ -30,4 +30,44 @@ data/game_data_custom.json.bak
 
 # OCR 布局标定（运行时标定/自愈生成的用户数据，不入库）
 data/ocr_layout.json
+# 旧版 OCR 标定文件名（现行代码已无该文件名的生产者；防旧机数据回流时误入库）
 data/char_ocr_layout.json
+# Edge 壳浏览器用户数据（源码态回落时 main.py 在仓库 data/ 下建 profile；绝不入库）
+data/edge_profile/
+
+# 塔吉多个人凭证（access/refresh token + 设备指纹；只存本机，绝不入库）
+data/tajiduo_token.json
+data/tajiduo_token.json.bak
+data/tajiduo_token.json.tmp
+
+# 面板令牌（SEC-05：每次启动重生成；只存本机，绝不入库）
+data/panel_token.json
+data/panel_token.json.bak
+data/panel_token.json.tmp
+
+# 塔吉多同步原始 payload 诊断留存（含个人角色面板数据；只存本机，绝不入库）
+data/tajiduo_last_payload.json
+data/tajiduo_last_payload.json.bak
+data/tajiduo_last_payload.json.tmp
+
+# 塔吉多抽卡本地累积存档（个人抽卡记录；只存本机，绝不入库）
+data/gacha_history.json
+data/gacha_history.json.bak
+data/gacha_history.json.tmp
+data/gacha_history.json.corrupt
+
+# 执行计划选项覆盖（面板 POST /api/oknte/plan 保存的用户偏好；只存本机，绝不入库）
+data/oknte_plan.json
+data/oknte_plan.json.bak
+data/oknte_plan.json.tmp
+
+# 攻略站同步快照（sites_fetch 运行时抓取生成：guide_sites.json + .bak 轮转；缓存数据不入库）
+# 例外：独立来源交叉核对快照（source_crosscheck.json）为合规证据链，入库
+data/sites/*
+!data/sites/source_crosscheck.json
+
+# 角色头像缓存（nteguide 下载的本机运行时数据；manifest+webp/avif 均不入库）
+data/avatars/
+
+# 审计报告（含未修复缺陷披露与内部架构细节；公开仓库不推送，只存本机）
+audit/

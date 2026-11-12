@@ -1,0 +1,180 @@
+{
+  "fetched_at": "2026-11-09 03:53:17",
+  "purpose": "独立来源交叉核对快照（数据只读核对，无游戏交互）。条目内容为侦察轮（2026-11-09）给出的 crossCheck 全景原文留存，作为 git 发布的合规证据链；本文件为静态快照，不参与运行时计算（planner 不读取）。",
+  "sources": {
+    "note": "侦察轮来源（https）；实现者于 2026-11-09 用 WebFetch 对下列证据 URL 逐条复核，复核结论记录在 recheck 字段。",
+    "wiki_mysqil_cultivation": {
+      "url": "https://wiki.mysqil.com/tools/cultivation",
+      "role": "养成计算器（体力消耗/鉴别产量/材料实名）",
+      "recheck_2026_11_09": "WebFetch 渲染文本确认材料实名：新锐/资深/特级猎人攻略、淡色/无彩/混沌染剂、甲硬币（x100/x2000/x4000 形式）；cost40/appraisalYield 等计算器 live JS 数值不在渲染文本中，由本地快照 data/mysqil/DetailedCalc.fresh.js（2026-10-29 实抓）证实：stamina={daily:240,cost40:40,cost60:60,weeklyBossMax:3}；appraisalYield 鉴别7：coins 120000 / charExp 225000 / weaponExp 125000 / skillBook 18 / weaponBreakMat 18（白当量）；S() 函数将 cost40 绑定 charExp/coins/weaponExp/skillBook/weaponBreakMat 的刷取次数；页脚模板原文「副本副产物（技能书/武器突破副产甲硬币，周本副产经验）已自动抵扣。」"
+    },
+    "wiki_mysqil_database": {
+      "url": "https://wiki.mysqil.com/database",
+      "role": "材料实名表",
+      "recheck_2026_11_09": "WebFetch 点名核对 34 项：33 项实名命中（含全部技能书系/弧盘芯系/经验材料实名）；「甲硬币」未在该页出现（已在 tools/cultivation 页命中）。"
+    },
+    "wiki_mysqil_beginner_guide": {
+      "url": "https://wiki.mysqil.com/guides/beginner-guide",
+      "role": "新手攻略（兔子洞关卡表）",
+      "recheck_2026_11_09": "WebFetch 确认：「兔子洞」=核心装备副本，产出空幕卡带和驱动块；关卡表「钟表把戏」（掉迪亚波罗斯/失落光芒）、「雕塑展馆」（掉恶魔之血·诅咒/街头拳王）、「结线织机」；「雕塑长廊/经纬织机/纬线织机」均未出现；页面无 40/次 体力标注，仅日清单「刷体力 240」（与侦察结论一致）。"
+    },
+    "ali213_materials": {
+      "url": "https://m.ali213.net/news/gl2609/1807213.html",
+      "role": "第三方养成材料页",
+      "recheck_2026_11_09": "WebFetch 引用原文：「基础技能书：新兵的怯懦×40、尉官的谨慎×40、白蔷薇×64，副本【扑克茶会】产出」；「弧盘突破：液态梦系列罐头（试用装×14、旅行者×18、罐装液态梦×18）」（注意页原文作「旅行者」，侦察摘要作「旅行装」，数量×18 一致）；全文未出现胡迪尼/魔术舞台/泡影罐头工厂/兔子洞等副本名。"
+    },
+    "nteguide": {
+      "url": "https://nteguide.com/zh/characters/<slug>/",
+      "role": "角色冷却数据来源（详见 data/character_cooldowns.json）",
+      "recheck_2026_11_09": "WebFetch 渲染文本仅见技能名无数值；E/Q 冷却取自页面内嵌 RSC JSON（curl 实抓 46 个角色页，解析 skills.skill/ultimate 字段），测得口径见 character_cooldowns.json。"
+    }
+  },
+  "crosscheck": [
+    {
+      "target_id": "exp_char",
+      "name": "角色经验（猎人攻略分）",
+      "ours": "副本=异象界域·胡迪尼的魔术舞台（经验本），体力=40/次（双倍扫荡80），掉落=猎人攻略分·新锐/资深/特级+甲硬币；每局产量 225000@鉴别7（materials.json:69-79, data/yields.json per_run.exp_char=225000）",
+      "independent": "wiki.mysqil.com/tasks 列「胡迪尼魔术舞台」副本实名；wiki 养成计算器 live JS（2026-11-09 实抓）stamina={cost40:40,...} 且 S() 函数将 cost40 绑定 charExp/coins；appraisalYield[7].charExp=225000；wiki /database 列「新锐/资深/特级猎人攻略」实名",
+      "verdict": "一致",
+      "evidence_url": "https://wiki.mysqil.com/tools/cultivation"
+    },
+    {
+      "target_id": "exp_arc",
+      "name": "弧盘经验（染剂）",
+      "ours": "source=异象界域/商店（来源未确认，可改）；stamina_blocks 注明染剂在魔术舞台刷；40/次；每局 125000@鉴别7（yields.json per_run.exp_arc=125000）",
+      "independent": "wiki live JS：weaponExp=cost40（40/次）、appraisalYield[7].weaponExp=125000；wiki /database 列淡色/无彩/混沌染剂实名；社区攻略（九游专区/Yahoo 转述，搜索摘要）称染剂出自胡迪尼的魔术舞台",
+      "verdict": "一致",
+      "evidence_url": "https://wiki.mysqil.com/tools/cultivation"
+    },
+    {
+      "target_id": "coin",
+      "name": "甲硬币",
+      "ours": "source=全副本/探索，随经验本 40/次；每局 120000@鉴别7（yields.json per_run.coin=120000）",
+      "independent": "wiki live JS：cost40 绑定 coins、appraisalYield[7].coins=120000；计算器注明「技能书/武器突破副产甲硬币，周本副产经验」已自动抵扣（DetailedCalc live 原文）；tasks 页日体力恢复 240（家具上限 320）",
+      "verdict": "一致",
+      "evidence_url": "https://wiki.mysqil.com/tools/cultivation"
+    },
+    {
+      "target_id": "ability_1",
+      "name": "异能升级材料·壹（军衔系：新兵的怯懦→「白蔷薇」）",
+      "ours": "副本=异象界域·扑克茶会（技能本），40/次，异能材料序号1；每局 18 白当量@鉴别7（yields.json）",
+      "independent": "ali213 养成材料页（2026-11-09 实抓）：「新兵的怯懦×40、尉官的谨慎×40、白蔷薇×64，副本【扑克茶会】产出」；wiki live JS：skillBook=cost40、appraisalYield[7].skillBook[0]=18；wiki /database 列「白蔷薇」「新兵的怯懦」「尉官的谨慎」实名",
+      "verdict": "一致",
+      "evidence_url": "https://m.ali213.net/news/gl2609/1807213.html"
+    },
+    {
+      "target_id": "ability_2",
+      "name": "异能升级材料·贰（雏鸟系：雏鸟的希冀→「橄榄枝」）",
+      "ours": "副本=异象界域·扑克茶会（技能本），40/次，序号2；每局 18 白当量@鉴别7",
+      "independent": "wiki /database 74 材料实名表含「雏鸟的希冀」「白鸽的振翅」「橄榄枝」；wiki live JS skillBook=cost40+18/局@鉴别7（五系共用同一技能本口径）；nteguide /zh/materials/ 历史索引未收录技能书系名，逐系关卡归属独立来源未单列",
+      "verdict": "一致",
+      "evidence_url": "https://wiki.mysqil.com/database"
+    },
+    {
+      "target_id": "ability_3",
+      "name": "异能升级材料·叁（帽子系：初次的期许→「黑帽子」）",
+      "ours": "副本=异象界域·扑克茶会（技能本），40/次，序号3",
+      "independent": "wiki /database 含「初次的期许」「已知的倦怠」「黑帽子」实名；wiki live JS skillBook=cost40、18白当量/局@鉴别7",
+      "verdict": "一致",
+      "evidence_url": "https://wiki.mysqil.com/database"
+    },
+    {
+      "target_id": "ability_4",
+      "name": "异能升级材料·肆（同频系：思维的同频→「心跳夜」）",
+      "ours": "副本=异象界域·扑克茶会（技能本），40/次，序号4",
+      "independent": "wiki /database 含「思维的同频」「信仰的共鸣」「心跳夜」实名；wiki live JS skillBook=cost40、18白当量/局@鉴别7",
+      "verdict": "一致",
+      "evidence_url": "https://wiki.mysqil.com/database"
+    },
+    {
+      "target_id": "ability_5",
+      "name": "异能升级材料·伍（水波系：水波的迟疑→「第二人」）",
+      "ours": "副本=异象界域·扑克茶会（技能本），40/次，序号5",
+      "independent": "wiki /database 含「水波的迟疑」「倒悬的轻响」实名（「第二人」在列）；wiki live JS skillBook=cost40、18白当量/局@鉴别7",
+      "verdict": "一致",
+      "evidence_url": "https://wiki.mysqil.com/database"
+    },
+    {
+      "target_id": "arc_1",
+      "name": "弧盘突破材料·壹（戏剧芯：入门级→典藏级）",
+      "ours": "副本=异象界域·泡影罐头工厂，40/次，弧盘材料序号1；掉落=剧芯系列·初级/大师/收藏家；每局 18 白当量@鉴别7",
+      "independent": "wiki /database 列「入门级/大师级/典藏级戏剧芯」实名；wiki live JS weaponBreakMat=cost40、appraisalYield[7].weaponBreakMat[0]=18；社区来源（九游专区等，搜索摘要）称泡影罐头工厂为弧盘突破副本、产剧芯系列",
+      "verdict": "一致",
+      "evidence_url": "https://wiki.mysqil.com/database"
+    },
+    {
+      "target_id": "arc_2",
+      "name": "弧盘突破材料·贰（液态梦：试用装→罐装）",
+      "ours": "副本=异象界域·泡影罐头工厂，40/次，序号2",
+      "independent": "wiki /database 列「液态梦试用装/旅行装/罐装液态梦」实名；ali213 页提及弧盘突破用「液态梦系列罐头（试用装×14、旅行装×18、罐装×18）」；wiki live JS weaponBreakMat=cost40",
+      "verdict": "一致",
+      "evidence_url": "https://wiki.mysqil.com/database"
+    },
+    {
+      "target_id": "arc_3",
+      "name": "弧盘突破材料·叁（苹果核：铁制→金色）",
+      "ours": "副本=异象界域·泡影罐头工厂，40/次，序号3",
+      "independent": "wiki /database 列「铁制/银质/金色苹果核」实名；wiki live JS weaponBreakMat=cost40、18白当量/局@鉴别7",
+      "verdict": "一致",
+      "evidence_url": "https://wiki.mysqil.com/database"
+    },
+    {
+      "target_id": "arc_4",
+      "name": "弧盘突破材料·肆（螺旋乐：碎屑→齐奏）",
+      "ours": "副本=异象界域·泡影罐头工厂，40/次，序号4",
+      "independent": "wiki /database 列「螺旋乐碎屑/小节/齐奏」实名（nteguide 历史索引英译为 Beaty/Versey/Harmony）；wiki live JS weaponBreakMat=cost40",
+      "verdict": "一致",
+      "evidence_url": "https://wiki.mysqil.com/database"
+    },
+    {
+      "target_id": "arc_5",
+      "name": "弧盘突破材料·伍（冷点心：无味→特制）",
+      "ours": "副本=异象界域·泡影罐头工厂，40/次，序号5（按 targets 现有口径并入罐头工厂块）",
+      "independent": "wiki /database 列「无味/原味/特制冷点心」实名；wiki live JS weaponBreakMat=cost40、18白当量/局@鉴别7",
+      "verdict": "一致",
+      "evidence_url": "https://wiki.mysqil.com/database"
+    },
+    {
+      "target_id": "console_1",
+      "name": "空幕·壹（钟表把戏，兔子洞节点1）",
+      "ours": "副本=异象界域·兔子洞，40/次，节点1「钟表把戏」；每局 2 个（yields.json console_*=2，mysqil 未收录为自校准值）",
+      "independent": "wiki beginner-guide（实抓）：「兔子洞」=核心装备副本，产出空幕卡带和驱动块；关卡表首行「钟表把戏」（掉迪亚波罗斯/失落光芒套装），难度层级 I→VI；但 wiki 养成计算器无 console 类目（S() 仅处理 7 类材料），40/次无独立数值",
+      "verdict": "一致",
+      "evidence_url": "https://wiki.mysqil.com/guides/beginner-guide"
+    },
+    {
+      "target_id": "console_2",
+      "name": "空幕·贰（雕塑长廊，兔子洞节点2）",
+      "ours": "副本=异象界域·兔子洞，40/次，节点2「雕塑长廊」",
+      "independent": "wiki beginner-guide 关卡表为「雕塑展馆」（掉恶魔之血·诅咒/街头拳王套装）——与本地「雕塑长廊」为命名变体，副本归属一致",
+      "verdict": "不一致",
+      "evidence_url": "https://wiki.mysqil.com/guides/beginner-guide"
+    },
+    {
+      "target_id": "console_3",
+      "name": "空幕·叁（经纬织机，兔子洞节点3）",
+      "ours": "副本=异象界域·兔子洞，40/次，节点3「经纬织机」",
+      "independent": "wiki beginner-guide 关卡表为「结线织机」——与本地「经纬织机」为命名变体（另见社区摘要亦作「纬线织机」），副本归属一致",
+      "verdict": "不一致",
+      "evidence_url": "https://wiki.mysqil.com/guides/beginner-guide"
+    },
+    {
+      "target_id": "console_4",
+      "name": "空幕·肆（守卫萝卜，兔子洞节点4）",
+      "verdict": "无数据",
+      "note": "侦察全景仅述「无数据 3 本」未枚举；本快照按 targets 全集 19 − 一致 14 − 不一致 2 = 3 排除法推定为 console_4/5/6，非侦察原文，随下一轮核对更新"
+    },
+    {
+      "target_id": "console_5",
+      "name": "空幕·伍（心智地图，兔子洞节点5）",
+      "verdict": "无数据",
+      "note": "侦察全景仅述「无数据 3 本」未枚举；本快照按 targets 全集 19 − 一致 14 − 不一致 2 = 3 排除法推定为 console_4/5/6，非侦察原文，随下一轮核对更新"
+    },
+    {
+      "target_id": "console_6",
+      "name": "空幕·陆（铁轨之夜，兔子洞节点6）",
+      "verdict": "无数据",
+      "note": "侦察全景仅述「无数据 3 本」未枚举；本快照按 targets 全集 19 − 一致 14 − 不一致 2 = 3 排除法推定为 console_4/5/6，非侦察原文，随下一轮核对更新"
+    }
+  ]
+}
