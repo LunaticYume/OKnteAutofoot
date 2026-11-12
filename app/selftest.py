@@ -5449,6 +5449,152 @@ def test_tajiduo_endpoints_http():
 
 
 @case
+def test_http_body_contract_srv01_srv05():
+    """SRV-01 请求体契约 + SRV-05 teams 显式键（HTTP 层真实 Handler 全链路）：
+    三路由 × 十形态矩阵（非对象/空体/坏 CL/超限声明 CL/非法 JSON/合法对照）、
+    teams 预置不被空体或缺键清空（零落盘）、白名单路由空体放行、非法体不得绕过
+    鉴权（B2.1 契约 401+panel_auth）、连续非法请求服务存活。
+    wire 事实（实施会话探针）：http.client/urllib 的 body=None POST 自动补
+    Content-Length: 0，与无头同落 _body 的 length<=0 分支，断言等效；
+    inspect.getsource 经 functools.wraps 的 __wrapped__ 解包回原路由链。"""
+    import http.client
+    import threading
+    from app import main as main_mod
+    from app.main import create_server
+
+    def raw_call(port, path, *, raw=None, cl=None, token=True):
+        """全手动 wire 构造（putrequest/putheader/endheaders/send）：绕开
+        http.client 对 body 的自动补头，可伪造坏 Content-Length（"abc"）与
+        超限声明 CL（3145728+实发 2 字节）。cl=None 且 raw=None → 不带
+        Content-Length 头（无头构造）。"""
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        try:
+            conn.putrequest("POST", path)
+            conn.putheader("Origin", "http://127.0.0.1:%d" % port)  # 回环 Origin 过防线
+            if token:
+                conn.putheader("X-Panel-Token", main_mod._PANEL_TOKEN)
+            if cl is not None:
+                conn.putheader("Content-Length", str(cl))
+            conn.endheaders()
+            if raw:
+                conn.send(raw)
+            resp = conn.getresponse()
+            data = json.loads(resp.read().decode("utf-8"))
+            return resp.status, data
+        finally:
+            conn.close()
+
+    def post_json(port, path, obj, token=True):
+        raw = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        return raw_call(port, path, raw=raw, cl=len(raw), token=token)
+
+    # 三条读体路由（矩阵对象）+ 精确 error 文案
+    routes = ("/api/characters", "/api/settings", "/api/teams/save")
+    NOT_OBJ = "请求体必须是 JSON 对象"
+    with _StateGuard():
+        STATE.data["settings"] = dict(DEFAULT_SETTINGS)
+        # SEC-05：直设全局令牌（现生成，零凭据字面量）→ _ensure_panel_token 空转
+        main_mod._PANEL_TOKEN = main_mod._new_panel_token()
+        server, _port = create_server(0, auto_range=1)
+        port = server.server_address[1]
+        threading.Thread(target=server.serve_forever, daemon=True,
+                         name="selftest-body-contract-http").start()
+        try:
+            # ---- 矩阵 ①-⑤：非对象 JSON 根值 → 400「请求体必须是 JSON 对象」----
+            # null 也是合法 JSON 但不是对象：400 同通道（文案单值化，非旧「不是合法 JSON」）
+            for obj in ([1, 2, 3], "abc", 123, True, None):
+                for path in routes:
+                    code, data = post_json(port, path, obj)
+                    assert code == 400 and data == {"error": NOT_OBJ}, \
+                        f"{path} ← {obj!r}: {code}, {data}"
+            # ---- 矩阵 ⑥：空体两种构造（无 CL 头 / CL:0）→ 400「缺少请求体」----
+            for path in routes:
+                code, data = raw_call(port, path)  # 无 Content-Length 头
+                assert code == 400 and data == {"error": "缺少请求体"}, \
+                    f"{path} 无头空体: {code}, {data}"
+                code, data = raw_call(port, path, cl=0)  # CL:0（等价 urllib body=None）
+                assert code == 400 and data == {"error": "缺少请求体"}, \
+                    f"{path} CL:0 空体: {code}, {data}"
+            # ---- 矩阵 ⑦：非法 JSON 字节 → 400（文案回归：旧通道不变）----
+            for path in routes:
+                code, data = raw_call(port, path, raw=b"{not-json", cl=9)
+                assert code == 400 and data == {"error": "请求体不是合法 JSON"}, \
+                    f"{path} 非法 JSON: {code}, {data}"
+            # ---- 矩阵 ⑧：声明 CL 3MB + 实发 2 字节 → 413（读体之前判）----
+            for path in routes:
+                code, data = raw_call(port, path, raw=b"{}", cl=3 * 1024 * 1024)
+                assert code == 413 and "超过大小上限" in data.get("error", ""), \
+                    f"{path} 超限声明 CL: {code}, {data}"
+            # ---- 矩阵 ⑨：坏 Content-Length → 400「Content-Length 头无效」----
+            # （此前静默归并 {} 照跑，teams/save 会 200 清空配队）
+            for path in routes:
+                code, data = raw_call(port, path, cl="abc")
+                assert code == 400 and data == {"error": "Content-Length 头无效"}, \
+                    f"{path} 坏 CL: {code}, {data}"
+            # ---- 矩阵 ⑩：合法对象对照 → 200（合法路径零变化）----
+            code, data = post_json(port, "/api/characters", {
+                "characters": [{"id": "b", "name": "对照角色"}]})
+            assert code == 200 and data.get("ok") is True, (code, data)
+            code, data = post_json(port, "/api/settings", dict(DEFAULT_SETTINGS))
+            assert code == 200 and isinstance(data.get("rev"), int), (code, data)
+            code, data = post_json(port, "/api/teams/save", {"teams": []})
+            assert code == 200 and isinstance(data.get("rev"), int), (code, data)
+            # ---- SRV-05 专项：预置队不被空体 / 缺键清空（零落盘）----
+            preset = [{"name": "预置队", "members": ["安魂曲"]}]
+            STATE.data["teams"] = [dict(t) for t in preset]
+            rev0 = STATE.rev
+            code, data = raw_call(port, "/api/teams/save", cl=0)  # 空体
+            assert code == 400 and data == {"error": "缺少请求体"}, (code, data)
+            code, data = post_json(port, "/api/teams/save", {})  # 缺 "teams" 键
+            assert code == 400 and data == {"error": "teams 必须是数组"}, (code, data)
+            code, data = post_json(port, "/api/teams/save", {"teams": "x"})
+            assert code == 400 and data == {"error": "teams 必须是数组"}, (code, data)
+            assert STATE.rev == rev0, f"拒绝路径不得落盘: rev {rev0}→{STATE.rev}"
+            # GET /api/teams：预置队原样保留
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+            try:
+                conn.request("GET", "/api/teams", headers={
+                    "Origin": "http://127.0.0.1:%d" % port,
+                    "X-Panel-Token": main_mod._PANEL_TOKEN})
+                resp = conn.getresponse()
+                code = resp.status
+                data = json.loads(resp.read().decode("utf-8"))
+            finally:
+                conn.close()
+            assert code == 200 and data.get("teams") == preset, (code, data)
+            code, data = post_json(port, "/api/teams/save", {
+                "teams": [{"name": "新队", "members": ["安魂曲"]}]})
+            assert code == 200 and data.get("teams") == [
+                {"name": "新队", "members": ["安魂曲"]}], (code, data)
+            # ---- 白名单空体放行：不读体路由照跑 200（钉住 _NO_BODY_ROUTES）----
+            code, data = raw_call(port, "/api/stop")  # 无头空体 → {} 照跑
+            assert code == 200 and "ok" in data, (code, data)
+            code, data = raw_call(port, "/api/ocr/cancel", cl=0)  # CL:0 → {} 照跑
+            assert code == 200 and data.get("cancelled") is True, (code, data)
+            # ---- 鉴权序（B2.1 契约）：非法体不得绕过 token 闸 → 401+panel_auth ----
+            code, data = raw_call(port, "/api/characters", raw=b"[1,2,3]",
+                                  cl=7, token=False)
+            assert code == 401 and data.get("panel_auth") is True, (code, data)
+            # ---- 服务存活：连续 10 次非法请求后 bootstrap 仍 200 ----
+            for _ in range(10):
+                raw_call(port, "/api/characters", raw=b"[1,2,3]", cl=7)
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+            try:
+                conn.request("GET", "/api/bootstrap", headers={
+                    "Origin": "http://127.0.0.1:%d" % port,
+                    "X-Panel-Token": main_mod._PANEL_TOKEN})
+                resp = conn.getresponse()
+                boot = json.loads(resp.read().decode("utf-8"))
+            finally:
+                conn.close()
+            assert resp.status == 200 and isinstance(boot.get("compat"), dict), \
+                (resp.status, sorted(boot.keys())[:5])
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
+@case
 def test_tajiduo_gacha_parse_and_merge():
     """抽卡解析（构造 TajiduoGachaSummary 形态 payload）+ 本地累积合并：
     并集/幂等/180 天旧数据保留/键冲突快照胜出/坏键跳过/未识别池/tab 缺失跳过；

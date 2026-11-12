@@ -2,6 +2,7 @@
 import base64
 import copy
 import ctypes
+import functools
 import json
 import os
 import re
@@ -11,6 +12,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import webbrowser
 from pathlib import Path
 from datetime import datetime
@@ -2794,6 +2796,50 @@ def _ensure_panel_token():
         })
 
 
+# ---- SRV-01 请求体契约：哨兵 + 不读体路由白名单 + 分发兜底（SRV-01/SRV-05）----
+# 四个判别哨兵：_body 的四类「非 dict」解析结局。object() 单例做 is 判别零碰撞，
+# _body 保持纯解析（错误发送统一收敛在 do_POST 闸层，便于闸序审计）。
+_EMPTY_BODY = object()   # 无 Content-Length 头 / CL:0 / 负 CL
+_BAD_CL = object()       # Content-Length 头非数字
+_OVERSIZE = object()     # Content-Length 超过 2MB 上限
+_NOT_OBJECT = object()   # JSON 解析成功但根值不是对象（[1,2,3]/"abc"/123/true/null）
+
+# 不读请求体的 POST 路由（空体放行为 {}）：本表逐条实读核验——分支内零 body 访问。
+# 维护规则：
+#   - 新增「读体」路由不得加入本集合（fail-safe：忘加则空体收 400 拒绝，而非静默
+#     透传 {} 进路由）；
+#   - 新增「不读体」路由必须加入本集合（index.html 的 fetch-cassettes/fetch-upgrades/
+#     sync-guide 三处无 body 裸 fetch 与 curl 无体 POST /api/stop 依赖此放行）。
+_NO_BODY_ROUTES = frozenset((
+    "/api/wiki/fetch-upgrades", "/api/wiki/fetch-cassettes",
+    "/api/sites/sync-guide", "/api/tajiduo/sync", "/api/tajiduo/sync-gacha",
+    "/api/tajiduo/logout", "/api/ocr/cancel", "/api/plan", "/api/dry-run",
+    "/api/stop", "/api/today/clear-blacklist",
+))
+
+
+def _guarded_dispatch(fn):
+    """分发链顶层兜底：任何未捕获异常回 500 正常 HTTP 响应（此前客户端只见
+    RemoteDisconnected），traceback 仅进 stderr 不泄客户端。KeyboardInterrupt/
+    SystemExit 穿透不吞。functools.wraps 保留 __wrapped__：inspect.getsource
+    (Handler.do_GET/do_POST) 仍读原路由链（既有静态源校验依赖）。"""
+    @functools.wraps(fn)
+    def wrapper(self):
+        self._responded = False
+        try:
+            fn(self)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception:
+            traceback.print_exc(file=sys.stderr)
+            if not self._responded:  # 路由已发响应后再抛→不再二次发送
+                try:
+                    self._send(500, {"error": "服务器内部错误"})
+                except Exception:
+                    pass
+    return wrapper
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "OKntePlanner/1.0"
 
@@ -2802,6 +2848,9 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- 基础 ----
     def _send(self, code, payload, content_type="application/json; charset=utf-8"):
+        # 约定：全仓 send_response 唯一调用点在此（_guarded_dispatch 的 _responded
+        # 防双发依赖它）——绕过 _send 直接 send_response 会破坏防双发逻辑
+        self._responded = True
         body = payload if isinstance(payload, bytes) else json.dumps(
             payload, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
@@ -2812,16 +2861,26 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _body(self):
+        """纯解析无副作用：dict → 原样透传；四类非 dict 结局返回判别哨兵；
+        字节解析失败 → None。已知 wire 事实：客户端无体 POST 通常自动补
+        Content-Length: 0（http.client/urllib），与无头同落 length<=0 分支。
+        短读挂起形态（CL 声明>实发且客户端不关写端）不在此治——rfile.read
+        阻塞语义保留（登记册未要求，超范围）。"""
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except (TypeError, ValueError):
-            return {}  # 非数字 Content-Length：按无 body 处理，而不是让请求无响应挂死
-        if length <= 0 or length > 2 * 1024 * 1024:
-            return {}
+            return _BAD_CL  # 非数字 Content-Length 不再静默归并 {}
+        if length > 2 * 1024 * 1024:  # 超限在读体之前判（保持现序，拒绝 2MB+ 声明）
+            return _OVERSIZE
+        if length <= 0:  # 含无 CL 头 int(None or 0)、CL:0、负 CL
+            return _EMPTY_BODY
         try:
-            return json.loads(self.rfile.read(length).decode("utf-8"))
+            data = json.loads(self.rfile.read(length).decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
-            return None
+            return None  # 从此唯一对应「字节解析失败」
+        if not isinstance(data, dict):  # null 也归此（解析成功但根值非对象）
+            return _NOT_OBJECT
+        return data
 
     def _game_data_or_none(self):
         """读取游戏目录；文件缺失/损坏返回 None（调用方回 500，不让请求无响应挂死）。"""
@@ -2894,6 +2953,7 @@ class Handler(BaseHTTPRequestHandler):
         return OkNte(STATE.settings["oknte_root"])
 
     # ---- GET ----
+    @_guarded_dispatch
     def do_GET(self):
         path = self.path.split("?", 1)[0]
         # Host/Origin 闸扩展到全部路径（SEC-05：此前仅 /api/ 前缀，静态三通道零检查
@@ -3188,6 +3248,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_404(path)
 
     # ---- POST ----
+    @_guarded_dispatch
     def do_POST(self):
         path = self.path.split("?", 1)[0]
         if self._reject_foreign():
@@ -3198,9 +3259,26 @@ class Handler(BaseHTTPRequestHandler):
         if not self._panel_token_ok():
             return
         body = self._body()
+        # 体闸（SRV-01）：四类非 dict 结局统一在此映射，闸序仍在 token 后、409 前
+        # ——体形态不得影响 401 契约，409 白名单 5 条路由同样享受体校验
         if body is None:
             self._send(400, {"error": "请求体不是合法 JSON"})
             return
+        if body is _OVERSIZE:
+            self._send(413, {"error": "请求体超过大小上限（2MB），请减小后重试"})
+            return
+        if body is _BAD_CL:
+            self._send(400, {"error": "Content-Length 头无效"})
+            return
+        if body is _NOT_OBJECT:
+            self._send(400, {"error": "请求体必须是 JSON 对象"})
+            return
+        if body is _EMPTY_BODY:
+            if path in _NO_BODY_ROUTES:  # 不读体路由：空体放行为 {} 照跑
+                body = {}
+            else:
+                self._send(400, {"error": "缺少请求体"})
+                return
         if path not in ("/api/stop", "/api/dry-run", "/api/today/clear-blacklist",
                         "/api/ocr/cancel", "/api/tajiduo/logout") and \
                 RUNNER.snapshot()["state"] in ("running", "waiting", "stopping"):
@@ -3741,6 +3819,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"ok": True, "rev": STATE.rev,  # rev 回传（复审阻断 #1）
                              "cleared": cleared})
         elif path == "/api/teams/save":
+            # SRV-05：缺 "teams" 键或非数组一律 400 拒绝（此前 {} / 缺键会把全部
+            # 配队静默清空）。防线单点放路由入口：_sanitize_teams 的 {}→[] 语义
+            # 仍被 apply_import / GET /api/teams 合法消费，不动其本体
+            if not isinstance(body.get("teams"), list):
+                self._send(400, {"error": "teams 必须是数组"})
+                return
             clean = _sanitize_teams(body)
             with STATE.lock:
                 STATE.data["teams"] = clean

@@ -49,4 +49,19 @@ ALLOWED_HOSTS = ("ntestrategy.com", "wiki.mysqil.com", "everness.info", "nte.nan
   提交；推送若因凭据交互授权失败，提示用户在终端执行一次。
 - **不碰 `app/web/index.html`** 之外的约定：纯后端/数据任务不得改动前端页面。
 - 写文件一律 `pathlib` / 仓库 `save_json_atomic`；落盘前对被覆盖数据做 `.bak` 备份。
+- **测试临时目录卫生（2026-11-13 追加，保持 C 盘干净）**：隔离实验/测试的临时目录
+  **不得滞留 C 盘**——优先把临时根设在仓库内 `.tmp/`（已 gitignore，E: 盘），
+  `tempfile` 调用显式传 `dir=`；若必须用系统临时目录，必须用
+  `TemporaryDirectory` 上下文或 `finally` 清理，测试结束即删。测试进程必须
+  正确关闭（不留孤儿子进程/锁住的临时句柄）。
+- **关键测试痕迹保留（2026-11-13 追加，禁止一刀切删除）**：清扫前必须**先分类
+  甄别**——纯中间态（设备指纹探测 `oknte_devices_*`、OCR 映射夹具
+  `oknte_ocr_map_*` 等无证据价值产物）可删；**关键测试痕迹必须先归档再清理**：
+  验证/验收输出（`oknte_verify_*`、verify_dist/selftest/smoke 结果）、E2E 与
+  walkthrough 产物（截图/日志/驱动脚本）、打包探针输出、故障注入取证等，归档到
+  仓库内 `.testarchive/<日期>-<轮次>/`（gitignore，长期保留），与
+  `docs/verification/`（入库正式验收材料）分工。**不得按前缀+时间一刀切删除；
+  归属不明的一律先归档**。正式验收证据以 `docs/verification/` 与 `audit/` 报告
+  为准。产生证据的测试应直接把产物写进 `.testarchive/<日期>-<轮次>/`，避免事后
+  抢救。
 - 诊断结论必须引用日志原文与行号；检查没跑过就如实说没跑过，不得伪造通过。

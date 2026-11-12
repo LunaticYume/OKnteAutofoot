@@ -126,20 +126,27 @@ def _request(path, payload=None, timeout=30):
         return json.loads(resp.read().decode("utf-8"))
 
 
-def _raw_request(path, payload=None, token=None, host=None, origin=None, timeout=30):
+def _raw_request(path, payload=None, token=None, host=None, origin=None, timeout=30,
+                 raw_body=None, headers=None):
     """鉴权场景低层请求：返回 (status, body_bytes)，非 2xx 不抛（401/403 是被测
     结果）。token=None 不带 X-Panel-Token；host/origin 用于伪造 DNS 重绑定形态
-    （连接仍是回环 URL，Host/Origin 头是攻击者域）。"""
+    （连接仍是回环 URL，Host/Origin 头是攻击者域）。raw_body 非 None 时直接以
+    该 bytes 作 POST data（不 json.dumps、不走 GET 分支——SRV-01 原始体构造）；
+    headers 为额外头（后写覆盖：传 "Content-length" 键可抑制 urllib 自动补写，
+    原样伪造坏 CL / 超限声明 CL）。"""
     url = BASE + path
     assert urllib.parse.urlsplit(url).hostname == "127.0.0.1", f"只允许本机: {url}"
-    headers = {}
+    headers = dict(headers) if headers else {}
     if token:
         headers["X-Panel-Token"] = token
     if host:
         headers["Host"] = host
     if origin:
         headers["Origin"] = origin
-    if payload is None:
+    if raw_body is not None:
+        req = urllib.request.Request(url, data=raw_body, method="POST",
+                                     headers=headers)
+    elif payload is None:
         req = urllib.request.Request(url, method="GET", headers=headers)
     else:
         headers["Content-Type"] = "application/json; charset=utf-8"
@@ -458,9 +465,74 @@ def _run_restart_scenarios(env):
         out.close()
 
 
+def _step_body_contract_srv01_srv05():
+    """SRV-01 体契约 + SRV-05 teams 显式键（真实面板子进程全链路）：
+    ① 原始非对象体 b"[1,2,3]"→400 且 error 可解析；② 空体 raw_body=b""（urllib
+    自动补 CL:0）POST /api/stop→200（_NO_BODY_ROUTES 白名单不误伤）；③ 空体打
+    读体路由→400「缺少请求体」；④ 伪造 Content-length: abc→400；⑤ 伪造
+    Content-length: 3145728（实发 b"{}"）→413；⑥ 无 token+非法体→401 而非 400
+    （非法体不得绕过鉴权，B2.1 契约）；⑦ 连续 5 次非法请求后 bootstrap→200
+    （服务不退出）；⑧ teams 保存→缺键 400→队不丢（写盘均落 _StateFileGuard
+    覆盖的 data/state.json，与 _step_characters 同口径）。"""
+    token = _panel_token()
+    assert token, "体契约场景前置：panel_token.json 应已生成（bootstrap 步已过）"
+
+    # ①: 带 token 原始非对象体 → 400「请求体必须是 JSON 对象」
+    status, raw = _raw_request("/api/characters", raw_body=b"[1,2,3]", token=token)
+    assert status == 400 and _json_body(raw).get("error") == "请求体必须是 JSON 对象", \
+        f"①: 预期 400+统一文案，实际 {status}, {raw[:120]!r}"
+
+    # ②: 空体（urllib 自动补 Content-Length: 0）POST /api/stop → 200 白名单放行
+    status, raw = _raw_request("/api/stop", raw_body=b"", token=token)
+    assert status == 200 and "ok" in _json_body(raw), \
+        f"②: 白名单路由空体预期 200，实际 {status}, {raw[:120]!r}"
+
+    # ③: 空体打读体路由 → 400「缺少请求体」
+    status, raw = _raw_request("/api/characters", raw_body=b"", token=token)
+    assert status == 400 and _json_body(raw).get("error") == "缺少请求体", \
+        f"③: 预期 400 缺少请求体，实际 {status}, {raw[:120]!r}"
+
+    # ④: 伪造坏 Content-Length（headers 传 Content-length 键抑制自动补写）→ 400
+    status, raw = _raw_request("/api/characters", raw_body=b"{}", token=token,
+                               headers={"Content-length": "abc"})
+    assert status == 400 and _json_body(raw).get("error") == "Content-Length 头无效", \
+        f"④: 坏 CL 预期 400，实际 {status}, {raw[:120]!r}"
+
+    # ⑤: 伪造超限声明 CL 3MB（实发 2 字节）→ 413（读体之前判）
+    status, raw = _raw_request("/api/characters", raw_body=b"{}", token=token,
+                               headers={"Content-length": "3145728"})
+    assert status == 413 and "超过大小上限" in _json_body(raw).get("error", ""), \
+        f"⑤: 超限声明 CL 预期 413，实际 {status}, {raw[:120]!r}"
+
+    # ⑥: 无 token + 非法体 → 401 而非 400（鉴权先于体闸）
+    status, raw = _raw_request("/api/characters", raw_body=b"[1,2,3]")
+    assert status == 401 and _json_body(raw).get("panel_auth") is True, \
+        f"⑥: 非法体不得绕过鉴权，预期 401+panel_auth，实际 {status}, {raw[:120]!r}"
+
+    # ⑦: 连续 5 次非法请求后服务存活（不退出、不挂死）
+    for _ in range(5):
+        status, raw = _raw_request("/api/characters", raw_body=b"[1,2,3]", token=token)
+        assert status == 400, f"⑦: 非法请求预期 400，实际 {status}, {raw[:120]!r}"
+    boot = _request("/api/bootstrap")
+    assert isinstance(boot.get("compat"), dict), "⑦: 非法请求后 bootstrap 必须仍可用"
+
+    # ⑧: SRV-05 —— 保存→缺键 400→预置队不被清空
+    saved = _request("/api/teams/save", {"teams": [{"name": "冒烟队",
+                                                    "members": ["冒烟测试角色"]}]})
+    assert saved.get("ok") is True, f"⑧: teams 保存预期 200，实际 {saved}"
+    status, raw = _raw_request("/api/teams/save", raw_body=b"{}", token=token)
+    assert status == 400 and _json_body(raw).get("error") == "teams 必须是数组", \
+        f"⑧: 缺 teams 键预期 400，实际 {status}, {raw[:120]!r}"
+    teams = _request("/api/teams").get("teams")
+    assert isinstance(teams, list) and any(
+        t.get("name") == "冒烟队" for t in teams), f"⑧: 冒烟队不得被缺键体清空: {teams}"
+
+
 STEPS = [
     ("bootstrap 就绪且含 compat", _wait_bootstrap),
     ("SEC-05 鉴权闸场景 A-K（401/403/静态闸/root 指纹闸）", _step_auth_gate),
+    ("SRV-01/05 体契约场景（非对象/空体/坏CL/超限/鉴权序/teams 键）",
+     _step_body_contract_srv01_srv05),
     ("POST /api/characters 保存样例角色", _step_characters),
     ("POST /api/inventory 保存库存", _step_inventory),
     ("POST /api/plan 返回200且含 plan", _step_plan),
