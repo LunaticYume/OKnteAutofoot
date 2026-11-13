@@ -19,9 +19,12 @@ scan_used_stamina 取最大值。
 import copy
 import json
 import os
+import re
 import shutil
+import subprocess
 import sys
 import tempfile
+import threading
 import time
 import traceback
 from datetime import datetime
@@ -3844,7 +3847,7 @@ def test_ocr_traverse_overlap_regression():
         page2 = rows[1] + rows[2] + rows[3]   # 滚 1 行：开头 2 行（10 格）与之前页重复
         seq = {"n": 0}
 
-        def fake_traverse(hwnd, layout, win_size):
+        def fake_traverse(hwnd, layout, win_size, gen=None):
             seq["n"] += 1
             return page1 if seq["n"] == 1 else list(page2)  # 之后每页都与 page2 相同
 
@@ -3899,7 +3902,7 @@ def test_ocr_unknown_cells_keep_traversing():
         seq = {"n": 0}
         scrolls = {"n": 0}
 
-        def fake_traverse(hwnd, layout, win_size):
+        def fake_traverse(hwnd, layout, win_size, gen=None):
             seq["n"] += 1
             if seq["n"] == 1:
                 return list(page_known)
@@ -3964,7 +3967,7 @@ def test_ocr_traverse_cancel():
         page2 = ["海之泪 ×17"] * 3
         seq = {"n": 0}
 
-        def fake_traverse(hwnd, layout, win_size):
+        def fake_traverse(hwnd, layout, win_size, gen=None):
             seq["n"] += 1
             if seq["n"] == 2:
                 main_mod._ocr_cancel_active()  # 模拟第 2 页点击期间用户取消（定向当前代）
@@ -4037,7 +4040,7 @@ def test_ocr_cell_cancel_and_token_isolation():
                         main_mod._ocr_cancel_active()
                     yield item
 
-        def fake_traverse(hwnd, layout, win_size):
+        def fake_traverse(hwnd, layout, win_size, gen=None):
             return _CancelAtSecondCell(page)
 
         orig = (main_mod._bind_game_window, main_mod._ocr_traverse_page,
@@ -4313,7 +4316,7 @@ def test_ocr_numeric_noise_traverse():
         page2 = ["1519", "×42", "1,234"]                    # 整页纯数字/数字+分隔符
         seq = {"n": 0}
 
-        def fake_traverse(hwnd, layout, win_size):
+        def fake_traverse(hwnd, layout, win_size, gen=None):
             seq["n"] += 1
             return list(page1 if seq["n"] == 1 else page2)
 
@@ -7009,7 +7012,451 @@ def test_build_dist_data_gate():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-# ---------- 汇总 ----------
+# ---------- B2.3 SEC-10：受限提权辅助进程（方案B，2026-11-14 用户裁决） ----------
+
+_SEC10_TMP_BASE = os.path.join(_ROOT, ".tmp", "sec10")
+
+
+def _sec10_tmp(name):
+    """SEC-10 用例临时根：仓库 .tmp/ 下（AGENTS.md 卫生规则，不落 C 盘）。"""
+    os.makedirs(_SEC10_TMP_BASE, exist_ok=True)
+    return tempfile.mkdtemp(prefix=name + "_", dir=_SEC10_TMP_BASE)
+
+
+def _sec10_root(tmp, content="placeholder"):
+    """伪造 ok-nte 根：<tmp>/root/data/apps/ok-nte/python/python.exe（占位内容，
+    供指纹/校验用例；执行类用例用 _sec10_materialize_python）。"""
+    root = _safe_path(tmp, "root")
+    pydir = _safe_path(root, "data", "apps", "ok-nte", "python")
+    os.makedirs(pydir, exist_ok=True)
+    Path(_safe_path(pydir, "python.exe")).write_text(content, encoding="utf-8")
+    return root
+
+
+def _sec10_materialize_python(tmp):
+    """把当前解释器物化到 <tmp>/root/.../python.exe（硬链接优先——同卷零拷贝；
+    跨卷回退拷贝 exe + 运行 DLL），并做一次可执行探针。失败返回 None（用例 SKIP）。
+    打包态直接返回 None：入口是 GUI EXE，物化不出可用 -c 执行的解释器，且探针
+    会误拉起整个面板。"""
+    if getattr(sys, "frozen", False):
+        return None
+    root = _safe_path(tmp, "root")
+    pydir = _safe_path(root, "data", "apps", "ok-nte", "python")
+    os.makedirs(pydir, exist_ok=True)
+    py = _safe_path(pydir, "python.exe")
+    if os.path.abspath(sys.executable).lower() != py.lower():
+        try:
+            os.link(sys.executable, py)
+        except OSError:
+            src = os.path.dirname(sys.executable)
+            shutil.copy2(sys.executable, py)
+            for name in os.listdir(src):
+                low = name.lower()
+                if re.match(r"^python3\d+\.dll$", low) or low.startswith("vcruntime"):
+                    try:
+                        shutil.copy2(os.path.join(src, name), os.path.join(pydir, name))
+                    except OSError:
+                        return None
+    try:
+        probe = subprocess.run([py, "-c", "print(1)"], capture_output=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return root if probe.returncode == 0 else None
+
+
+@case
+def test_elev_helper_pure_validators():
+    """SEC-10 纯校验矩阵：stdout 文件名/任务名/坐标/launcher/profile/启动配置
+    白名单全部 fail-closed（不触系统资源，离线可测）。"""
+    from app import elev_helper as eh
+    # stdout 文件名白名单：固定前缀、无分隔符、长度受限
+    assert eh.safe_stdout_name("ok-nte-headless-20261114-abcdef.log")
+    for bad in ("", "a.log", "../evil.log", "a/b.log", "a\\b.log", "..",
+                "ok-nte-live.log",
+                "ok-nte-headless-" + "x" * 200 + ".log"):
+        assert not eh.safe_stdout_name(bad), repr(bad)
+    # task 白名单
+    assert eh.task_allowed("日常任务") and eh.task_allowed("AnomalyHunter")
+    for bad in ("", "cmd.exe", "AnomalyHunter ", "run_task -c"):
+        assert not eh.task_allowed(bad), repr(bad)
+    # 坐标必须落在虚拟屏幕内
+    assert eh.coords_in_bounds(100, 200, (0, 0, 1920, 1080))
+    assert not eh.coords_in_bounds(-1, 0, (0, 0, 1920, 1080))
+    assert not eh.coords_in_bounds(1919, 1080, (0, 0, 1920, 1080))
+    assert not eh.coords_in_bounds("x", 0, (0, 0, 1920, 1080))
+    assert not eh.coords_in_bounds(0, 0, (0, 0, 0, 0))
+    tmp = _sec10_tmp("pure")
+    try:
+        root = _sec10_root(tmp)
+        profile = _safe_path(root, "working", "configs_planner")
+        os.makedirs(profile, exist_ok=True)
+        good = _safe_path(profile, "run_planner_task.py")
+        Path(good).write_text("pass", encoding="utf-8")
+        assert eh.launcher_allowed(good, root)
+        assert not eh.launcher_allowed(_safe_path(root, "working", "main.py"), root)
+        assert not eh.launcher_allowed(_safe_path(root, "working", "configs",
+                                                  "run_planner_task.py"), root)
+        assert not eh.launcher_allowed(_safe_path(profile, "evil.py"), root)
+        assert not eh.launcher_allowed(good + ".bak", root)
+        assert not eh.launcher_allowed(good, tmp)  # root 不匹配
+        assert eh.profile_allowed(profile, root)
+        assert not eh.profile_allowed(_safe_path(root, "working", "configs"), root)
+        # 启动配置校验矩阵（fail-closed）
+        base = {"schema": 1, "token": "a" * 64, "parent_pid": 4321,
+                "root": root, "log_dir": root, "game_process": "HTGame.exe"}
+
+        def cfg_ok(**over):
+            merged = dict(base)
+            merged.update(over)
+            return merged
+
+        def expect_cfg_reject(cfg, cfg_path, anchor):
+            try:
+                eh.validate_config(cfg, cfg_path, anchor)
+                raise AssertionError("配置应被拒绝: %r" % (cfg,))
+            except eh.ConfigError:
+                pass
+        # 锚定目录 = root（配置文件本应位于 log_dir=root 内），逐字段触发各自拒绝
+        root_real = os.path.realpath(root)
+        outside = _safe_path(tmp, "elev_helper_config-1-abcd1234.json")
+        for over in ({"schema": 2}, {"token": "short"}, {"token": "z" * 64},
+                     {"parent_pid": 0}, {"parent_pid": True}, {"parent_pid": "9"},
+                     {"root": _safe_path(tmp, "nope")},
+                     {"log_dir": _safe_path(tmp, "nope")},
+                     {"game_process": ""}, {"game_process": "x" * 100}):
+            expect_cfg_reject(cfg_ok(**over), outside, root_real)
+        # 锚定目录与 log_dir 不一致（配置文件位于 log_dir 外）→ 拒绝
+        expect_cfg_reject(cfg_ok(), outside, os.path.realpath(tmp))
+        # 合法形态：配置文件与 log_dir 同目录且 root 内有内嵌 python.exe
+        log_root = _sec10_root(_safe_path(tmp, "lg"), content="ok")
+        cfg2 = _safe_path(log_root, "elev_helper_config-1-abcd1234.json")
+        got = eh.validate_config(cfg_ok(root=log_root, log_dir=log_root),
+                                 cfg2, os.path.realpath(log_root))
+        assert got[0] == "a" * 64 and got[1] == 4321 and got[4] == "HTGame.exe", got
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_elev_helper_e2e_auth_ops_audit():
+    """SEC-10 端到端（测试模式拉起真实辅助进程子进程）：ping 握手、错 token 拒绝、
+    未知操作拒绝、launch_runner 参数越界逐一被拒（不接受任意命令/任意路径/任意
+    文件写）、解释器指纹变化拒绝执行、审计落盘且绝不含令牌、shutdown 随退且
+    端点文件清理（一次性 UAC 启动形态在测试模式等价覆盖，UAC 本体列 Manual）。"""
+    from app import elev_client
+    elev_client.set_test_spawn(True)
+    tmp = _sec10_tmp("e2e")
+    log_dir = _safe_path(tmp, "log")
+    os.makedirs(log_dir, exist_ok=True)
+    root = _sec10_root(tmp)
+    try:
+        E = elev_client.ELEV
+        assert E.ensure(root, log_dir=log_dir, game_process="HTGame.exe"), E.reason()
+        port, token = E._port, E._token
+        py_path = _safe_path(root, "data", "apps", "ok-nte", "python", "python.exe")
+        resp = elev_client.request_once(port, token, "ping", timeout=8)
+        assert resp.get("ok") and resp.get("root_fp") == \
+            elev_client.file_sha256(py_path)[:16], resp
+        # 错 token 拒绝（未认证连接面）
+        try:
+            elev_client.request_once(port, "f" * 64, "ping", timeout=8)
+            raise AssertionError("错 token 应被拒绝")
+        except elev_client.ElevRejected:
+            pass
+        # 未知操作拒绝（不提供通用管理员命令接口）
+        try:
+            elev_client.request_once(port, token, "run_command", timeout=8,
+                                     args={"cmd": "whoami"})
+            raise AssertionError("未知操作应被拒绝")
+        except elev_client.ElevRejected:
+            pass
+        # launch_runner 参数越界逐一拒绝
+        profile = _safe_path(root, "working", "configs_planner")
+        os.makedirs(profile, exist_ok=True)
+        launcher = _safe_path(profile, "run_planner_task.py")
+        Path(launcher).write_text("print('ok')", encoding="utf-8")
+
+        def launch_args(**over):
+            args = {"launcher": launcher, "profile": profile, "task": "日常任务",
+                    "stdout": "ok-nte-headless-selftest.log"}
+            args.update(over)
+            return args
+
+        def expect_reject(**over):
+            try:
+                elev_client.request_once(port, token, "launch_runner",
+                                         launch_args(**over), timeout=15)
+                raise AssertionError("launch_runner 应拒绝: %r" % over)
+            except elev_client.ElevRejected:
+                pass
+        expect_reject(launcher=_safe_path(root, "working", "main.py"))
+        expect_reject(launcher=launcher.replace("configs_planner", "configs"))
+        expect_reject(launcher=launcher + ".bak")
+        expect_reject(task="cmd.exe")
+        expect_reject(stdout="../evil.log")
+        expect_reject(stdout="ok-nte-live.log")
+        expect_reject(profile=_safe_path(root, "working", "configs"))
+        # 占位 python 无法执行 → helper 侧 Popen 失败（合法参数的诚实失败路径）
+        try:
+            elev_client.request_once(port, token, "launch_runner",
+                                     launch_args(), timeout=15)
+            raise AssertionError("占位 python 应 Popen 失败")
+        except elev_client.ElevRejected:
+            pass
+        # 指纹变化（模拟 ok-nte 更新换解释器）→ 拒绝执行
+        Path(py_path).write_text("tampered", encoding="utf-8")
+        try:
+            elev_client.request_once(port, token, "launch_runner",
+                                     launch_args(), timeout=15)
+            raise AssertionError("指纹变化应拒绝执行")
+        except elev_client.ElevRejected as e:
+            assert "指纹" in str(e), str(e)
+        # 会话仍健康（操作被拒不得作废会话）
+        assert E.available()
+        # 审计：落盘、含拒绝记录、绝不含令牌
+        audit = Path(_safe_path(log_dir, "elev_helper_audit.log"))
+        assert audit.is_file(), "安全事件审计未落盘"
+        content = audit.read_text(encoding="utf-8")
+        assert "reject" in content and "launch_runner" in content
+        assert token not in content and ("f" * 64) not in content, "令牌泄漏进审计"
+        # shutdown 随退 + 端点文件清理
+        pid = E._pid
+        E.shutdown()
+        deadline = time.time() + 6
+        while time.time() < deadline and elev_client._pid_alive(pid):
+            time.sleep(0.2)
+        assert not elev_client._pid_alive(pid), "shutdown 后辅助进程应退出"
+        assert not Path(_safe_path(log_dir,
+                                   "elev_helper_endpoint-%d.json" % pid)).exists()
+    finally:
+        elev_client.set_test_spawn(False)
+        elev_client.ELEV.shutdown()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_elev_helper_watchdog_parent_exit():
+    """SEC-10 随主进程退出：父面板进程死亡（假面板子进程退出）→ 辅助进程在
+    看门狗下随退，端点文件清理，审计记 parent_exit（退出清理不留孤儿提权进程）。"""
+    tmp = _sec10_tmp("wd")
+    log_dir = _safe_path(tmp, "log")
+    os.makedirs(log_dir, exist_ok=True)
+    root = _sec10_root(tmp)
+    parent = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(1.2)"],
+        cwd=_ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        creationflags=0x08000000)
+    helper = None
+    try:
+        cfg = {"schema": 1, "token": "b" * 64, "parent_pid": parent.pid,
+               "root": root, "log_dir": log_dir, "game_process": "HTGame.exe"}
+        cfg_path = _safe_path(log_dir, "elev_helper_config-%d-abcd1234.json"
+                              % parent.pid)
+        Path(cfg_path).write_text(json.dumps(cfg), encoding="utf-8")
+        if getattr(sys, "frozen", False):
+            # 打包态：入口是本 EXE（bootloader 透传参数给 main.py 的入口分流）
+            helper_argv = [sys.executable, "--oknte-elev-helper",
+                           "--config", log_dir, os.path.basename(cfg_path)]
+        else:
+            helper_argv = [sys.executable, "-m", "app.elev_helper",
+                           "--config", log_dir, os.path.basename(cfg_path)]
+        helper = subprocess.Popen(
+            helper_argv,
+            cwd=_ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=0x08000000)
+        endpoint = _safe_path(log_dir, "elev_helper_endpoint-%d.json" % parent.pid)
+        deadline = time.time() + 15
+        while time.time() < deadline and not os.path.isfile(endpoint):
+            time.sleep(0.2)
+        assert os.path.isfile(endpoint), "辅助进程未写端点文件"
+        parent.wait(timeout=10)  # 假面板退出
+        deadline = time.time() + 8
+        while time.time() < deadline and helper.poll() is None:
+            time.sleep(0.3)
+        assert helper.poll() is not None, "父进程死后辅助进程未随退"
+        assert not os.path.isfile(endpoint), "退出后端点文件应清理"
+        audit = Path(_safe_path(log_dir, "elev_helper_audit.log"))
+        assert audit.is_file() and "parent_exit" in audit.read_text(encoding="utf-8")
+    finally:
+        if helper is not None and helper.poll() is None:
+            helper.kill()
+        if parent.poll() is None:
+            parent.kill()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_elev_client_root_fp_relaunch():
+    """SEC-10 客户端会话生命周期：root 结构不完整直接失败（绝不弹 UAC）、
+    内嵌解释器指纹变化 → 旧会话退出 + 新会话拉起（变更需再次 UAC 同意的
+    测试模式等价形态）、shutdown 干净随退。"""
+    from app import elev_client
+    elev_client.set_test_spawn(True)
+    tmp = _sec10_tmp("cli")
+    log_dir = _safe_path(tmp, "log")
+    os.makedirs(log_dir, exist_ok=True)
+    root = _sec10_root(tmp, content="v1")
+    try:
+        E = elev_client.ELEV
+        assert E.ensure(root, log_dir=log_dir, game_process="HTGame.exe"), E.reason()
+        pid1 = E._pid
+        # 结构不完整 root → False + 原因可诊断；既有会话不受影响
+        bad = _safe_path(tmp, "badroot")
+        os.makedirs(bad, exist_ok=True)
+        assert not E.ensure(bad, log_dir=log_dir)
+        assert "python.exe" in E.reason()
+        assert E.available() and E._pid == pid1
+        # 指纹变化 → 旧会话拒绝服务，新会话拉起
+        py = _safe_path(root, "data", "apps", "ok-nte", "python", "python.exe")
+        Path(py).write_text("v2", encoding="utf-8")
+        assert E.ensure(root, log_dir=log_dir, game_process="HTGame.exe"), E.reason()
+        pid2 = E._pid
+        assert pid2 != pid1, "指纹变化应重新拉起会话"
+        deadline = time.time() + 6
+        while time.time() < deadline and elev_client._pid_alive(pid1):
+            time.sleep(0.2)
+        assert not elev_client._pid_alive(pid1), "旧会话辅助进程应退出"
+        # shutdown 干净随退
+        E.shutdown()
+        deadline = time.time() + 6
+        while time.time() < deadline and elev_client._pid_alive(pid2):
+            time.sleep(0.2)
+        assert not elev_client._pid_alive(pid2), "shutdown 后应退出"
+        assert not E.available()
+    finally:
+        elev_client.set_test_spawn(False)
+        elev_client.ELEV.shutdown()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_runner_helper_launch_stdout_stop():
+    """SEC-10 runner 集成（真实提权辅助进程 + 真实子进程）：_launch_and_monitor
+    经辅助进程拉起（_ElevChild）、stdout 镜像文件经 _tail_stdout_file 泵回面板
+    日志、登记表生效（is_running 补盲）、stop_event → _kill_child 走 stop_runner
+    → 子进程终止、finally 注销登记。runtime.json 与 DATA_DIR 全部重定向到 .tmp。"""
+    from app import elev_client
+    elev_client.set_test_spawn(True)
+    tmp = _sec10_tmp("runner")
+    orig_runtime = runner_mod.RUNTIME_FILE
+    orig_data_dir = runner_mod.DATA_DIR
+    runner_mod.RUNTIME_FILE = _safe_path(tmp, "runtime.json")
+    runner_mod.DATA_DIR = _safe_path(tmp, "paneldata")
+    os.makedirs(runner_mod.DATA_DIR, exist_ok=True)
+    # 辅助进程 log_dir 必须与 runner 的 DATA_DIR 同目录（生产口径：两者同为
+    # state.DATA_DIR），stdout 镜像才会落在被泵的目录里
+    log_dir = runner_mod.DATA_DIR
+    root = _sec10_materialize_python(tmp)
+    r = runner_mod.RUNNER
+    helper_pid = None
+    try:
+        if root is None:
+            print("SKIP test_runner_helper_launch_stdout_stop: 当前解释器无法"
+                  "物化到 .tmp 临时根（跨卷且缺运行 DLL）")
+            return
+        with _StateGuard():
+            os.makedirs(_safe_path(root, "working", "logs"), exist_ok=True)
+            profile = _safe_path(root, "working", "configs_planner")
+            os.makedirs(profile, exist_ok=True)
+            launcher = _safe_path(profile, "run_planner_task.py")
+            Path(launcher).write_text(
+                "import time\n"
+                "print('[ok-nte] sec10-fixture-line-1', flush=True)\n"
+                "print('sec10-fixture-line-2', flush=True)\n"
+                "time.sleep(30)\n", encoding="utf-8")
+            ok = OkNte(root)
+            cmd, cwd, env = ok.run_command(launcher)
+            assert elev_client.ELEV.ensure(root, log_dir=log_dir,
+                                           game_process="HTGame.exe"), \
+                elev_client.ELEV.reason()
+            helper_pid = elev_client.ELEV._pid
+            r.child = None
+            r.stop_event.clear()
+            result = {}
+
+            def _run():
+                result["out"] = r._launch_and_monitor(
+                    ok, cmd, cwd, env, "2026-01-01",
+                    {"mat_id": "coin", "name": "SEC10夹具", "runs": 1,
+                     "stamina": 60, "gain": 10}, 60)
+
+            th = threading.Thread(target=_run, daemon=True)
+            th.start()
+            # stdout 镜像泵：夹具输出经辅助进程重定向 → 面板日志行
+            deadline = time.time() + 25
+            while time.time() < deadline:
+                if any("sec10-fixture-line-2" in ln for ln in list(r.lines)):
+                    break
+                time.sleep(0.3)
+            lines = list(r.lines)
+            assert any("sec10-fixture-line-1" in ln for ln in lines), \
+                "stdout 镜像行未进面板日志: %r" % lines[-6:]
+            assert isinstance(r.child, runner_mod._ElevChild), \
+                "helper 模式应使用 _ElevChild"
+            assert adapter_mod.runner_child_alive(), "runner 子进程应已登记"
+            child_obj = r.child  # 收尾 finally 会把 r.child 置 None，先捕获
+            record = r._runtime.get("execution") or {}
+            stdout_name = "ok-nte-headless-%s.log" % record.get("execution_id")
+            stdout_path = _safe_path(runner_mod.DATA_DIR, stdout_name)
+            assert os.path.isfile(stdout_path), "stdout 镜像文件未创建"
+            assert "sec10-fixture-line-1" in Path(stdout_path).read_text(
+                encoding="utf-8", errors="replace")
+            # 停止路径：stop_event → _kill_child → helper stop_runner
+            r.stop_event.set()
+            th.join(timeout=30)
+            assert not th.is_alive(), "停止后监控循环应退出"
+            assert result["out"][0] == "stopped", result
+            deadline = time.time() + 15
+            while time.time() < deadline and child_obj.poll() is None:
+                time.sleep(0.3)
+            assert child_obj.poll() is not None, "stop_runner 后任务进程应终止"
+            assert not adapter_mod.runner_child_alive(), "登记表应随收尾注销"
+            audit = Path(_safe_path(log_dir, "elev_helper_audit.log"))
+            content = audit.read_text(encoding="utf-8")
+            assert "launch_runner" in content and "stop_runner" in content
+    finally:
+        r.stop_event.set()
+        if r.child is not None and getattr(r.child, "poll", lambda: None)() is None:
+            subprocess.run(["taskkill", "/F", "/PID", str(r.child.pid)],
+                           capture_output=True, creationflags=0x08000000)
+        r.child = None
+        elev_client.ELEV.shutdown()
+        elev_client.set_test_spawn(False)
+        runner_mod.RUNTIME_FILE = orig_runtime
+        runner_mod.DATA_DIR = orig_data_dir
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_sec10_deelevate_static():
+    """SEC-10 去提权静态源检：三处提权封装（run_panel.bat RunAs / csc 清单
+    requireAdministrator / PyInstaller --uac-admin）全部摘除且改为 asInvoker；
+    辅助进程接线（入口分流、白名单 stop_runner、is_running 补盲）存在；
+    elev_helper 保持纯标准库（不 import 本仓库模块）。"""
+    if not os.path.isdir(os.path.join(_ROOT, "tools")):
+        print("SKIP test_sec10_deelevate_static: dist 不携带 tools/（仓库根运行才有效）")
+        return
+    bat = Path(_safe_path(_ROOT, "run_panel.bat")).read_text(encoding="utf-8")
+    assert "RunAs" not in bat and "net session" not in bat, \
+        "run_panel.bat 仍含提权封装"
+    build_src = Path(_safe_path(_ROOT, "tools", "build_exe.py")).read_text(encoding="utf-8")
+    assert "requireAdministrator" not in build_src, "csc 清单仍提权"
+    assert "--uac-admin" not in build_src, "PyInstaller 仍提权"
+    assert 'level="asInvoker"' in build_src, "清单未改 asInvoker"
+    main_src = Path(_safe_path(_ROOT, "app", "main.py")).read_text(encoding="utf-8")
+    assert "--oknte-elev-helper" in main_src, "面板入口缺少辅助进程分流"
+    helper_src = Path(_safe_path(_ROOT, "app", "elev_helper.py")).read_text(encoding="utf-8")
+    assert "from app" not in helper_src and "import app" not in helper_src, \
+        "elev_helper 必须纯标准库（不 import 本仓库模块）"
+    runner_src = Path(_safe_path(_ROOT, "app", "runner.py")).read_text(encoding="utf-8")
+    assert "stop_runner" in runner_src and "_launch_via_helper" in runner_src, \
+        "runner 缺少辅助进程接线"
+    adapter_src = Path(_safe_path(_ROOT, "app",
+                                  "oknte_adapter.py")).read_text(encoding="utf-8")
+    assert "runner_child_alive" in adapter_src and \
+        "register_runner_child" in adapter_src, "is_running 补盲缺失"
+    client_src = Path(_safe_path(_ROOT, "app", "elev_client.py")).read_text(encoding="utf-8")
+    assert "-Verb RunAs" in client_src, "生产拉起必须经 UAC（Start-Process -Verb RunAs）"
 
 def main():
     print("=== app.selftest 自测开始 ===")

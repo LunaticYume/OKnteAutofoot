@@ -2,12 +2,9 @@
 chcp 65001 >nul
 cd /d "%~dp0"
 
-net session >nul 2>&1
-if %errorlevel% neq 0 (
-    echo 正在请求管理员权限（ok-nte 以管理员运行，规划器需要同级权限才能驱动它）...
-    powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
-    exit /b
-)
+rem SEC-10 方案B（2026-11-14 用户裁决）：面板以普通权限启动——HTTP/token 服务面
+rem 不再随面板提权；确需管理员权限的操作（提权拉起 ok-nte 无头任务、向提权游戏
+rem 窗口发送输入）由面板经一次 UAC 同意拉起的受限提权辅助进程完成。
 
 set "EMBEDDED=D:\GamingAssistant\ok-nte\data\apps\ok-nte\python\python.exe"
 if exist "%EMBEDDED%" (

@@ -24,6 +24,7 @@ from app import growth
 from app import wiki_fetch
 from app import sites_fetch
 from app import tajiduo_client
+from app import elev_client
 from app.oknte_adapter import (OkNte, OkNteError, load_oknte_plan_overrides,
                                oknte_plan_target_ids, save_oknte_plan_overrides)
 from app.runner import RUNNER
@@ -1446,11 +1447,14 @@ def _window_matches_process(w, proc_name):
 
 
 def _ocr_windows():
-    """枚举全部顶层可见窗口（PS EnumWindows：IsWindowVisible + 非空标题，
-    工具窗多为无标题一并排除）。失败/超时返回 []（端点显示空列表，不阻塞面板）。"""
+    """枚举全部顶层可见窗口（PS EnumWindows；无标题窗口按 SEC-10 规则保留：
+    游戏进程/UnrealWindow 类列入，其余排除）。
+    失败/超时返回 []（端点显示空列表，不阻塞面板）。"""
     try:
-        out, _err, _code = _ocr_run_ps(_OCR_PS_COMMON + "\n" + _OCR_PS_WINDOWS,
-                                       {}, timeout=30)
+        out, _err, _code = _ocr_run_ps(
+            _OCR_PS_COMMON + "\n" + _OCR_PS_WINDOWS,
+            {"__GAME_PROC__": _default_game_process().replace("'", "''")},
+            timeout=30)
     except (OSError, subprocess.TimeoutExpired):
         return []
     return _parse_ocr_windows(out)
@@ -1474,6 +1478,71 @@ def _parse_ocr_windows(out):
             if isinstance(w, dict) and w.get("hwnd") is not None:
                 windows.append(w)
     return windows
+
+
+# ---- SEC-10（方案B）：普通权限面板的窗口原语与提权辅助进程接线 ----
+# 面板降权后对提权游戏窗口：SetForegroundWindow/合成输入被 UIPI 拦截、GetWindowText
+# 读不到标题；GetWindowRect/IsWindow 等查询型调用不受限。截屏（CopyFromScreen 桌面
+# DC）与识别保留在本进程（用户裁决：OCR 截屏/识别留在普通权限面板）。
+
+_ELEV_ENSURE_FAILED = False  # OCR 的 UAC 拒绝后本进程内不再反复弹（见 _ensure_helper_for_ocr）
+
+
+def _win32_is_window(hwnd):
+    """ctypes IsWindow（查询型调用，跨完整性级别可用）。失效/异常返回 False。"""
+    try:
+        hwnd = int(hwnd or 0)
+        return hwnd > 0 and bool(ctypes.windll.user32.IsWindow(hwnd))
+    except (OSError, ValueError):
+        return False
+
+
+class _WinRect(ctypes.Structure):
+    _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+
+
+def _win32_window_rect(hwnd):
+    """绑定窗口的屏幕矩形（ctypes GetWindowRect；查询型调用跨 IL 可读）。
+    失效/异常返回 None，调用方回退旧行为。"""
+    if not _win32_is_window(hwnd):
+        return None
+    try:
+        rect = _WinRect()
+        if not ctypes.windll.user32.GetWindowRect(int(hwnd), ctypes.byref(rect)):
+            return None
+        w, h = rect.right - rect.left, rect.bottom - rect.top
+        if w <= 0 or h <= 0:
+            return None
+        return {"x": rect.left, "y": rect.top, "w": w, "h": h}
+    except (OSError, ValueError):
+        return None
+
+
+def _ocr_foreground(hwnd):
+    """SEC-10：绑定窗口调前台——优先经提权辅助进程（普通权限面板对提权游戏窗口
+    的 SetForegroundWindow 被 UIPI 拦截静默失败）。辅助进程不可用时尽力而为
+    （PS 脚本内的 SetForegroundWindow 仍在，旧形态兜底）。"""
+    try:
+        if int(hwnd or 0) > 0:
+            elev_client.ELEV.foreground(int(hwnd))
+    except (OSError, ValueError):
+        pass
+
+
+def _ensure_helper_for_ocr():
+    """OCR 合成输入需要提权辅助进程（面板中 IL → 游戏高 IL 的注入输入被 UIPI
+    丢弃）。UAC 拒绝/失败后本面板进程内不再重复弹（避免每页反复打扰），由调用方
+    回退旧路径并提示。运行器拉起路径有独立的 ensure()，不受本标志影响。"""
+    global _ELEV_ENSURE_FAILED
+    if _ELEV_ENSURE_FAILED:
+        return False
+    if elev_client.ELEV.ensure(STATE.settings.get("oknte_root")):
+        return True
+    _ELEV_ENSURE_FAILED = True
+    print("提示：提权辅助进程未就绪（" + elev_client.ELEV.reason() + "）——"
+          "OCR 点击/滚动可能无法送达管理员权限的游戏窗口（UIPI 拦截），已回退内置路径")
+    return False
 
 
 def _bind_game_window(windows=None):
@@ -1511,18 +1580,23 @@ def _bind_game_window(windows=None):
     return None, None, windows
 
 
-def _ocr_capture_page(hwnd=0):
-    """单页截屏+识别（背包"只扫当前页"/角色等级 OCR 共用）。
+def _ocr_capture_page(hwnd=0, roi_text=""):
+    """单页截屏+识别（背包"只扫当前页"/角色等级 OCR/SEC-10 逐格采集共用）。
     hwnd=0 或窗口失效时回退全屏截屏（fallback=True，调用方给警告）。
+    roi_text：已按 _roi_str 格式化的 detail ROI 比例串（""=整窗）。
+    SEC-10：前台化优先经提权辅助进程；fallback 判定不再依赖窗口标题——
+    面板降权后对提权游戏窗口 GetWindowTextW 被 UIPI 拦截返回空串（标题空 ≠
+    窗口失效），窗口有效性以 PS 端 IsWindow 分支（meta.fallback）为准。
     返回 (text, window_title, fallback)。失败语义：ValueError=语言包缺失；
     OSError/TimeoutExpired=脚本失败。"""
+    _ocr_foreground(hwnd)
     out, err, code = _ocr_run_ps(
         _OCR_PS_COMMON + "\n" + _OCR_PS_WINDOW + "\n" + _OCR_PS_CAPTURE,
-        {"__HWND__": str(int(hwnd or 0)), "__ROI__": ""})
+        {"__HWND__": str(int(hwnd or 0)), "__ROI__": roi_text or ""})
     _ocr_check_errors(out, err, code)
     m = re.search(r"__OCR_META__\t(.*)", out)
     meta = m.group(1).split("\t") if m else ["", "fallback"]
-    fallback = len(meta) < 2 or meta[1] == "fallback" or not meta[0]
+    fallback = len(meta) < 2 or meta[1] == "fallback"
     body = out.split("__OCR_TEXT__\n", 1)[1] if "__OCR_TEXT__\n" in out else ""
     return body.strip(), (meta[0] if not fallback else ""), fallback
 
@@ -1530,7 +1604,9 @@ def _ocr_capture_page(hwnd=0):
 def _ocr_capture_png(hwnd=0):
     """整窗截图（DPI 感知，不做识别）→ {image, width, height, fallback}，
     供 /api/ocr/capture 前端网格标定。fallback=True 表示绑定窗口在截图瞬间失效、
-    PS 已回退整屏截取——该图按窗口尺寸解释会系统性错位，端点必须透传给前端。"""
+    PS 已回退整屏截取——该图按窗口尺寸解释会系统性错位，端点必须透传给前端。
+    SEC-10：前台化优先经提权辅助进程（见 _ocr_foreground）。"""
+    _ocr_foreground(hwnd)
     out, err, code = _ocr_run_ps(
         _OCR_PS_COMMON + "\n" + _OCR_PS_WINDOW + "\n" + _OCR_PS_SHOT,
         {"__HWND__": str(int(hwnd or 0)), "__ROI__": ""})
@@ -1562,10 +1638,19 @@ def _ocr_cell_points(layout, w, h):
     return points
 
 
-def _ocr_traverse_page(hwnd, layout, win_size):
-    """单页逐格点击遍历（PS 一次跑完整页）：按注入坐标逐格点击，每格点击后
-    截 detail ROI 识别，返回按点击顺序的 cell 文本列表；窗口失效返回 None。
-    PS 内连续 3 格空白提前收尾（点出网格范围），其余判停由调用方按页处理。"""
+def _ocr_traverse_page(hwnd, layout, win_size, gen=None):
+    """单页逐格点击遍历，返回按点击顺序的 cell 文本列表；窗口失效返回 None。
+
+    SEC-10 方案B双路径：
+    - 提权辅助进程可用：Python 主循环——逐格经辅助进程向绑定游戏窗口注入点击
+      （普通权限面板直接注入的输入会被 UIPI 丢弃，到不了管理员权限的游戏窗口），
+      截屏与识别留在本进程（CopyFromScreen 桌面 DC 不受 UIPI 限制，用户裁决：
+      OCR 截屏/识别保留在普通权限面板）。连续 3 格空白提前收尾（与旧 PS 内循环
+      判据一致）；gen 给定时格间检查取消代数（粒度比旧页级取消更细）。
+    - 辅助进程不可用：回退旧的一次性 PS 遍历（点击在 PS 进程内发起——对提权
+      游戏窗口该路径的输入会被 UIPI 丢弃，仅保留旧形态兼容：面板以管理员运行
+      或游戏未提权时仍可用）。
+    其余判停由调用方按页处理。"""
     points = _ocr_cell_points(layout, win_size[0], win_size[1])
     if not points:
         return None
@@ -1575,9 +1660,12 @@ def _ocr_traverse_page(hwnd, layout, win_size):
         raise ValueError(
             "网格布局的行距 dy 为 0：所有点击点落在同一条水平线上（标定的两点"
             "在同一行）。请重新标定：第二/第三点必须点在下一行的格子上。")
+    roi_text = _roi_str(layout.get("detail_roi"))
+    if _ensure_helper_for_ocr():
+        return _ocr_traverse_page_elev(hwnd, points, roi_text, gen)
     ps = _OCR_PS_COMMON + "\n" + _OCR_PS_WINDOW + "\n" + _OCR_PS_TRAVERSE
     out, err, code = _ocr_run_ps(
-        ps, {"__HWND__": str(int(hwnd)), "__ROI__": _roi_str(layout.get("detail_roi")),
+        ps, {"__HWND__": str(int(hwnd)), "__ROI__": roi_text,
              "__POINTS__": json.dumps([list(p) for p in points])},
         timeout=min(600, 30 + len(points) * 2))
     if "__OCR_NOWIN__" in out:
@@ -1598,17 +1686,63 @@ def _ocr_traverse_page(hwnd, layout, win_size):
     return [cells[k] for k in sorted(cells)]
 
 
+def _ocr_traverse_page_elev(hwnd, points, roi_text, gen=None):
+    """SEC-10 提权辅助遍历主循环：逐格 helper 点击 → 本进程截屏识别。
+    窗口失效返回 None（调用方重绑，与旧 None 契约一致）；helper 点击失败抛
+    OSError（上层 API 转 502 明确报错）。"""
+    _ocr_foreground(hwnd)  # 页首前台化（点击期间游戏保持前台）
+    cells = []
+    empty_streak = 0
+    for px, py in points:
+        if gen is not None and _ocr_cancel_hit(gen):
+            break  # 格间取消（粒度优于旧页级取消）：已完成格原样返回
+        if not _win32_is_window(hwnd):
+            return None
+        rect = _win32_window_rect(hwnd)
+        if rect is None:
+            return None
+        if not elev_client.ELEV.click(hwnd, rect["x"] + px, rect["y"] + py):
+            raise OSError("点击经提权辅助进程失败——请检查辅助进程状态或重试")
+        time.sleep(0.35)  # 详情面板渲染等待（与旧 PS 内 350ms 一致）
+        text, _title, _fb = _ocr_capture_page(hwnd=hwnd, roi_text=roi_text)
+        text = (text or "").strip()
+        cells.append(text)
+        if not text:
+            empty_streak += 1
+            if empty_streak >= 3:  # 连续 3 格空白：已点出网格范围
+                break
+        else:
+            empty_streak = 0
+    return cells
+
+
 def _ocr_scroll(hwnd, safe_kw, layout=None):
     """滚轮下翻一页：游戏窗口保持前台 + 光标锚到网格列表区首格（按标定
     first_cell 比例，保证滚轮落在列表上而非右侧详情面板）+ 按 layout.scroll
     步距下滚（notches×wheel_delta；2026-11-08 实测硬编码 5 格每页欠半个材料
     身位 → 默认 6 格，data/ocr_layout.json 可热调：翻页少了加 notches、
     多了减）。layout 缺省时内部现读（_ocr_layout 每次读盘 → 热生效）。
-    hwnd 失效时 PS 内回退标题关键词查找（v2 行为）。失败静默——翻不动由
-    "滚后文本与之前页相同"判停。"""
+    SEC-10：提权辅助进程可用时前台+滚动经辅助进程执行（普通权限面板注入的
+    滚轮输入会被 UIPI 丢弃）；不可用回退旧 PS 脚本（原样保留，含 hwnd 失效时
+    标题关键词查找的 v2 行为）。失败静默——翻不动由"滚后文本与之前页相同"判停。"""
     lay = layout if isinstance(layout, dict) and layout else _ocr_layout()
     sc = lay.get("scroll") if isinstance(lay.get("scroll"), dict) else {}
     fc = lay.get("first_cell") if isinstance(lay.get("first_cell"), dict) else {}
+    notches = _clamp_int(sc.get("notches"), 1, 20,
+                         _OCR_LAYOUT_DEFAULT["scroll"]["notches"])
+    wdelta = _clamp_int(sc.get("wheel_delta"), 120, 960,
+                        _OCR_LAYOUT_DEFAULT["scroll"]["wheel_delta"])
+    rect = _win32_window_rect(hwnd)
+    if rect is not None:
+        cx = rect["x"] + int(round(_ratio01(fc.get("x"), 0.5) * rect["w"]))
+        cy = rect["y"] + int(round(_ratio01(fc.get("y"), 0.5) * rect["h"]))
+        if not elev_client.ELEV.available():
+            _ensure_helper_for_ocr()
+        if elev_client.ELEV.available():
+            _ocr_foreground(hwnd)
+            if elev_client.ELEV.scroll(hwnd, cx, cy, notches, wdelta):
+                return
+        # rect 有效但辅助路径失败 → 落到旧 PS 路径尽力而为
     ps = (_OCR_PS_SCROLL
           .replace("__HWND__", str(int(hwnd or 0)))
           .replace("__KEYWORDS__", safe_kw)
@@ -1906,7 +2040,7 @@ def _run_backpack_ocr(mode="traverse"):
         if _ocr_cancel_hit(gen):  # 取消在页首生效：不再发起下一页点击/翻页
             stop_reason = "用户取消，遍历提前结束"
             break
-        cells = _ocr_traverse_page(hwnd, layout, (win_w, win_h))
+        cells = _ocr_traverse_page(hwnd, layout, (win_w, win_h), gen)
         if cells is None:  # hwnd IsWindow 校验失败 → 重新绑定一次
             hwnd, meta, _wins = _bind_game_window()
             if not hwnd:
@@ -1920,7 +2054,7 @@ def _run_backpack_ocr(mode="traverse"):
             win_h = _clamp_int(meta.get("h"), 1, 100000, win_h)
             window_id = {"process": str(meta.get("process") or ""),
                          "title": str(meta.get("title") or "")}
-            cells = _ocr_traverse_page(hwnd, layout, (win_w, win_h))
+            cells = _ocr_traverse_page(hwnd, layout, (win_w, win_h), gen)
             if cells is None:
                 warnings.append("游戏窗口已关闭，遍历提前结束")
                 break
@@ -2128,10 +2262,15 @@ Write-Output $text
 '''
 
 _OCR_PS_WINDOWS = r'''
-# ---- 枚举全部顶层可见窗口（IsWindowVisible + 非空标题；工具窗多为无标题一并排除）----
+# ---- 枚举全部顶层可见窗口（IsWindowVisible；无标题窗口按 SEC-10 规则保留）----
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 # 每窗口输出一行 __OCR_WINDOWS__:<JSON>（hwnd/class/title/pid/process/exe_path/w/h），
 # w/h 供绑定择优（多命中取可见面积最大）。
+# SEC-10（2026-11-14 面板降权）：普通权限面板对提权游戏窗口的 GetWindowTextW 被
+# UIPI 拦截返回空串——无标题一刀切排除会让游戏窗口从清单消失（自动绑定①与手动
+# 绑定全部失效）。改为：有标题照列；无标题仅当进程匹配游戏进程（__GAME_PROC__
+# 占位符，Python 侧按 PS 单引号语义转义）或类名 UnrealWindow 时列入，其余无标题
+# 工具窗维持排除。
 $rows = New-Object System.Collections.ArrayList
 $cb = [Win32OCR+EnumWindowsProc]{
   param($h, $l)
@@ -2140,7 +2279,6 @@ $cb = [Win32OCR+EnumWindowsProc]{
     $ttl = New-Object System.Text.StringBuilder 512
     $null = [Win32OCR]::GetWindowTextW($h, $ttl, 512)
     $title = $ttl.ToString()
-    if (-not $title.Trim()) { return $true }
     $cls = New-Object System.Text.StringBuilder 256
     $null = [Win32OCR]::GetClassNameW($h, $cls, 256)
     [uint32]$wpid = 0
@@ -2159,6 +2297,12 @@ $cb = [Win32OCR+EnumWindowsProc]{
         $exe = $exeSb.ToString()
       }
       $null = [Win32OCR]::CloseHandle($hProc)
+    }
+    if (-not $title.Trim()) {
+      $gameProc = '__GAME_PROC__'.Replace('.exe', '').ToLower()
+      $pn = ''
+      if ($procName) { $pn = $procName.ToLower() }
+      if ($pn -ne $gameProc -and $cls.ToString() -ne 'UnrealWindow') { return $true }
     }
     $rect = New-Object Win32OCR+RECT
     $null = [Win32OCR]::GetWindowRect($h, [ref]$rect)
@@ -4120,6 +4264,10 @@ def _graceful_shutdown(server):
     while time.time() < deadline and \
             RUNNER.snapshot()["state"] in ("running", "waiting", "stopping"):
         time.sleep(0.1)
+    try:
+        elev_client.ELEV.shutdown()  # SEC-10：随主进程退出清理提权辅助进程
+    except Exception as e:  # noqa: BLE001 —— 退出路径尽力而为
+        print(f"提权辅助进程退出清理出现问题（不影响退出，看门狗兜底）: {e}")
     STATE.save()
     server.shutdown()
 
@@ -4164,8 +4312,13 @@ def _run_panel():
         print(f"提示：端口 {port} 被其他程序占用，已自动改用 {actual_port} 并保存到设置。")
     url = f"http://127.0.0.1:{actual_port}"
     print(f"异环养成规划器面板: {url}")
-    if not is_admin():
-        print("警告：当前不是管理员权限，ok-nte 无界面任务可能无法操作游戏窗口，建议用 run_panel.bat 启动")
+    if is_admin():
+        # SEC-10 方案B（2026-11-14 用户裁决）：面板与全部 HTTP/token 面降为普通
+        # 权限，确需提权的操作收敛到受限提权辅助进程（一次 UAC 同意，随面板退出）。
+        # 旧"非管理员警告"反转：管理员运行反而扩大暴露面。
+        print("提示：面板当前以管理员权限运行，HTTP/token 服务面随之提权。建议用"
+              "普通权限启动（run_panel.bat / 桌面方式）——普通权限面板即可完成全部"
+              "日常操作，需要提权的游戏交互已收敛到受限提权辅助进程。")
 
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
@@ -4190,7 +4343,17 @@ def _run_panel():
             server_thread.join()  # Ctrl+C 或进程被杀退出
     except KeyboardInterrupt:
         STATE.save()
+        try:
+            elev_client.ELEV.shutdown()  # SEC-10：Ctrl+C 退出同样清理提权辅助进程
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
+    # SEC-10 方案B：提权辅助进程以同一入口重入（frozen 下经 UAC 以本 EXE 拉起，
+    # 源码态由 elev_client 以 python -m app.elev_helper --config <路径> 拉起）。
+    # 必须在面板任何初始化之前分流。
+    if "--oknte-elev-helper" in sys.argv[1:]:
+        from app.elev_helper import main as _elev_helper_main
+        sys.exit(_elev_helper_main())
     main()

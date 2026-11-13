@@ -14,7 +14,6 @@
   （needs_reconciliation，阻塞新执行，绝不自动重跑）；pid 仍存活 → 挂起并提示。
   绝不拉起/杀掉任何进程；所有写盘走 state.save_json_atomic。
 """
-import ctypes
 import os
 import subprocess
 import threading
@@ -22,9 +21,13 @@ import time
 import uuid
 from collections import deque
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from . import planner
-from .oknte_adapter import LogTail, OkNte, OkNteError, RunMonitor, oknte_plan_target_ids
+from . import elev_client
+from .oknte_adapter import (LogTail, OkNte, OkNteError, RunMonitor,
+                            oknte_plan_target_ids, proc_alive,
+                            register_runner_child, unregister_runner_child)
 from .state import DATA_DIR, STATE, load_json, save_json_atomic
 
 CREATE_NO_WINDOW = 0x08000000
@@ -38,27 +41,77 @@ _UNSET = object()  # _write_runtime 的“未指定”哨兵（区分 None=清�
 
 
 def _pid_alive(pid):
-    """探测 pid 是否存活（ctypes OpenProcess，不产生任何子进程/窗口）。
+    """探测 pid 是否存活（实现在 oknte_adapter.proc_alive，recovery 与
+    _ElevChild 存活探测共用同一口径；selftest 以 runner_mod._pid_alive 打桩仍有效）。
 
     句柄可开 => 存活；ERROR_ACCESS_DENIED(5) => 进程存在但无权限，按存活（保守）；
     其余（含 ERROR_INVALID_PARAMETER，pid 不存在）=> 不存活。
     非 Windows / 调用异常 => 按存活（保守，宁可多对账不可漏对账）。
     """
-    try:
-        pid = int(pid)
-    except (TypeError, ValueError):
-        return False
-    if pid <= 0:
-        return False
-    try:
-        kernel32 = ctypes.windll.kernel32
-        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
-        if handle:
-            kernel32.CloseHandle(handle)
-            return True
-        return kernel32.GetLastError() == 5
-    except (OSError, AttributeError):
-        return True
+    return proc_alive(pid)
+
+
+class _ElevChild:
+    """经提权辅助进程拉起的 ok-nte 无头任务子进程适配器（SEC-10 方案B）。
+
+    高 IL 子进程由辅助进程 Popen，本面板（普通权限）拿不到 Popen 句柄与 PIPE，
+    只有 pid：poll() 以 OpenProcess 存活探测近似（退出码不可知，恒 1——仅影响
+    "启动失败（exit N）"诊断注记的措辞，stdout 已镜像进面板数据目录的执行日志
+    文件，诊断信息不丢）。"""
+
+    def __init__(self, pid):
+        self.pid = int(pid)
+
+    def poll(self):
+        """None=仍在运行；非 None=已退出（经辅助进程拉起，退出码不可知，返回 1）。"""
+        return None if _pid_alive(self.pid) else 1
+
+
+def _tail_stdout_file(path, child, poll_seconds=0.5):
+    """尾随辅助进程重定向的 stdout 镜像文件，产出与 PIPE 等价的字节行序列；
+    子进程退出后短暂兜底读两次再结束（避免最后几行丢失）。"""
+    pos = 0
+    buf = b""
+
+    def _read_new():
+        nonlocal pos, buf
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            return
+        if size > pos:
+            try:
+                with Path(path).open("rb") as f:
+                    f.seek(pos)
+                    buf += f.read(size - pos)
+                pos = size
+            except OSError:
+                pass
+
+    while True:
+        _read_new()
+        start = 0
+        while True:
+            nl = buf.find(b"\n", start)
+            if nl < 0:
+                break
+            yield buf[start:nl]
+            start = nl + 1
+        buf = buf[start:]
+        if child.poll() is not None:
+            for _ in range(2):
+                time.sleep(0.5)
+                _read_new()
+                while True:
+                    nl = buf.find(b"\n")
+                    if nl < 0:
+                        break
+                    yield buf[:nl]
+                    buf = buf[nl + 1:]
+            if buf:
+                yield buf
+            return
+        time.sleep(poll_seconds)
 
 
 def _notify(title, message):
@@ -319,9 +372,20 @@ class Runner:
 
     def _kill_child(self):
         """只终止 ok-nte 无界面脚本进程本身（用户要求：由它带起的游戏进程保留在游戏里）。
-        不加 /T——/T 会连游戏一起杀。若脚本已退出则无操作。"""
+        不加 /T——/T 会连游戏一起杀。若脚本已退出则无操作。
+        SEC-10：经提权辅助进程拉起的是高 IL 子进程，普通权限面板 taskkill 打不开
+        ——必须走辅助进程白名单操作 stop_runner（helper 会话已失效时任务进程保留，
+        由下次启动的 recover_on_startup 对账）。"""
         child = self.child
         if child and child.poll() is None:
+            if isinstance(child, _ElevChild):
+                try:
+                    elev_client.ELEV.stop_runner(child.pid)
+                    return
+                except elev_client.ElevError as e:
+                    self._log(f"警告：经提权辅助进程停止任务失败（{e}）——"
+                              "任务进程保留，请手动结束或等其自然结束")
+                    return
             subprocess.run(
                 ["taskkill", "/F", "/PID", str(child.pid)],
                 capture_output=True, timeout=20, creationflags=CREATE_NO_WINDOW,
@@ -507,6 +571,39 @@ class Runner:
         return self._launch_and_monitor(oknte, cmd, cwd, env, day, step,
                                         step["stamina"])
 
+    def _launch_via_helper(self, oknte, cmd, env, record):
+        """经受限提权辅助进程拉起 ok-nte 无头任务（SEC-10 方案B）。
+
+        普通权限面板不能直接 Popen 出高 IL 子链（UAC 边界），也不能 taskkill 它；
+        由辅助进程以启动时固化指纹的 oknte_root 内嵌解释器拉起（launcher/task/
+        stdout 白名单校验在 elev_helper 与 elev_client 双侧执行），stdout 重定向
+        进面板数据目录的执行日志文件，本进程以 _ElevChild（pid 存活探测）近似
+        Popen 语义。成功返回 (_ElevChild, stdout_path)；失败抛异常，调用方回退
+        直接拉起。ensure() 首次调用会经一次 UAC 同意；oknte_root/指纹变化会
+        重新拉起会话（再次 UAC 同意）。"""
+        launcher = cmd[-1]
+        task = env.get("OKNTE_PLANNER_TASK") or "日常任务"
+        if not elev_client.ELEV.ensure(oknte.root):
+            raise elev_client.ElevError(
+                "提权辅助进程不可用：" + elev_client.ELEV.reason())
+        stdout_name = "ok-nte-headless-%s.log" % record["execution_id"]
+        stdout_path = Path(DATA_DIR) / stdout_name
+        try:
+            if stdout_path.exists():
+                stdout_path.unlink()  # 无需 .bak：诊断行已实时落 ok-nte-live.log
+            stdout_path.touch()
+        except OSError as e:
+            raise elev_client.ElevError("stdout 镜像文件创建失败: %s" % e) from None
+        pid = elev_client.ELEV.launch_runner(
+            root=oknte.root, launcher=launcher, task=task,
+            profile=os.path.dirname(launcher), stdout_name=stdout_name)
+        child = _ElevChild(pid)
+        self.child = child
+        register_runner_child(pid)  # SEC-10：is_running 补盲（降权后 WMI 读不到）
+        self._log(f"已由提权辅助进程拉起 ok-nte 无头任务（PID {pid}，"
+                  f"stdout 镜像 {stdout_name}）")
+        return child, stdout_path
+
     def _launch_and_monitor(self, oknte, cmd, cwd, env, day, step, planned_stamina):
         """拉起无界面子进程并监听日志至退出（日常与追猎共用的执行尾段）。
 
@@ -532,32 +629,44 @@ class Runner:
             self._write_runtime(execution=None)
             return "stopped", 0, "手动停止（未拉起任务）"
 
+        # SEC-10 方案B：优先经受限提权辅助进程拉起（普通权限面板不能直接 Popen
+        # 出高 IL 子链，也不能 taskkill 它）；辅助进程不可用（UAC 拒绝/未就绪/
+        # 参数被拒）时回退旧的直接 Popen（普通权限链——游戏未连接时将被 ok-nte
+        # 的管理员启动闸拒绝并给出明确日志，行为与旧版一致）。
+        elev_child, stdout_path = None, None
         try:
-            self.child = subprocess.Popen(
-                cmd, cwd=cwd, env=env, stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT, creationflags=CREATE_NO_WINDOW,
-            )
-        except OSError as e:
-            self._write_runtime(execution=None)  # 拉起失败：从未运行，撤销 planned 记录
-            return "failed", 0, f"启动失败：{e}"
+            elev_child, stdout_path = self._launch_via_helper(oknte, cmd, env, record)
+        except Exception as e:  # noqa: BLE001 —— 辅助进程路径失败必须可回退
+            self._log(f"提权辅助进程拉起失败（{type(e).__name__}: {e}）——回退直接拉起")
+        if elev_child is None:
+            try:
+                self.child = subprocess.Popen(
+                    cmd, cwd=cwd, env=env, stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT, creationflags=CREATE_NO_WINDOW,
+                )
+            except OSError as e:
+                self._write_runtime(execution=None)  # 拉起失败：从未运行，撤销 planned 记录
+                return "failed", 0, f"启动失败：{e}"
         record["phase"] = "launched"
         record["pid"] = self.child.pid
         self._write_runtime(execution=record)
 
         # 消费子进程 stdout：PIPE 无人读取会在 64KB 缓冲塞满后卡死子进程；
         # 且互斥冲突等关键诊断（"Another application instance..."）只出现在这里。
+        # SEC-10：helper 模式无 PIPE——消费辅助进程重定向的 stdout 镜像文件，
+        # 诊断行可见性不降级。
+        child_obj = self.child
         child_tail = deque(maxlen=5)
 
-        def _pump():
+        def _pump(lines):
             # [ok-nte] 诊断行同步落盘 ok-nte-live.log（此前只进内存 deque，面板重启即丢——
             # 真机取证"卡在战斗"时丢失关键证据）；256KB 软上限：超限滚动截断前半。
             # 评审修复：exists() 守卫替代裸 getsize——原顺序对不存在的文件抛
             # FileNotFoundError 被 except 吞掉，连带跳过追加写，全新机器上一行都落不了盘；
             # 全部写入走 pathlib（open(拼接路径) 是安全门禁误报形态）。
-            from pathlib import Path
             live = Path(DATA_DIR) / "ok-nte-live.log"
             try:
-                for raw in self.child.stdout:
+                for raw in lines:
                     line = raw.decode("utf-8", errors="replace").strip()
                     if line:
                         child_tail.append(line[:200])
@@ -576,7 +685,13 @@ class Runner:
             except (OSError, ValueError):
                 pass
 
-        threading.Thread(target=_pump, daemon=True, name="oknte-stdout").start()
+        if stdout_path is not None:
+            threading.Thread(target=_pump,
+                             args=(_tail_stdout_file(stdout_path, child_obj),),
+                             daemon=True, name="oknte-stdout").start()
+        else:
+            threading.Thread(target=_pump, args=(child_obj.stdout,),
+                             daemon=True, name="oknte-stdout").start()
 
         deadline = time.time() + int(STATE.settings.get("max_run_minutes", 90)) * 60
         rc = None
@@ -674,6 +789,8 @@ class Runner:
                 monitor.feed(tail.read_new())
                 time.sleep(1)
         finally:
+            if isinstance(self.child, _ElevChild):
+                unregister_runner_child(self.child.pid)  # SEC-10：登记表随执行收尾注销
             self.child = None
 
         status, spent, note = monitor.outcome(planned_stamina, planner.COST_PER_RUN)

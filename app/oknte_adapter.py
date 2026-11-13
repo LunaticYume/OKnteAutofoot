@@ -9,13 +9,67 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
+import ctypes as ctypes_mod
 from datetime import datetime
 from pathlib import Path
 
 from .state import DATA_DIR, save_json_atomic
 
 CREATE_NO_WINDOW = 0x08000000  # 无控制台父进程（打包 EXE）下，缺它每次检测都弹可见黑窗
+
+# ---- SEC-10（方案B）：提权 runner 子进程登记 ----
+# 面板降为普通权限后，WMI 对提权子进程的 CommandLine/ExecutablePath 读全为
+# NULL（2026-10-30 取证口径），三级进程检测对「经提权辅助进程拉起的无头任务」
+# 存在漏检盲区——写配置前的 is_running 互斥闸会失效（可能边跑边写配置）。
+# 辅助进程每次 launch_runner 成功后在此登记 pid，stop/退出后注销；
+# _detect_running 以登记 pid 的存活探测作为最快最可靠的判定源。
+_RUNNER_CHILD_LOCK = threading.Lock()
+_RUNNER_CHILD_PIDS = set()
+
+
+def proc_alive(pid):
+    """探测 pid 是否存活（ctypes OpenProcess，不产生任何子进程/窗口）。
+
+    句柄可开 => 存活；ERROR_ACCESS_DENIED(5) => 进程存在但无权限，按存活（保守）；
+    其余（含 ERROR_INVALID_PARAMETER，pid 不存在）=> 不存活。
+    非 Windows / 调用异常 => 按存活（保守，宁可多对账不可漏对账）。"""
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    try:
+        kernel32 = ctypes_mod.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000, False, pid)
+        if handle:
+            kernel32.CloseHandle(handle)
+            return True
+        return kernel32.GetLastError() == 5
+    except (OSError, AttributeError):
+        return True
+
+
+def register_runner_child(pid):
+    """登记经提权辅助进程拉起的 runner 子进程 pid（is_running 补盲数据源）。"""
+    if isinstance(pid, int) and pid > 0:
+        with _RUNNER_CHILD_LOCK:
+            _RUNNER_CHILD_PIDS.add(pid)
+
+
+def unregister_runner_child(pid):
+    """runner 子进程退出/被停止后注销（幂等）。"""
+    with _RUNNER_CHILD_LOCK:
+        _RUNNER_CHILD_PIDS.discard(pid)
+
+
+def runner_child_alive():
+    """登记表内任一 pid 仍存活即 True（无登记返回 False，零开销快路径）。"""
+    with _RUNNER_CHILD_LOCK:
+        pids = list(_RUNNER_CHILD_PIDS)
+    return any(proc_alive(pid) for pid in pids)
 
 LAUNCHER_NAME = "run_planner_task.py"
 LAUNCHER_SRC = (
@@ -345,13 +399,17 @@ class OkNte:
         return self.is_running()
 
     def _detect_running(self):
-        """三级进程检测（按取证报告 2026-10-30 落地）：
+        """进程检测（按取证报告 2026-10-30 落地 + SEC-10 补盲）：
+        0. 登记表快路径——经提权辅助进程拉起的 runner 子进程 pid（SEC-10 方案B：
+           面板降权后 WMI 读不到提权子进程 CommandLine，必须用登记 pid 存活探测）；
         1. tasklist 过滤 ok-nte.exe——只覆盖启动器存活的十几秒窗口期（GUI 显示后自杀）；
         2. CIM 主模式——面板提权时可读 GUI 的 ExecutablePath/CommandLine（失效史与
            匹配面详见 _detection_patterns 的取证注释）；
         3. tasklist /V 兜底——面板非提权时 WMI 字符串属性对提权 GUI 全为 NULL，
            但 GUI 主窗口标题（ok-nte v1.4.21 ...）跨完整性级别可读。
         检测失败保守返回 True。"""
+        if runner_child_alive():
+            return True
         try:
             out = subprocess.run(
                 ["tasklist", "/FI", "IMAGENAME eq ok-nte.exe", "/NH"],

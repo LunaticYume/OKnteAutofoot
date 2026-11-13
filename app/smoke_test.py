@@ -16,6 +16,7 @@
 """
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -390,6 +391,53 @@ def _step_auth_gate():
     assert status == 404, f"K: 回环 GET /avatars 不存在文件预期 404，实际 {status}"
 
 
+def _step_elev_helper_lifecycle():
+    """SEC-10（方案B）受限提权辅助进程冒烟（测试模式拉起，无 UAC；UAC 层列
+    Manual）：ensure → ping 握手 → 错 token 拒绝 → shutdown 随退不留孤儿提权
+    进程 → 安全事件审计落盘且绝不含令牌 → 端点文件清理。
+    临时根放仓库 .tmp/sec10（AGENTS.md 卫生规则），finally 自清。"""
+    from app import elev_client
+    base = os.path.join(ROOT, ".tmp", "sec10")
+    os.makedirs(base, exist_ok=True)
+    tmp = tempfile.mkdtemp(prefix="smoke_elev_", dir=base)
+    elev_client.set_test_spawn(True)
+    try:
+        root = os.path.join(tmp, "root")
+        log_dir = os.path.join(tmp, "paneldata")
+        os.makedirs(os.path.join(root, "data", "apps", "ok-nte", "python"))
+        os.makedirs(log_dir)
+        Path(root, "data", "apps", "ok-nte", "python",
+             "python.exe").write_text("smoke-placeholder", encoding="utf-8")
+        E = elev_client.ELEV
+        assert E.ensure(root, log_dir=log_dir, game_process="HTGame.exe"), \
+            E.reason()
+        pid, port, token = E._pid, E._port, E._token
+        assert elev_client._pid_alive(pid), "辅助进程应存活"
+        resp = elev_client.request_once(port, token, "ping", timeout=8)
+        assert resp.get("ok") is True, resp
+        try:
+            elev_client.request_once(port, "f" * 64, "ping", timeout=8)
+            raise AssertionError("错 token 应被拒绝")
+        except elev_client.ElevRejected:
+            pass
+        E.shutdown()
+        deadline = time.time() + 6
+        while time.time() < deadline and elev_client._pid_alive(pid):
+            time.sleep(0.2)
+        assert not elev_client._pid_alive(pid), "shutdown 后辅助进程应退出（不留孤儿）"
+        audit = Path(log_dir, "elev_helper_audit.log")
+        assert audit.is_file(), "安全事件审计未落盘"
+        content = audit.read_text(encoding="utf-8")
+        assert "reject" in content, "拒绝事件应进审计"
+        assert token not in content and ("f" * 64) not in content, "令牌泄漏进审计"
+        assert not Path(log_dir, "elev_helper_endpoint-%d.json" % pid).exists(), \
+            "端点文件应随退出清理"
+    finally:
+        elev_client.set_test_spawn(False)
+        elev_client.ELEV.shutdown()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def _spawn_panel(env):
     """拉起面板子进程（复用既有 Popen 形态：stdout 镜像进临时文件供失败回看）。"""
     out = tempfile.TemporaryFile()
@@ -543,6 +591,7 @@ STEPS = [
     ("通用材料表（读取/保存/应用）", _step_common_costs),
     ("GET /api/compat-report 兼容报告", _step_compat_report),
     ("导出/导入回环 + 备份列表", _step_export_import_backups),
+    ("SEC-10 提权辅助进程生命周期（拉起/鉴权/随退/审计）", _step_elev_helper_lifecycle),
     ("POST /api/stop 可达", _step_stop),
 ]
 

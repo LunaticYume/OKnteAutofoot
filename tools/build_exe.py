@@ -1,7 +1,8 @@
 """阶段7：把 Web 面板封装为 EXE 分发（启动器方案，纯本机依赖）。
 
 产物：dist/OKntePlanner/
-    异环养成规划器.exe   csc 编译的启动器（requireAdministrator，控制台保留日志）
+    异环养成规划器.exe   csc 编译的启动器（SEC-10 方案B：asInvoker 普通权限，
+                         提权收敛到受限提权辅助进程 app.elev_helper）
     app/ data/           面板源码 + 数据表模板（不含用户 state.json/backups/runtime）
     使用说明.txt
 可选档：PyInstaller 单文件 EXE（dist/OKntePlanner_single/OKntePlanner.exe），
@@ -187,7 +188,10 @@ APP_MANIFEST = """<?xml version="1.0" encoding="utf-8"?>
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
     <security>
       <requestedPrivileges xmlns="urn:schemas-microsoft-com:asm.v3">
-        <requestedExecutionLevel level="requireAdministrator" uiAccess="false"/>
+        <!-- SEC-10 方案B（2026-11-14 用户裁决）：面板降为普通权限（asInvoker），
+             HTTP/token 服务面不再随面板提权；确需提权的操作由面板经一次 UAC
+             同意拉起的受限提权辅助进程（app.elev_helper）完成。 -->
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
       </requestedPrivileges>
     </security>
   </trustInfo>
@@ -198,9 +202,11 @@ USAGE_TXT = """异环养成规划器（OKnteAutofoot）使用说明
 ==========================================
 
 【推荐】独立桌面版：OKntePlanner_single\\OKntePlanner.exe
-  双击 → UAC 点"是" → 直接弹出一个独立的应用窗口（自己的进程与任务栏项，
-  无黑框、无浏览器、无 Edge 壳）。关闭窗口即整套退出（正在执行的任务会先
-  安全停止并记账）。
+  双击 → 直接弹出一个独立的应用窗口（自己的进程与任务栏项，无黑框、无浏览器、
+  无 Edge 壳）。面板以普通权限运行（SEC-10：HTTP/token 服务面不随面板提权）；
+  首次「开始执行」或背包 OCR 时会弹一次 UAC——那是受限提权辅助进程（仅用于
+  提权拉起 ok-nte 任务与向游戏窗口发送输入，操作白名单封闭、随面板退出）。
+  关闭窗口即整套退出（正在执行的任务会先安全停止并记账）。
 
 备用：异环养成规划器.exe（启动器版）
   复用 ok-nte 内嵌 Python，以 Edge 应用窗口打开面板（本机无独立 Python 时用；
@@ -230,8 +236,10 @@ USAGE_TXT = """异环养成规划器（OKnteAutofoot）使用说明
   - 启动器找 Python 优先读 EXE 旁 data\\state.json（旧布局）的 oknte_root，
     再读用户数据目录的 state.json——面板内改 oknte_root 写的是用户数据目录
     文件，启动器不跟随。
-  - 以其他管理员账户提权运行时，数据落提权账户的 LocalAppData（提权账户的
-    OKntePlanner\\data），与原账户不共享。
+  - 提权辅助进程的安全事件审计日志在用户数据目录 elev_helper_audit.log
+    （SEC-10：所有提权操作与拒绝均可追溯）。
+  - 若手动以管理员身份运行面板，数据落管理员账户的 LocalAppData，与普通
+    权限运行不共享（建议保持普通权限运行）。
 
 详细文档见源码仓库 docs\\ 目录（上游兼容清单、各阶段验收报告）。
 """
@@ -394,10 +402,10 @@ def verify_dist(py):
     checks.append("EXE PE 头 (MZ) ✅")
     with open(exe, "rb") as f:
         blob = f.read()
-    if b"requireAdministrator" in blob:
-        checks.append("清单含 requireAdministrator ✅")
+    if b"asInvoker" in blob:
+        checks.append("清单含 asInvoker（SEC-10 面板降权）✅")
     else:
-        checks.append("清单检查：未在资源段直接匹配到 requireAdministrator（以 /win32manifest 参数为准，人工复核）")
+        checks.append("清单检查：未在资源段直接匹配到 asInvoker（以 /win32manifest 参数为准，人工复核）")
 
     pristine = set()
     data_dir = os.path.join(DIST, "data")
@@ -481,7 +489,7 @@ def try_pyinstaller_single(py):
             if HAS_PYWEBVIEW else []
         r = subprocess.run(
             [py, "-m", "PyInstaller", "--noconfirm", "--onefile", "--noconsole",
-             "--uac-admin", *collect, "--icon", ico,
+             *collect, "--icon", ico,
              "--add-data",
              os.path.join(ROOT, "app", "web", "index.html") + os.pathsep + os.path.join("app", "web"),
              "--name", "OKntePlanner", "--distpath", DIST_SINGLE,
