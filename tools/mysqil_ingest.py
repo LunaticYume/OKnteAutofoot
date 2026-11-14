@@ -11,6 +11,11 @@ import sys
 from pathlib import Path
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)  # 兼容 python tools/mysqil_ingest.py 直跑（-m 方式本就有 cwd）
+
+from app.state import save_json_atomic  # noqa: E402  统一原子写（BUILD-03：带 .bak，绝不半截）
+
 DATA = os.path.join(ROOT, "data")
 
 # 材料名 → mat_id / ok-nte BOSS 名
@@ -196,12 +201,11 @@ def main():
           f"角色硬币合计 {coin_total:,}（独立调研 215万 ✓）")
 
     # ---- 6) 全部落盘（全部计算与校验通过后才写：中途崩溃不会留下半套互相矛盾的数据）----
-    (Path(DATA) / "game_data.json").write_text(
-        json.dumps(game, ensure_ascii=False, indent=2), encoding="utf-8")
-    (Path(DATA) / "requirements.json").write_text(
-        json.dumps(requirements, ensure_ascii=False, indent=2), encoding="utf-8")
-    (Path(DATA) / "yields.json").write_text(
-        json.dumps(y, ensure_ascii=False, indent=2), encoding="utf-8")
+    # save_json_atomic（BUILD-03）：原子写 + 上一版自动 .bak；重跑会覆盖面板校准的
+    # per_run 值——重跑前先 diff/备份 data/yields.json（脚本自标一次性）
+    save_json_atomic(str(Path(DATA) / "game_data.json"), game)
+    save_json_atomic(str(Path(DATA) / "requirements.json"), requirements)
+    save_json_atomic(str(Path(DATA) / "yields.json"), y)
     print("已落盘: game_data.json / requirements.json / yields.json")
 
 

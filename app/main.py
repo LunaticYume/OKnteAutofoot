@@ -2444,7 +2444,10 @@ if ($target -ne [IntPtr]::Zero) {
 
 _TJD_PENDING = {"phone": "", "device": None, "at": 0.0}  # 发码→绑定间的设备连续性
 _TJD_PENDING_TTL = 600  # 10 分钟内未绑定即作废（需重新发码）
-_TJD_LOCK = threading.Lock()  # send-captcha/bind/logout/sync/apply 串行（防并发绑定竞态）
+_TJD_LOCK = threading.Lock()  # send-captcha(:2482)/bind(:2497)/logout(:3705)/sync-gacha(:2904) 串行
+# （防并发绑定与抽卡存档竞态）；注意 sync(:3649)/apply(:3693) 两路由现未持此锁
+# （TJD-01 披露的文档漂移）——若补锁必须 TJD 外层、STATE.lock 内层（apply 链路
+# 现写法先取 STATE.lock，main.py:2582），防锁序反向死锁
 
 
 def _tajiduo_mask_uid(uid):

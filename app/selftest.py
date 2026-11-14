@@ -4,7 +4,8 @@
 planner 缺口计算与计划生成、计划算法矩阵（取整/额度/预留/禁用/拉黑/产量0）、no-op 枚举、
 步骤与计划的结构化 reason、确定性与纯度不变量（纯读/同输入同输出/不写 state.json）、
 扫描落账归属 runner、runner 持续模式（busy→waiting→自动重试→stop 打断）、
-scan_used_stamina 取最大值。
+scan_used_stamina 取最大值、CONC-01/02 并发原子写与图鉴覆盖层锁（同文件并发写零异常
+零半截、双 upsert 不同 name 两条均在、失败注入不损坏目标文件）。
 
 运行方式（项目根目录）：
     D:/GamingAssistant/ok-nte/data/apps/ok-nte/python/python.exe -m app.selftest
@@ -38,6 +39,7 @@ from app import game_data as game_data_mod  # noqa: E402
 from app import oknte_adapter as adapter_mod  # noqa: E402
 from app import planner  # noqa: E402
 from app import runner as runner_mod  # noqa: E402
+from app import state as state_mod  # noqa: E402
 from app.oknte_adapter import LogTail, OkNte, RunMonitor  # noqa: E402
 from app.state import DEFAULT_SETTINGS, STATE, STATE_FILE, load_json  # noqa: E402
 
@@ -7457,6 +7459,207 @@ def test_sec10_deelevate_static():
         "register_runner_child" in adapter_src, "is_running 补盲缺失"
     client_src = Path(_safe_path(_ROOT, "app", "elev_client.py")).read_text(encoding="utf-8")
     assert "-Verb RunAs" in client_src, "生产拉起必须经 UAC（Start-Process -Verb RunAs）"
+
+
+# ---------- B2.4 CONC-01/02：save_json_atomic 并发口径与图鉴覆盖层锁 ----------
+
+# 临时根放仓库 .tmp/（AGENTS.md 卫生条款：不落 C 盘；先例 _SEC10_TMP_BASE）
+_CONC_TMP_BASE = os.path.join(_ROOT, ".tmp", "selftest-conc")
+
+
+def _conc_tmp(name):
+    """CONC 用例临时目录：tempfile 显式 dir= 指向仓库 .tmp/ 子目录。"""
+    os.makedirs(_CONC_TMP_BASE, exist_ok=True)
+    return tempfile.mkdtemp(prefix=name + "_", dir=_CONC_TMP_BASE)
+
+
+def _join_all(ths, timeout=180):
+    """带硬截止的 join：超时即断言失败（daemon 线程不阻塞进程退出）。"""
+    deadline = time.monotonic() + timeout
+    for t in ths:
+        t.join(max(0.0, deadline - time.monotonic()))
+    alive = [t.name for t in ths if t.is_alive()]
+    assert not alive, f"线程硬超时未完成: {alive}"
+
+
+@case
+def test_conc01_same_file_concurrent_writes():
+    """CONC-01 同路径并发 save_json_atomic（修复后基线，2×200 + 8×100 = 1200 写）。
+
+    断言：0 异常、末态可解析且为单写者完整负载、目录无 *.tmp 残留、.bak 可解析
+    （对齐评审 X3 实验口径）。
+    """
+    tmp = _conc_tmp("conc01_same")
+    try:
+        for n_threads, writes in ((2, 200), (8, 100)):
+            target = os.path.join(tmp, "state_%dx%d.json" % (n_threads, writes))
+            barrier = threading.Barrier(n_threads)
+            errors, elock = [], threading.Lock()
+
+            def worker(tid, target=target, writes=writes,
+                       barrier=barrier, errors=errors, elock=elock):
+                barrier.wait(30)  # 起点对齐；超时抛 BrokenBarrierError 进 errors
+                for i in range(writes):
+                    try:
+                        state_mod.save_json_atomic(
+                            target, {"writer": "w%d" % tid, "seq": i,
+                                     "blob": "x" * 1400})
+                    except BaseException as e:  # noqa: BLE001
+                        with elock:
+                            errors.append("%s: %s" % (type(e).__name__, e))
+
+            ths = [threading.Thread(target=worker, args=(i,), name="W%d" % i,
+                                    daemon=True) for i in range(n_threads)]
+            for t in ths:
+                t.start()
+            _join_all(ths)
+            assert errors == [], f"{n_threads}x{writes} 并发写异常: {errors[:5]}"
+            with open(target, encoding="utf-8") as f:  # 末态可解析（json.load 即断言）
+                doc = json.load(f)
+            assert set(doc.keys()) == {"writer", "seq", "blob"}, doc.keys()
+            assert doc["blob"] == "x" * 1400 and re.fullmatch(r"w\d+", doc["writer"])
+            with open(target + ".bak", encoding="utf-8") as f:  # .bak 可解析
+                bak = json.load(f)
+            assert set(bak.keys()) == {"writer", "seq", "blob"}, bak.keys()
+        residue = [p for p in os.listdir(tmp) if p.endswith(".tmp")]
+        assert residue == [], f"tmp 残留: {residue}"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_conc02_custom_overlay_concurrent_upsert():
+    """CONC-02 图鉴覆盖层并发读-改-写（_CUSTOM_LOCK 修复后）。
+
+    A) 2×200 不同 name 并发 upsert → 末态 400 条全部在（评审 EXP-2 缩小版）；
+    B) upsert×remove 交叉 → 与串行语义一致（评审 EXP-1b：初盘甲乙丙，
+       并发 upsert 丁 + remove 乙，两种交错同态 → 末态必为 [甲,丙,丁]）；
+    C) 同名双 upsert（载荷全同，可交换）→ 末态恰好 1 条且内容为该载荷。
+    """
+    tmp = _conc_tmp("conc02_custom")
+    orig_custom = game_data_mod.CUSTOM_FILE
+    game_data_mod.CUSTOM_FILE = os.path.join(tmp, "game_data_custom.json")
+    try:
+        # ---- A) 2×200 不同 name ----
+        barrier = threading.Barrier(2)
+        errors, elock = [], threading.Lock()
+
+        def upsert_worker(prefix, n, barrier=barrier, errors=errors, elock=elock):
+            barrier.wait(30)
+            for i in range(n):
+                try:
+                    game_data_mod.upsert_custom(
+                        "characters", {"name": f"{prefix}-{i:03d}", "version": "c02"})
+                except BaseException as e:  # noqa: BLE001
+                    with elock:
+                        errors.append("%s: %s" % (type(e).__name__, e))
+
+        ths = [threading.Thread(target=upsert_worker, args=(p, 200), name=p,
+                                daemon=True) for p in ("并发甲", "并发乙")]
+        for t in ths:
+            t.start()
+        _join_all(ths)
+        assert errors == [], f"并发 upsert 异常: {errors[:5]}"
+        doc = game_data_mod.custom_entries()
+        names = [e["name"] for e in doc["characters"]]
+        assert len(names) == 400, f"期望 400 条，实际 {len(names)}"
+        assert all(f"并发甲-{i:03d}" in names for i in range(200)) and \
+            all(f"并发乙-{i:03d}" in names for i in range(200)), "并发 upsert 丢更新"
+        # ---- B) upsert×remove 交叉（EXP-1b 同态化：两写者名字不同 → 任意交错同串行）----
+        state_mod.save_json_atomic(game_data_mod.CUSTOM_FILE, {
+            "version": 1,
+            "characters": [{"name": "甲"}, {"name": "乙"}, {"name": "丙"}],
+            "weapons": []})
+        barrier = threading.Barrier(2)
+        errors, remove_result = [], {}
+
+        def up_ding(errors=errors, barrier=barrier):
+            barrier.wait(30)
+            try:
+                game_data_mod.upsert_custom("characters", {"name": "丁", "version": "x"})
+            except BaseException as e:  # noqa: BLE001
+                errors.append("%s: %s" % (type(e).__name__, e))
+
+        def rm_yi(remove_result=remove_result, errors=errors, barrier=barrier):
+            barrier.wait(30)
+            try:
+                remove_result["r"] = game_data_mod.remove_custom("characters", "乙")
+            except BaseException as e:  # noqa: BLE001
+                errors.append("%s: %s" % (type(e).__name__, e))
+
+        ths = [threading.Thread(target=up_ding, name="up-丁", daemon=True),
+               threading.Thread(target=rm_yi, name="rm-乙", daemon=True)]
+        for t in ths:
+            t.start()
+        _join_all(ths)
+        assert errors == [], f"交叉用例异常: {errors}"
+        assert remove_result.get("r") is True, "remove 乙 应实际删除"
+        names_b = [e["name"] for e in game_data_mod.custom_entries()["characters"]]
+        assert names_b == ["甲", "丙", "丁"], f"交叉末态与串行语义不符: {names_b}"
+        # ---- C) 同名双 upsert（载荷全同）----
+        barrier = threading.Barrier(2)
+        errors = []
+        payload = {"name": "同名甲", "rarity": "S", "version": "same"}
+
+        def up_same(errors=errors, barrier=barrier):
+            barrier.wait(30)
+            try:
+                game_data_mod.upsert_custom("characters", dict(payload))
+            except BaseException as e:  # noqa: BLE001
+                errors.append("%s: %s" % (type(e).__name__, e))
+
+        ths = [threading.Thread(target=up_same, name="same1", daemon=True),
+               threading.Thread(target=up_same, name="same2", daemon=True)]
+        for t in ths:
+            t.start()
+        _join_all(ths)
+        assert errors == [], f"同名双 upsert 异常: {errors}"
+        same = [e for e in game_data_mod.custom_entries()["characters"]
+                if e["name"] == "同名甲"]
+        assert len(same) == 1 and same[0] == payload, same
+        residue = [p for p in os.listdir(tmp) if p.endswith(".tmp")]
+        assert residue == [], f"tmp 残留: {residue}"
+    finally:
+        game_data_mod.CUSTOM_FILE = orig_custom
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_conc01_failure_injection_no_residue():
+    """CONC-01 失败注入：monkeypatch os.replace 抛 OSError → 断言无本次主 tmp/
+    bak_tmp 残留、主文件保持旧完整内容；恢复后重试写盘可用。"""
+    tmp = _conc_tmp("conc01_fail")
+    try:
+        target = os.path.join(tmp, "state.json")
+        old = {"v": 1, "blob": "y" * 800}
+        state_mod.save_json_atomic(target, old)  # 先落一版旧完整内容（.bak 链成立）
+        orig_replace, calls = os.replace, {"n": 0}
+
+        def _boom(a, b):
+            calls["n"] += 1
+            raise OSError("注入失败（CONC-01 失败自清用例）")
+
+        os.replace = _boom
+        try:
+            try:
+                state_mod.save_json_atomic(target, {"v": 2})
+            except OSError as e:
+                assert "注入失败" in str(e), e
+            else:
+                raise AssertionError("os.replace 注入失败必须抛出 OSError")
+        finally:
+            os.replace = orig_replace
+        assert calls["n"] >= 1, "注入未生效（os.replace 未被调用）"
+        with open(target, encoding="utf-8") as f:  # 主文件保持旧完整
+            assert json.load(f) == old
+        residue = [p for p in os.listdir(tmp) if p.endswith(".tmp")]
+        assert residue == [], f"失败后 tmp/bak_tmp 残留: {residue}"
+        state_mod.save_json_atomic(target, {"v": 2, "blob": "z"})  # 恢复后重试可用
+        with open(target, encoding="utf-8") as f:
+            assert json.load(f)["v"] == 2
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
 
 def main():
     print("=== app.selftest 自测开始 ===")

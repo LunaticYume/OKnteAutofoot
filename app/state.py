@@ -21,7 +21,8 @@ if _FROZEN:
 else:
     ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 仓库根/dist 根
 # 用户数据目录：打包态实际数据位；源码态仅供迁移 CLI（tools/migrate_user_data）引用。
-# 两个 EXE 共用同一份（requireAdministrator 异账户提权时指向提权账户的 LocalAppData）
+# 两个 EXE 共用同一份（SEC-10 方案B后面板以 asInvoker 降权运行、不再提权，恒为
+# 当前登录用户本人的 LocalAppData；提权仅限拉起 ok-nte 的辅助进程链路）
 USER_DATA_DIR = os.path.join(
     os.environ.get("LOCALAPPDATA") or os.path.expanduser("~/AppData/Local"),
     "OKntePlanner", "data")
@@ -34,25 +35,84 @@ else:  # 源码态：行为与旧版完全一致（数据落仓库/dist data/，
 STATE_FILE = os.path.join(DATA_DIR, "state.json")
 
 
+# ---- save_json_atomic 的 per-path 锁字典（CONC-01，2026-11-14）----
+_PATH_LOCKS = {}
+_PATH_LOCKS_GUARD = threading.Lock()
+
+
+def _path_lock(path):
+    """按目标路径取进程内互斥锁（守护锁 get-or-create，常驻不清理）。
+
+    键为 normcase+abspath 归一化字符串（Windows 下大小写/分隔符差异归一）。
+    增长上界：生产写目标≈固定文件约 20 个 + data/backups/ 时间戳文件（每次
+    /api/import 一个，main.py:930-931；时间戳到秒，同秒并发导入共享同键反而
+    受益）+ selftest 隔离 tmp 路径（测试进程退出即随进程释放）；每键内存
+    <0.5KB。刻意不做清理/弱引用：evict 后重建会让两线程各持一把不同代锁互不
+    互斥（真竞态），得不偿失。
+    """
+    key = os.path.normcase(os.path.abspath(str(path)))
+    with _PATH_LOCKS_GUARD:
+        lock = _PATH_LOCKS.get(key)
+        if lock is None:
+            lock = _PATH_LOCKS[key] = threading.Lock()
+        return lock
+
+
 def save_json_atomic(path, data):
     """全项目唯一的 JSON 原子写实现（state.json/yields/requirements/runtime 共用）。
 
     tmp 写全 → 复制当前主文件为 .bak（上一次完好版本）→ tmp 原子替换主文件。
-    任何时刻崩溃，主文件要么是旧完整内容、要么是新完整内容，绝不出现半截 JSON。
     旧实现先用 os.replace 把主文件轮转为 .bak 再替换，两步之间崩溃会让主文件
     缺失、只剩 .bak（真机曾出现该形态的 state.json）——现改为先复制后替换，
     主文件除原子替换瞬间外始终存在。
+
+    并发口径（CONC-01 修复，2026-11-14）：
+    - 同一目标路径的整个「tmp 写全 → .bak 复制 → os.replace 发布」序列在进程内
+      经 per-path 锁串行（_path_lock），同目标并发写互不踩踏；不同目标完全并行
+      （per-path 粒度不引入跨文件串行）。
+    - os.replace 提供的是原子可见性：读者任何时刻只看到旧完整或新完整内容。
+      单写者下主文件绝不半截；并发写交叉下，发布内容恒为某一个写者的完整字节
+      （同目标为 last-writer-wins，不提供跨写者合并）。os.replace 不是断电
+      持久化保证（close 后数据仍在 OS 页缓存，断电时 rename 与数据都可能丢）
+      ——不得把「原子可见」宣传成「断电安全/持久化」；冷路径如需断电安全，
+      预留向后兼容签名 save_json_atomic(path, data, *, fsync=False)（默认关，
+      显式开启处在锁内、replace 前对 tmp 加 os.fsync），本实现暂不引入。
+    - 主 tmp 与 .bak.tmp 文件名都带 uuid4().hex：崩溃/失败残留只落本写者独有的
+      <名字>.<uuid>.tmp，不会被其他写者或其他进程（跨进程无共享锁）误写误读，
+      并杜绝固定名 .bak.tmp 的并发 copyfile 交错写坏 .bak。
+    - 失败自清只删除本次写者自己创建的主 tmp 与 bak_tmp（绝不 glob 清理他人
+      tmp）；.bak 复制失败仍按原语义吞掉（备份落后一版可接受）。
     """
-    tmp = Path(path + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    if os.path.exists(path):
-        bak_tmp = Path(path + ".bak.tmp")
-        try:
-            shutil.copyfile(path, bak_tmp)
-            os.replace(bak_tmp, path + ".bak")
-        except OSError:
-            pass  # .bak 落后一版可接受；绝不因备份失败丢掉本次写入
-    os.replace(tmp, path)
+    tmp = Path(str(path) + f".{uuid.uuid4().hex}.tmp")
+    bak_tmp = None
+    lock = _path_lock(path)
+    lock.acquire()
+    try:
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        if os.path.exists(path):
+            bak_tmp = Path(str(path) + f".bak.{uuid.uuid4().hex}.tmp")
+            try:
+                shutil.copyfile(path, bak_tmp)
+                os.replace(bak_tmp, path + ".bak")
+                bak_tmp = None  # 已被 replace 消费
+            except OSError:
+                pass  # .bak 落后一版可接受；绝不因备份失败丢掉本次写入
+        os.replace(tmp, path)
+        tmp = None  # 已被 replace 消费
+    finally:
+        # 失败自清：只清本次写者自己的 tmp；.bak replace 失败时 bak_tmp 残留
+        # 也一并清（2026-11-14 复测实测出该残留形态）
+        if tmp is not None:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+        if bak_tmp is not None:
+            try:
+                bak_tmp.unlink()
+            except OSError:
+                pass
+        lock.release()
 
 
 def load_json(path):

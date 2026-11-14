@@ -9,6 +9,7 @@ data/game_data_custom.json（按 name 覆盖合并，绝不写回基础 game_dat
 """
 import json
 import os
+import threading
 
 from .state import DATA_DIR, load_json, save_json_atomic
 
@@ -83,6 +84,16 @@ def custom_entries():
             "weapons": doc.get("weapons") or []}
 
 
+# 图鉴覆盖层读-改-写互斥（CONC-02，2026-11-14）：ThreadingHTTPServer 下
+# upsert_custom/remove_custom 的「custom_entries() 读盘 → 列表改 → save_json_atomic
+# 整盘回写」若无互斥，并发请求会互相丢更新（后写整盘覆盖先写，2×200 实测仅存
+# ~195/400 条）——与 main.py 的 _MATERIALS_LOCK 同型缺陷。锁内只调 custom_entries()
+# 与 save_json_atomic（后者内部走 state 的 per-path 叶锁），形成
+# _CUSTOM_LOCK → path 锁单向边，与 _MATERIALS_LOCK/STATE.lock 无交叉持有序；
+# kind/name 校验为纯内存检查，留锁外。
+_CUSTOM_LOCK = threading.Lock()
+
+
 def upsert_custom(kind, entry):
     """新增/更新一条覆盖层条目（kind ∈ characters/weapons；按 name 覆盖）。"""
     if kind not in CUSTOM_KINDS:
@@ -90,15 +101,16 @@ def upsert_custom(kind, entry):
     name = entry.get("name")
     if not name:
         raise ValueError("条目缺少 name")
-    doc = custom_entries()
-    lst = doc.setdefault(kind, [])
-    for i, existing in enumerate(lst):
-        if existing.get("name") == name:
-            lst[i] = entry
-            break
-    else:
-        lst.append(entry)
-    save_json_atomic(CUSTOM_FILE, doc)
+    with _CUSTOM_LOCK:  # 读盘→改→整盘回写全程持锁（防并发丢更新）
+        doc = custom_entries()
+        lst = doc.setdefault(kind, [])
+        for i, existing in enumerate(lst):
+            if existing.get("name") == name:
+                lst[i] = entry
+                break
+        else:
+            lst.append(entry)
+        save_json_atomic(CUSTOM_FILE, doc)
     return entry
 
 
@@ -106,13 +118,14 @@ def remove_custom(kind, name):
     """从覆盖层删除一条；返回是否真的删除了（不存在的名字不算错误）。"""
     if kind not in CUSTOM_KINDS:
         raise ValueError(f"kind 必须是 {'/'.join(CUSTOM_KINDS)}")
-    doc = custom_entries()
-    lst = doc.setdefault(kind, [])
-    kept = [e for e in lst if e.get("name") != name]
-    if len(kept) == len(lst):
-        return False
-    doc[kind] = kept
-    save_json_atomic(CUSTOM_FILE, doc)
+    with _CUSTOM_LOCK:
+        doc = custom_entries()
+        lst = doc.setdefault(kind, [])
+        kept = [e for e in lst if e.get("name") != name]
+        if len(kept) == len(lst):
+            return False  # 未删任何条目：不落盘，避免无意义整盘回写
+        doc[kind] = kept
+        save_json_atomic(CUSTOM_FILE, doc)
     return True
 
 
