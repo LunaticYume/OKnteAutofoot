@@ -4944,6 +4944,82 @@ def test_xmod01_pinning_toctou_offline():
 
 
 @case
+def test_xmod01_pinned_transport_invariant():
+    """B25 传输层不变量（2026-11-14 B2.5）：三模块全部受保护出站传输函数——
+    通道A sf._http_get / sf._http_get_bytes、通道B wf._http_get、通道C tc._http
+    ——必须委托共享层 url_guard.open_pinned 钉扎 transport（校验→register→open→
+    unregister），禁止绕过直连。spy open_pinned（替换前保存、finally 还原，先例
+    test_tajiduo_http_error_wrapping 的 validate_url spy 口径）逐通道观察调用与
+    白名单/opener 实参；inspect.getsource 静态源检兜底（仿 test_sec10_deelevate_static
+    口径）：三模块源码无裸 urlopen 直连、委托语句确实存在（url_guard 自身是唯一
+    urllib 传输实现）。全程不触网（spy 短路返回桩 bytes，不进 validate/register/
+    opener）。"""
+    from app import sites_fetch as sf
+    from app import wiki_fetch as wf
+    from app import tajiduo_client as tc
+    from app import url_guard as ug
+    import inspect
+
+    orig_open = ug.open_pinned
+    calls = []
+
+    def _spy_open(url, **kwargs):
+        # 短路桩：命中即记录并返回固定 bytes（文本通道 decode 正常、二进制/塔吉多
+        # 通道原样返回），不触 validate/register/opener，绝不建连。
+        calls.append((url, kwargs))
+        return b"xmod01-pin-spy"
+
+    try:
+        ug.open_pinned = _spy_open
+        # 通道A 文本：委托共享层 + 白名单/opener 走模块别名实参
+        assert sf._http_get("https://ntestrategy.com/js/shared.js", 10) \
+            == "xmod01-pin-spy"
+        assert len(calls) == 1, calls
+        _, kw = calls[-1]
+        assert kw["allowed_hosts"] == sf.ALLOWED_HOSTS, kw["allowed_hosts"]
+        assert kw["opener"] is sf._OPENER, "通道A opener 未走模块别名"
+        # 通道A 二进制：同一防线（同白名单同 opener 别名）
+        assert sf._http_get_bytes("https://wiki.mysqil.com/x.webp", 10) \
+            == b"xmod01-pin-spy"
+        assert len(calls) == 2, calls
+        _, kw = calls[-1]
+        assert kw["allowed_hosts"] == sf.ALLOWED_HOSTS, kw["allowed_hosts"]
+        assert kw["opener"] is sf._OPENER, "通道A(二进制) opener 未走模块别名"
+        # 通道B：单域严格白名单（allow_subdomains=False 精确相等）
+        assert wf._http_get("https://wiki.mysqil.com/tools/cultivation", 10) \
+            == "xmod01-pin-spy"
+        assert len(calls) == 3, calls
+        _, kw = calls[-1]
+        assert kw["allowed_hosts"] == (wf.WIKI_HOST,), kw["allowed_hosts"]
+        assert kw["allow_subdomains"] is False, kw
+        assert kw["opener"] is wf._OPENER, "通道B opener 未走模块别名"
+        # 通道C：两域白名单 + method/headers/data 透传
+        out = tc._http("https://bbs-api.tajiduo.com/usercenter/api/login",
+                       method="POST", headers={"X-T": "t"}, data=b"p=1")
+        assert out == b"xmod01-pin-spy", out
+        assert len(calls) == 4, calls
+        _, kw = calls[-1]
+        assert kw["allowed_hosts"] == tc.ALLOWED_HOSTS, kw["allowed_hosts"]
+        assert kw["allow_subdomains"] is False, kw
+        assert kw["opener"] is tc._OPENER, "通道C opener 未走模块别名"
+        assert kw["method"] == "POST" and kw["data"] == b"p=1" \
+            and kw["headers"] == {"X-T": "t"}, kw
+        # 四条通道全部命中共享层唯一入口（缺一即存在绕过直连）
+        assert {u.split("/")[2] for u, _ in calls} == {
+            "ntestrategy.com", "wiki.mysqil.com", "bbs-api.tajiduo.com"}, calls
+    finally:
+        ug.open_pinned = orig_open
+    # 还原后共享层恢复真实实现（spy 无残留，不影响后续用例）
+    assert ug.open_pinned is orig_open
+    # 静态源检：三模块源码无裸 urlopen 直连，且委托 open_pinned 的调用确实存在
+    for mod, name in ((sf, "sites_fetch"), (wf, "wiki_fetch"),
+                      (tc, "tajiduo_client")):
+        src = inspect.getsource(mod)
+        assert "urlopen" not in src, f"{name} 存在裸 urlopen 直连"
+        assert "url_guard.open_pinned" in src, f"{name} 未委托共享层 open_pinned"
+
+
+@case
 def test_tajiduo_parse_payloads():
     """解析器用构造 JSON 断言（字段实样口径：NTEUID tajiduo_model + TaJiDuo-plugin
     DOCS-API；防御性解析——缺字段/垃圾类型一律 None/跳过，绝不编造）。

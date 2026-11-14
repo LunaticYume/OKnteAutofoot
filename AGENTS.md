@@ -40,6 +40,7 @@ ALLOWED_HOSTS = ("ntestrategy.com", "wiki.mysqil.com", "everness.info", "nte.nan
 
 安全红线（全部出站点共用口径）：仅 https + 主机白名单 + 解析 IP 拒私网/环回/
 链路本地/保留/组播段 + 禁止跟随重定向 + URL 只能来自模块常量（不接受前端传 URL）。
+架构不变量（2026-11-14 B2.5 起）：全部受保护出站传输必须经 app/url_guard.open_pinned 钉扎 transport（校验→register→open→unregister），禁止绕过直连；新增出站点一律接入共享防线并补传输层用例（selftest 不变量用例把守）。
 
 ## 其他协作约束
 
