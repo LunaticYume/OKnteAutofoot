@@ -25,25 +25,24 @@
 
 快照：data/sites/guide_sites.json（消毒后的两站条目 + 抓取时间 + 来源标注）。
 
-安全边界（全仓库第二个服务端外联点，与 wiki_fetch 同级防线）：
+安全边界（全仓库第二个服务端外联点；2026-11-14 B2.5/XMOD-01 起与 wiki_fetch/
+tajiduo_client 共用 app/url_guard.py 唯一实现，本模块只保留常量白名单与薄包装）：
 - 仅允许 https；URL 全部来自本模块常量（不接受前端传 URL）；
-- 主机白名单 ntestrategy.com / wiki.mysqil.com（子域归一化校验，含前缀伪装拒绝）；
-- 解析出的全部 IP 不得为私网/环回/链路本地/保留/组播/未指定段；
+- 主机白名单四域（ALLOWED_HOSTS：ntestrategy.com / wiki.mysqil.com /
+  everness.info / nte.nanoka.cc，2026-11-11 增后两域；子域归一化校验，含前缀伪装拒绝）；
+- 解析出的全部 IP 不得为私网/环回/链路本地/保留/组播/未指定段；空解析拒绝；
 - 禁止跟随重定向（重定向目标无法预校验）；快照路径常量 + realpath 归属校验。
 
 运行边界：只被 main.py 的 /api/sites/sync-guide 端点调用（手动触发，绝无定时/自动
 同步）。解析与合并可离线自测（app/selftest.py）。
 """
-import ipaddress
 import json
 import os
 import re
-import socket
-import urllib.parse
-import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+from . import url_guard
 from .state import DATA_DIR, save_json_atomic
 
 # ---------- 常量白名单（URL 唯一来源；前端/请求体传入的 URL 一律不采信） ----------
@@ -297,47 +296,35 @@ def _clean_name_dict(node):
 
 
 # ---------- 拉取（SSRF 防线：https + 主机白名单 + 私网 IP 阻断 + 禁重定向） ----------
+# 2026-11-14 B2.5/XMOD-01：防线唯一实现收敛进 app/url_guard.py（六类错误形态 +
+# 空解析 fail-closed + 传输期 IP 钉扎）；本模块只保留四域常量白名单（子域放行口径，
+# api.everness.info 资产域靠 endswith）与薄包装（selftest/探针以模块内符号调用）。
 
 def host_allowed(hostname):
     """主机归一化后是否在白名单：严格等于允许域，或为其子域（.域 结尾）。
     前缀伪装（evil-ntestrategy.com）与后缀伪装（ntestrategy.com.evil.com）都不匹配。"""
-    host = (hostname or "").rstrip(".").lower()
-    return any(host == h or host.endswith("." + h) for h in ALLOWED_HOSTS)
+    return url_guard.host_allowed(hostname, allowed_hosts=ALLOWED_HOSTS,
+                                  allow_subdomains=True)
 
 
 def _validate_url(url):
-    """仅允许 https + 白名单主机（含子域）+ 443 端口 + 无用户信息；解析出的全部 IP
-    都不得落在私网/环回/链路本地/保留/组播/未指定段（防引向内网/本机面板/云元数据）。"""
-    parsed = urllib.parse.urlsplit(url)
-    host = (parsed.hostname or "").rstrip(".").lower()
-    if parsed.scheme != "https" or not host_allowed(host):
-        raise ValueError(f"仅允许抓取白名单主机的 https 资源，拒绝：{url}")
-    if parsed.port not in (None, 443) or parsed.username or parsed.password:
-        raise ValueError(f"仅允许默认 443 端口且不得携带用户信息，拒绝：{url}")
-    for info in socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP):
-        ip = ipaddress.ip_address(info[4][0])
-        if (ip.is_private or ip.is_loopback or ip.is_link_local
-                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
-            raise ValueError(f"{host} 解析到受限地址 {ip}，拒绝抓取")
-    return url
+    """委托共享层（返回 .url 字符串，保持既有返回类型）：仅允许 https + 白名单
+    主机（含子域）+ 443 端口 + 无用户信息；解析出的全部 IP 都不得落在私网/环回/
+    链路本地/保留/组播/未指定段，空解析一律拒绝（防引向内网/本机面板/云元数据）。"""
+    return url_guard.validate_url(url, allowed_hosts=ALLOWED_HOSTS,
+                                  allow_subdomains=True, action="抓取").url
 
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """重定向目标无法预校验，一律拒绝跟随。"""
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise ValueError(f"拒绝跟随重定向（{code}）：{newurl}")
-
-
-_OPENER = urllib.request.build_opener(_NoRedirect())
+_NoRedirect = url_guard._NoRedirect
+_OPENER = url_guard.OPENER
 
 
 def _http_get(url, timeout):
-    _validate_url(url)
-    req = urllib.request.Request(
-        url, headers={"User-Agent": "Mozilla/5.0 (OKntePlanner sites-fetch)"})
-    with _OPENER.open(req, timeout=timeout) as resp:
-        return resp.read().decode("utf-8", errors="replace")
+    raw = url_guard.open_pinned(
+        url, timeout=timeout, opener=_OPENER, allowed_hosts=ALLOWED_HOSTS,
+        allow_subdomains=True, action="抓取",
+        headers={"User-Agent": "Mozilla/5.0 (OKntePlanner sites-fetch)"})
+    return raw.decode("utf-8", errors="replace")
 
 
 def _ensure_under(path, base):
@@ -773,12 +760,11 @@ def _webp_pixel_size(raw):
 
 
 def _http_get_bytes(url, timeout):
-    """二进制版 _http_get（同一条 SSRF 防线：_validate_url + 禁重定向）。"""
-    _validate_url(url)
-    req = urllib.request.Request(
-        url, headers={"User-Agent": "Mozilla/5.0 (OKntePlanner sites-fetch)"})
-    with _OPENER.open(req, timeout=timeout) as resp:
-        return resp.read()
+    """二进制版 _http_get（同一条 SSRF 防线：共享层校验 + 禁重定向 + IP 钉扎）。"""
+    return url_guard.open_pinned(
+        url, timeout=timeout, opener=_OPENER, allowed_hosts=ALLOWED_HOSTS,
+        allow_subdomains=True, action="抓取",
+        headers={"User-Agent": "Mozilla/5.0 (OKntePlanner sites-fetch)"})
 
 
 def _load_avatar_manifest():

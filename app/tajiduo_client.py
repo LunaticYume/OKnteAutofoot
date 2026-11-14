@@ -37,18 +37,16 @@ sync-gacha} 端点调用（手动按钮触发，绝无定时/自动同步；同�
 接受区间），此处取 nanally（与侦察实证主值一致，最近验证）；失效时改此处即可。
 """
 import hashlib
-import ipaddress
 import json
 import os
 import re
 import secrets
-import socket
 import time
 import urllib.error
 import urllib.parse
-import urllib.request
 import uuid
 
+from . import url_guard
 from .state import DATA_DIR, load_json, save_json_atomic
 
 # ---------- 常量白名单（URL 唯一来源；前端/请求体传入的 URL 一律不采信） ----------
@@ -240,39 +238,29 @@ def laohu_aes_encrypt(plain, app_key=LAOHU_APP_KEY):
 
 
 # ---------- SSRF 防线（https + 主机白名单 + 私网 IP 阻断 + 禁重定向） ----------
+# 2026-11-14 B2.5/XMOD-01：防线唯一实现收敛进 app/url_guard.py；本模块只保留两域
+# 常量白名单与薄包装。白名单口径收紧为精确相等（allow_subdomains=False，policy
+# §2.2：全部出站 URL 仅由两 BASE 常量拼装、无子域业务，endswith 子域规则移除）；
+# 凭据只走请求头不走 URL 的口径不变（本通道凭据外泄面大于 A/B 匿名通道）。
 
 def host_allowed(hostname):
-    """主机归一化后是否在白名单：严格等于允许域，或为其子域（.域 结尾）。
-    前缀伪装（evil-user.laohu.com）与后缀伪装（user.laohu.com.evil.com）都不匹配。"""
-    host = (hostname or "").rstrip(".").lower()
-    return any(host == h or host.endswith("." + h) for h in ALLOWED_HOSTS)
+    """主机归一化后是否在白名单：严格等于允许域（2026-11-14 起不再放行子域）。
+    前缀伪装（evil-user.laohu.com）、后缀伪装（user.laohu.com.evil.com）与子域
+    形态（www.bbs-api.tajiduo.com）都不匹配。"""
+    return url_guard.host_allowed(hostname, allowed_hosts=ALLOWED_HOSTS,
+                                  allow_subdomains=False)
 
 
 def _validate_url(url):
-    """仅允许 https + 白名单主机 + 443 端口 + 无用户信息；解析出的全部 IP 都不得
-    落在私网/环回/链路本地/保留/组播/未指定段（防引向内网/本机面板/云元数据）。"""
-    parsed = urllib.parse.urlsplit(url)
-    host = (parsed.hostname or "").rstrip(".").lower()
-    if parsed.scheme != "https" or not host_allowed(host):
-        raise ValueError(f"仅允许请求白名单主机的 https 资源，拒绝：{url}")
-    if parsed.port not in (None, 443) or parsed.username or parsed.password:
-        raise ValueError(f"仅允许默认 443 端口且不得携带用户信息，拒绝：{url}")
-    for info in socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP):
-        ip = ipaddress.ip_address(info[4][0])
-        if (ip.is_private or ip.is_loopback or ip.is_link_local
-                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
-            raise ValueError(f"{host} 解析到受限地址 {ip}，拒绝请求")
-    return url
+    """委托共享层（返回 .url 字符串，保持既有返回类型）：仅允许 https + 白名单
+    主机（精确相等）+ 443 端口 + 无用户信息；解析出的全部 IP 都不得落在私网/
+    环回/链路本地/保留/组播/未指定段，空解析一律拒绝。"""
+    return url_guard.validate_url(url, allowed_hosts=ALLOWED_HOSTS,
+                                  allow_subdomains=False, action="请求").url
 
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """重定向目标无法预校验，一律拒绝跟随。"""
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise ValueError(f"拒绝跟随重定向（{code}）：{newurl}")
-
-
-_OPENER = urllib.request.build_opener(_NoRedirect())
+_NoRedirect = url_guard._NoRedirect
+_OPENER = url_guard.OPENER
 
 
 def _wrap_http_error(e, url):
@@ -295,13 +283,14 @@ def _wrap_http_error(e, url):
 
 def _http(url, *, method="GET", headers=None, data=None, timeout=20):
     """单次 HTTP（bytes 进出；URL/响应端点由本模块常量决定，前端无法指定）。
-    HTTPError 就地转 TajiduoError（_wrap_http_error：401/402/403 标 auth，
-    恢复链可达）；URLError 等其余网络错误仍按 OSError 语义上抛。"""
-    _validate_url(url)
-    req = urllib.request.Request(url, data=data, method=method, headers=headers or {})
+    传输委托共享层 open_pinned（校验 + IP 钉扎 + 禁重定向）；HTTPError 就地转
+    TajiduoError（_wrap_http_error：401/402/403 标 auth，恢复链可达）；URLError
+    等其余网络错误仍按 OSError 语义上抛。"""
     try:
-        with _OPENER.open(req, timeout=timeout) as resp:
-            return resp.read()
+        return url_guard.open_pinned(
+            url, timeout=timeout, opener=_OPENER, allowed_hosts=ALLOWED_HOSTS,
+            allow_subdomains=False, action="请求", method=method,
+            headers=headers or {}, data=data)
     except urllib.error.HTTPError as e:
         raise _wrap_http_error(e, url) from e
 

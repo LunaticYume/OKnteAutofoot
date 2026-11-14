@@ -7,25 +7,27 @@ charWeeklyMat/charFieldMat 四组为 {材料或书系名: [角色名...]} 的权
 本模块同时是 mysqil 材料名映射表（BOSS_MAT_ID/SKILL_BOOK_TO_N 等）的唯一真相，
 tools/mysqil_ingest.py 懒加载复用。
 
-安全边界（本模块是全仓库第一个服务端外联点）：
-- 仅允许 https://wiki.mysqil.com（主机白名单 + 解析 IP 不得为私网/环回/链路本地/保留段）；
+安全边界（本模块是全仓库第一个服务端外联点；2026-11-14 B2.5/XMOD-01 起与
+sites_fetch/tajiduo_client 共用 app/url_guard.py 唯一实现，本模块只保留
+WIKI_HOST 常量白名单——精确相等口径——与薄包装）：
+- 仅允许 https://wiki.mysqil.com（主机严格相等 + 解析 IP 不得为私网/环回/链路
+  本地/保留/组播/未指定段 + 空解析拒绝 + 端口仅默认 443 + 拒 URL 内嵌用户信息）；
 - 禁止跟随重定向（重定向目标无法预校验）；
 - 快照路径为本模块常量（DATA_DIR/mysqil 下字面拼接），写入前再做 realpath 归属校验。
 
-运行边界：只被 main.py 的 /api/game-data/wiki-fetch 端点调用（服务端拉取；前端受
-同源策略与面板回环校验限制不能直连 wiki）。解析器可离线对仓库内
+运行边界：main.py 的 /api/game-data/wiki-fetch 端点（GET，服务端拉取）与
+/api/wiki/fetch-upgrades、/api/wiki/fetch-cassettes 两条 POST 端点（前端受同源
+策略与面板回环校验限制不能直连 wiki）。解析器可离线对仓库内
 data/mysqil/DetailedCalc.fresh.js 夹具自测（selftest）。
 """
-import ipaddress
 import json
 import os
 import re
-import socket
 import urllib.parse
-import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+from . import url_guard
 from .state import DATA_DIR, save_json_atomic
 
 WIKI_PAGE = "https://wiki.mysqil.com/tools/cultivation"
@@ -183,37 +185,29 @@ def parse_groupings(js_text):
 
 
 # ---------- 拉取（SSRF 防线：主机白名单 + 私网 IP 阻断 + 禁重定向） ----------
+# 2026-11-14 B2.5/XMOD-01：防线唯一实现收敛进 app/url_guard.py；本模块以
+# allow_subdomains=False 精确相等接入（原实现无端口/凭据校验、无空解析拒绝，
+# 统一收紧至共享层口径；尾点/大小写归一化放行为策略采纳的现行口径）。
 
 def _validate_url(url):
-    """仅允许 https 且主机严格等于 wiki.mysqil.com；解析出的全部 IP 都不得落在
-    私网/环回/链路本地/保留/组播段（防把服务端请求引向内网、本机面板或云元数据）。"""
-    parsed = urllib.parse.urlsplit(url)
-    if parsed.scheme != "https" or parsed.hostname != WIKI_HOST:
-        raise ValueError(f"仅允许抓取 https://{WIKI_HOST} 的资源，拒绝：{url}")
-    for info in socket.getaddrinfo(parsed.hostname, 443, proto=socket.IPPROTO_TCP):
-        ip = ipaddress.ip_address(info[4][0])
-        if (ip.is_private or ip.is_loopback or ip.is_link_local
-                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
-            raise ValueError(f"{WIKI_HOST} 解析到受限地址 {ip}，拒绝抓取")
-    return url
+    """委托共享层（返回 .url 字符串，保持既有返回类型）：仅允许 https 且主机
+    严格等于 wiki.mysqil.com；解析出的全部 IP 都不得落在私网/环回/链路本地/
+    保留/组播/未指定段，空解析一律拒绝（防把服务端请求引向内网、本机面板或云
+    元数据）。"""
+    return url_guard.validate_url(url, allowed_hosts=(WIKI_HOST,),
+                                  allow_subdomains=False, action="抓取").url
 
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """重定向目标无法预校验，一律拒绝跟随。"""
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise ValueError(f"拒绝跟随重定向（{code}）：{newurl}")
-
-
-_OPENER = urllib.request.build_opener(_NoRedirect())
+_NoRedirect = url_guard._NoRedirect
+_OPENER = url_guard.OPENER
 
 
 def _http_get(url, timeout):
-    _validate_url(url)
-    req = urllib.request.Request(
-        url, headers={"User-Agent": "Mozilla/5.0 (OKntePlanner wiki-fetch)"})
-    with _OPENER.open(req, timeout=timeout) as resp:
-        return resp.read().decode("utf-8", errors="replace")
+    raw = url_guard.open_pinned(
+        url, timeout=timeout, opener=_OPENER, allowed_hosts=(WIKI_HOST,),
+        allow_subdomains=False, action="抓取",
+        headers={"User-Agent": "Mozilla/5.0 (OKntePlanner wiki-fetch)"})
+    return raw.decode("utf-8", errors="replace")
 
 
 def _ensure_under(path, base):

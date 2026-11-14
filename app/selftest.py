@@ -2519,9 +2519,23 @@ def test_sites_fetch_offline():
     #    白名单主机解析到环回/私网/链路本地/保留段也拒；nteguide.com 已禁用必拒
     orig = socket_mod.getaddrinfo
     try:
+        # 2026-11-14 B2.5 收紧：空解析（getaddrinfo 返回 []）一律拒绝（fail-closed，
+        # 修原 no-op 放行缺口，probe c23 三模块实证；policy §四 mandated 变更）
         socket_mod.getaddrinfo = lambda *a, **k: []
-        assert sf._validate_url("https://ntestrategy.com/js/shared.js")
-        assert sf._validate_url("https://wiki.mysqil.com/characters/")
+        for url in ("https://ntestrategy.com/js/shared.js",
+                    "https://wiki.mysqil.com/characters/"):
+            try:
+                sf._validate_url(url)
+                raise AssertionError("空解析必须拒绝（fail-closed）：" + url)
+            except ValueError:
+                pass
+        # 合法锚点（公网解析桩）：返回类型保持 str（调用方/探针既有口径）
+        socket_mod.getaddrinfo = lambda *a, **k: [
+            (socket_mod.AF_INET, socket_mod.SOCK_STREAM, 6, "", ("1.2.3.4", 443))]
+        assert sf._validate_url("https://ntestrategy.com/js/shared.js") == \
+            "https://ntestrategy.com/js/shared.js"
+        assert sf._validate_url("https://wiki.mysqil.com/characters/") == \
+            "https://wiki.mysqil.com/characters/"
         for url in ("http://ntestrategy.com/x", "https://evil.com/x",
                     "https://user:pw@ntestrategy.com/x", "https://ntestrategy.com:8443/x",
                     "https://nteguide.com/api/characters.json",
@@ -4592,7 +4606,11 @@ def test_tajiduo_request_construction_and_ssrf():
         socket_mod.getaddrinfo = orig_gai
     # ---- SSRF 防线（伪造 DNS，不触网） ----
     assert tc.host_allowed("user.laohu.com") and tc.host_allowed("bbs-api.tajiduo.com")
-    assert tc.host_allowed("www.bbs-api.tajiduo.com") and tc.host_allowed("user.laohu.com.")
+    # 2026-11-14 B2.5 收紧（policy §2.2）：tajiduo 白名单改精确相等——全部出站 URL
+    # 仅由两 BASE 常量拼装、无子域业务，endswith 子域规则移除，子域形态改期望拒绝；
+    # 尾点归一化放行口径保持（与 sites 一致，policy §2.3）
+    assert tc.host_allowed("user.laohu.com.")
+    assert not tc.host_allowed("www.bbs-api.tajiduo.com")
     for bad in ("localhost", "127.0.0.1", "evil-user.laohu.com",
                 "user.laohu.com.evil.com", "bbs-api.tajiduo.com:8443@", "", None):
         assert not tc.host_allowed(bad), bad
@@ -4619,6 +4637,310 @@ def test_tajiduo_request_construction_and_ssrf():
             pass
         finally:
             socket_mod.getaddrinfo = orig_gai
+
+
+# ---------- B2.5/XMOD-01 共享 URL 防线（app/url_guard.py）专项（2026-11-14） ----------
+
+def _xmod01_gai(table):
+    """B25 专项 fake-DNS 桩：记录形态对齐既有 fake-DNS 三处写法（本文件 sites 段
+    与 tajiduo 段 _fake_gai：v4 → (2,1,6,"",(ip,443))、v6 → 四元组 (ip,443,0,0)），
+    键入口径对齐 probe_xmod01.FakeDns（按解析调用传入的原始名字、大小写不敏感、
+    尾点敏感——校验层以归一化名解析，尾点 URL 应命中去尾点键）。未键入的名字返回
+    []（空解析形态）。全程无真实网络。"""
+    import socket as socket_mod
+    lowered = {k.lower(): v for k, v in table.items()}
+
+    def _gai(host, port, *a, **k):
+        records = []
+        for ip in lowered.get((host or "").lower(), []):
+            if ":" in ip:
+                records.append((socket_mod.AF_INET6, socket_mod.SOCK_STREAM, 6,
+                                "", (ip, port, 0, 0)))
+            else:
+                records.append((socket_mod.AF_INET, socket_mod.SOCK_STREAM, 6,
+                                "", (ip, port)))
+        return records
+
+    return _gai
+
+
+def _xmod01_matrix_one(mod, ug, name, accepts, rejects):
+    """B25 六类错误形态 × 单模块矩阵执行器（policy §1.4：scheme/主机/端口/凭据/
+    解析/私网 IP 六类 code 全部可区分）。accepts = [(url, dns)]；rejects =
+    [(url, dns 或 None（getaddrinfo 抛 OSError 形态）, 期望错误类)]。
+    样本 URL 带 user:pass 时顺带断言凭据不落错误消息（脱敏口径）。"""
+    import socket as socket_mod
+    orig = socket_mod.getaddrinfo
+    try:
+        for url, dns in accepts:
+            socket_mod.getaddrinfo = _xmod01_gai(dns)
+            assert mod._validate_url(url) == url, f"{name} 应放行：{url}"
+        for url, dns, want in rejects:
+            if dns is None:
+                def _boom(*a, **k):
+                    raise OSError("getaddrinfo failed（gaierror 形态桩）")
+                socket_mod.getaddrinfo = _boom
+            else:
+                socket_mod.getaddrinfo = _xmod01_gai(dns)
+            try:
+                mod._validate_url(url)
+                raise AssertionError(f"{name} {url} 应拒绝（{want.code}）")
+            except ug.URLGuardError as e:
+                assert e.code == want.code, (name, url, e.code, want.code)
+                if "user:pass" in url:
+                    assert "user:pass" not in str(e), f"{name} 凭据落消息：{e}"
+                    assert "***" in str(e), f"{name} 凭据未掩码：{e}"
+    finally:
+        socket_mod.getaddrinfo = orig
+
+
+@case
+def test_xmod01_url_guard_shared_layer():
+    """B25 共享层单元（app/url_guard.py）：六类错误码互异且各为一个 URLGuardError
+    子类、URLGuardError 是 ValueError 子类（调用方既有 except 零改动兼容）、
+    host_allowed 参数化（子域开关 + rstrip 全部尾点 + lower 归一化）、validate_url
+    返回 PinnedURL（url 原样透传 + 归一化主机 + 校验期公网 IP 集）、三模块重复件
+    已收敛（_NoRedirect/_OPENER 别名同源）、重定向一律拒绝。全程伪造 DNS，不触网。"""
+    from app import sites_fetch as sf
+    from app import wiki_fetch as wf
+    from app import tajiduo_client as tc
+    from app import url_guard as ug
+    import socket as socket_mod
+    classes = (ug.ERR_SCHEME, ug.ERR_HOST, ug.ERR_PORT, ug.ERR_CREDENTIALS,
+               ug.ERR_DNS, ug.ERR_PRIVATE_IP)
+    assert len(set(classes)) == 6, "六类错误必须各为一个独立子类"
+    assert len({c.code for c in classes}) == 6, "六类 code 必须互异"
+    assert issubclass(ug.URLGuardError, ValueError), "调用方 except ValueError 兼容"
+    # host_allowed 参数化：子域开关 + 归一化（rstrip 全部尾点，覆盖双尾点形态）
+    assert ug.host_allowed("API.Everness.INFO", allowed_hosts=("everness.info",),
+                           allow_subdomains=True)
+    assert not ug.host_allowed("api.everness.info", allowed_hosts=("everness.info",),
+                               allow_subdomains=False)
+    assert ug.host_allowed("everness.info..", allowed_hosts=("everness.info",),
+                           allow_subdomains=True)
+    for bad in ("evil-everness.info", "everness.info.evil.test", "", None):
+        assert not ug.host_allowed(bad, allowed_hosts=("everness.info",)), bad
+    # validate_url 返回 PinnedURL：url 原样透传 + 归一化主机 + 全部校验期公网 IP
+    orig = socket_mod.getaddrinfo
+    try:
+        socket_mod.getaddrinfo = _xmod01_gai(
+            {"wiki.mysqil.com": ["1.2.3.4", "93.184.216.34"]})
+        pinned = ug.validate_url("https://WIKI.MYSQIL.com/tools/cultivation",
+                                 allowed_hosts=("wiki.mysqil.com",),
+                                 allow_subdomains=False)
+        assert pinned.url == "https://WIKI.MYSQIL.com/tools/cultivation"
+        assert pinned.host == "wiki.mysqil.com", pinned.host
+        assert pinned.ips == ("1.2.3.4", "93.184.216.34"), pinned.ips
+    finally:
+        socket_mod.getaddrinfo = orig
+    # 三模块重复件已收敛：别名同源（entry-matrix §四 duplicateDefenses 清零）
+    assert sf._NoRedirect is ug._NoRedirect and wf._NoRedirect is ug._NoRedirect \
+        and tc._NoRedirect is ug._NoRedirect
+    assert sf._OPENER is ug.OPENER and wf._OPENER is ug.OPENER \
+        and tc._OPENER is ug.OPENER
+    # 重定向目标无法预校验：一律拒绝跟随（302 跳私网形态；桩参数不触网）
+    try:
+        ug._NoRedirect().redirect_request(None, None, 302, "Moved", None,
+                                          "https://10.0.0.5/panel")
+        raise AssertionError("重定向必须拒绝跟随")
+    except ValueError as e:
+        assert "拒绝跟随重定向" in str(e) and "10.0.0.5" in str(e), str(e)
+
+
+@case
+def test_xmod01_matrix_sites_fetch():
+    """B25 六类错误形态矩阵——通道A sites_fetch（四域白名单 + 子域放行口径：
+    api.everness.info 资产域靠 endswith 放行，AGENTS.md 2026-11-11 口径保持）。
+    全程伪造 DNS，不触网。"""
+    from app import sites_fetch as sf
+    from app import url_guard as ug
+    pub = {"ntestrategy.com": ["1.2.3.4"]}
+    accepts = [
+        ("https://ntestrategy.com/js/shared.js", pub),               # apex 锚点
+        ("https://api.everness.info/data/assets/UI_Icon/Appearance/x.webp",
+         {"api.everness.info": ["1.2.3.4"]}),                        # everness 资产子域
+        ("https://NTESTRATEGY.COM./js/shared.js", pub),              # 大小写 + 尾点归一化
+    ]
+    rejects = [
+        ("http://ntestrategy.com/x", pub, ug.ERR_SCHEME),            # ① scheme
+        ("http://user:pass@ntestrategy.com/x", pub, ug.ERR_SCHEME),  # ① scheme（脱敏）
+        ("https://evil.test/x", {"evil.test": ["1.2.3.4"]}, ug.ERR_HOST),   # ② 外域
+        ("https:///no-host", {}, ug.ERR_HOST),                       # ② 空主机
+        ("https://ntestrategy.com.evil.test/x", {}, ug.ERR_HOST),    # ② 后缀伪装
+        ("https://evil-ntestrategy.com/x", {}, ug.ERR_HOST),         # ② 前缀伪装
+        ("https://nteguide.com/x", {"nteguide.com": ["1.2.3.4"]},
+         ug.ERR_HOST),                                               # ② 已禁用域必拒
+        ("https://ntestrategy.com:8443/x", pub, ug.ERR_PORT),        # ③ 显式端口
+        ("https://ntestrategy.com:99999/x", pub, ug.ERR_PORT),       # ③ 越界显式化
+        ("https://ntestrategy.com:bad/x", pub, ug.ERR_PORT),         # ③ 不可解析显式化
+        ("https://user:pass@ntestrategy.com/x", pub, ug.ERR_CREDENTIALS),   # ④ 凭据
+        ("https://ntestrategy.com@evil.test/x", {"evil.test": ["1.2.3.4"]},
+         ug.ERR_HOST),                                               # ④ 多段 @ 混淆
+        ("https://ntestrategy.com/x", {"ntestrategy.com": []},
+         ug.ERR_DNS),                                                # ⑤ 空解析 fail-closed
+        ("https://ntestrategy.com/x", None, ug.ERR_DNS),             # ⑤ gaierror 形态
+        ("https://ntestrategy.com/x", {"ntestrategy.com": ["10.0.0.5"]},
+         ug.ERR_PRIVATE_IP),                                         # ⑥ RFC1918
+        ("https://ntestrategy.com/x", {"ntestrategy.com": ["127.0.0.1"]},
+         ug.ERR_PRIVATE_IP),                                         # ⑥ 环回
+        ("https://ntestrategy.com/x", {"ntestrategy.com": ["::1"]},
+         ug.ERR_PRIVATE_IP),                                         # ⑥ v6 环回
+        ("https://ntestrategy.com/x", {"ntestrategy.com": ["::ffff:10.0.0.5"]},
+         ug.ERR_PRIVATE_IP),                                         # ⑥ v4-mapped
+        ("https://ntestrategy.com/x", {"ntestrategy.com": ["1.2.3.4", "192.168.0.9"]},
+         ug.ERR_PRIVATE_IP),                                         # ⑥ 混记录不短路
+        ("https://localhost.ntestrategy.com/x",
+         {"localhost.ntestrategy.com": ["127.0.0.1"]}, ug.ERR_PRIVATE_IP),  # ⑥ 子域→DNS 层拦
+        ("https://169.254.169.254/latest/meta-data/", {}, ug.ERR_HOST),  # ⑥ 字面量→主机层拦
+    ]
+    _xmod01_matrix_one(sf, ug, "sites_fetch", accepts, rejects)
+
+
+@case
+def test_xmod01_matrix_wiki_fetch():
+    """B25 六类错误形态矩阵——通道B wiki_fetch（严格单域 wiki.mysqil.com 精确相等；
+    B2.5 统一收紧补齐端口/凭据校验与空解析拒绝——原实现缺这三项，probe c03/c04
+    实证放行；尾点/大小写归一化放行为策略采纳口径 policy §2.3）。全程伪造 DNS。"""
+    from app import wiki_fetch as wf
+    from app import url_guard as ug
+    pub = {"wiki.mysqil.com": ["1.2.3.4"]}
+    accepts = [
+        ("https://wiki.mysqil.com/tools/cultivation", pub),          # apex 锚点
+        ("https://WIKI.MYSQIL.com/_astro/DetailedCalc.abc.js", pub),  # 大小写+尾点（二跳形态）
+    ]
+    rejects = [
+        ("http://wiki.mysqil.com/x", pub, ug.ERR_SCHEME),
+        ("http://user:pass@wiki.mysqil.com/x", pub, ug.ERR_SCHEME),  # scheme 优先 + 脱敏
+        ("https://panel.wiki.mysqil.com/x", pub, ug.ERR_HOST),       # 精确相等：子域拒
+        ("https://localhost.wiki.mysqil.com/x", pub, ug.ERR_HOST),
+        ("https://wiki.mysqil.com.evil.test/x", {}, ug.ERR_HOST),    # 后缀伪装
+        ("https://evil-wiki.mysqil.com/x", {}, ug.ERR_HOST),         # 前缀伪装
+        ("https://wiki.mysqil.com:8443/x", pub, ug.ERR_PORT),        # 收紧：原实现放行
+        ("https://wiki.mysqil.com:99999/x", pub, ug.ERR_PORT),
+        ("https://wiki.mysqil.com:bad/x", pub, ug.ERR_PORT),
+        ("https://user:pass@wiki.mysqil.com/x", pub, ug.ERR_CREDENTIALS),  # 收紧：原实现放行
+        ("https://wiki.mysqil.com@evil.test/x", {"evil.test": ["1.2.3.4"]},
+         ug.ERR_HOST),                                               # 多段 @ 混淆
+        ("https://wiki.mysqil.com/x", {"wiki.mysqil.com": []}, ug.ERR_DNS),
+        ("https://wiki.mysqil.com/x", None, ug.ERR_DNS),             # gaierror 形态
+        ("https://wiki.mysqil.com/x", {"wiki.mysqil.com": ["10.0.0.5"]},
+         ug.ERR_PRIVATE_IP),
+        ("https://wiki.mysqil.com/x", {"wiki.mysqil.com": ["127.0.0.1"]},
+         ug.ERR_PRIVATE_IP),
+        ("https://wiki.mysqil.com/x", {"wiki.mysqil.com": ["::ffff:7f00:1"]},
+         ug.ERR_PRIVATE_IP),                                         # v4-mapped 环回
+        ("https://wiki.mysqil.com/x", {"wiki.mysqil.com": ["::1", "1.2.3.4"]},
+         ug.ERR_PRIVATE_IP),                                         # 混记录不短路
+    ]
+    _xmod01_matrix_one(wf, ug, "wiki_fetch", accepts, rejects)
+
+
+@case
+def test_xmod01_matrix_tajiduo_client():
+    """B25 六类错误形态矩阵——通道C tajiduo_client（两域白名单，B2.5 收紧为精确
+    相等：www.bbs-api.tajiduo.com 等子域形态改拒绝，policy §2.2 mandated；
+    凭据只走请求头不走 URL 口径不变）。全程伪造 DNS，不触网。"""
+    from app import tajiduo_client as tc
+    from app import url_guard as ug
+    pub_bbs = {"bbs-api.tajiduo.com": ["1.2.3.4"]}
+    pub_laohu = {"user.laohu.com": ["1.2.3.4"]}
+    accepts = [
+        ("https://bbs-api.tajiduo.com/usercenter/api/login", pub_bbs),      # apex 锚点
+        ("https://user.laohu.com/m/newApi/sendPhoneCaptchaWithOutLogin", pub_laohu),
+        ("https://USER.LAOHU.com./openApi/sms/new/login", pub_laohu),  # 大小写+尾点归一化
+    ]
+    rejects = [
+        ("http://bbs-api.tajiduo.com/x", pub_bbs, ug.ERR_SCHEME),
+        ("http://user:pass@user.laohu.com/x", pub_laohu, ug.ERR_SCHEME),
+        ("https://www.bbs-api.tajiduo.com/x",
+         {"www.bbs-api.tajiduo.com": ["1.2.3.4"]}, ug.ERR_HOST),     # 2.2 收紧：子域拒
+        ("https://panel.user.laohu.com/x", pub_laohu, ug.ERR_HOST),  # 精确相等：子域拒
+        ("https://evil.test/x", {"evil.test": ["1.2.3.4"]}, ug.ERR_HOST),
+        ("https://user.laohu.com.evil.com/x", {}, ug.ERR_HOST),      # 后缀伪装
+        ("https://evil-user.laohu.com/x", {}, ug.ERR_HOST),          # 前缀伪装
+        ("https://localhost/x", {"localhost": ["127.0.0.1"]}, ug.ERR_HOST),
+        ("https://bbs-api.tajiduo.com:8443/x", pub_bbs, ug.ERR_PORT),
+        ("https://bbs-api.tajiduo.com:99999/x", pub_bbs, ug.ERR_PORT),
+        ("https://bbs-api.tajiduo.com:bad/x", pub_bbs, ug.ERR_PORT),
+        ("https://user:pass@bbs-api.tajiduo.com/x", pub_bbs, ug.ERR_CREDENTIALS),
+        ("https://bbs-api.tajiduo.com@evil.test/x", {"evil.test": ["1.2.3.4"]},
+         ug.ERR_HOST),                                               # 多段 @ 混淆
+        ("https://bbs-api.tajiduo.com/x", {"bbs-api.tajiduo.com": []}, ug.ERR_DNS),
+        ("https://user.laohu.com/x", None, ug.ERR_DNS),              # gaierror 形态
+        ("https://bbs-api.tajiduo.com/x", {"bbs-api.tajiduo.com": ["10.0.0.5"]},
+         ug.ERR_PRIVATE_IP),
+        ("https://user.laohu.com/x", {"user.laohu.com": ["169.254.169.254"]},
+         ug.ERR_PRIVATE_IP),                                         # 云元数据段
+        ("https://bbs-api.tajiduo.com/x", {"bbs-api.tajiduo.com": ["::1"]},
+         ug.ERR_PRIVATE_IP),
+        ("https://bbs-api.tajiduo.com/x", {"bbs-api.tajiduo.com": ["::ffff:10.0.0.5"]},
+         ug.ERR_PRIVATE_IP),                                         # v4-mapped
+        ("https://bbs-api.tajiduo.com/x", {"bbs-api.tajiduo.com": ["1.2.3.4", "192.168.0.1"]},
+         ug.ERR_PRIVATE_IP),                                         # 混记录不短路
+    ]
+    _xmod01_matrix_one(tc, ug, "tajiduo_client", accepts, rejects)
+
+
+@case
+def test_xmod01_pinning_toctou_offline():
+    """B25 TOCTOU 离线端到端（policy §5.2/§5.3 验收条件）：校验期解析公网、抓取期
+    桩可编程改应私网（DNS 重绑定模拟）→ open_pinned 连接期 getaddrinfo 只回钉扎
+    公网集、重绑定应答根本不被消费；请求结束钉扎注销。全程零真实网络（opener 为
+    桩、无任何 socket 建连；探针 c16 由 NOT_ASSERTABLE 变为可离线断言）。"""
+    from app import tajiduo_client as tc
+    from app import url_guard as ug
+    import socket as socket_mod
+    import urllib.parse
+
+    class _Resp:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def read(self):
+            return self._payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    class _ProbingOpener:
+        """桩 opener：open 时经 socket.getaddrinfo 入口查询「连接期会拿到什么」
+        （模拟 create_connection 的解析时机）并记录首个地址，绝不真正建连。"""
+
+        def __init__(self):
+            self.seen = []
+
+        def open(self, req, timeout=None):
+            host = urllib.parse.urlsplit(req.get_full_url()).hostname
+            infos = socket_mod.getaddrinfo(host, 443, proto=socket_mod.IPPROTO_TCP)
+            self.seen.append(infos[0][4][0])
+            return _Resp(b"probe-ok")
+
+    state = {"n": 0}
+
+    def rebinding_gai(host, port, *a, **k):
+        state["n"] += 1
+        ip = "1.2.3.4" if state["n"] == 1 else "10.0.0.5"  # 首解公网、再解私网
+        return [(2, 1, 6, "", (ip, port))]
+
+    orig_gai, orig_opener = socket_mod.getaddrinfo, tc._OPENER
+    try:
+        socket_mod.getaddrinfo = rebinding_gai
+        probing = _ProbingOpener()
+        tc._OPENER = probing
+        out = tc._http("https://bbs-api.tajiduo.com/usercenter/api/login")
+        assert out == b"probe-ok", out
+        # 连接期拿到的是校验期钉扎的公网 IP，而非桩第二次应答的私网 IP
+        assert probing.seen == ["1.2.3.4"], probing.seen
+        # 桩只被消费一次（校验期）；连接期解析走钉扎分发器、重绑定应答未被消费
+        assert state["n"] == 1, state["n"]
+        # 请求结束钉扎注销（无残留）
+        assert ug._PINS.get("bbs-api.tajiduo.com") is None, dict(ug._PINS)
+    finally:
+        tc._OPENER = orig_opener
+        socket_mod.getaddrinfo = orig_gai
 
 
 @case
@@ -4999,8 +5321,12 @@ def test_tajiduo_http_error_wrapping():
     """会话恢复可达根因修复（2026-11-09 工作包1）：_http 捕 urllib.error.HTTPError →
     TajiduoError——401/402/403 标 auth（三级恢复链从此对 HTTP 层 401 可达），
     其余状态码非 auth 且带路径；URL 校验仍在包装前执行（SSRF 防线不变）。
-    离线桩：替换 _OPENER 抛真 HTTPError（BytesIO 响应体），绝不触网。"""
+    离线桩：替换 _OPENER 抛真 HTTPError（BytesIO 响应体），绝不触网。
+    2026-11-14 B2.5/XMOD-01：校验入口收敛进 url_guard（_http 一行委托 open_pinned，
+    policy §1.3），校验 spy 观察点随迁到 url_guard.validate_url（open_pinned 以
+    模块全局名调用，拦截点等效），被测不变式不变：校验先于 open/HTTPError 转换。"""
     from app import tajiduo_client as tc
+    from app import url_guard as ug
     import io as io_mod
     import urllib.error as ue
 
@@ -5016,16 +5342,16 @@ def test_tajiduo_http_error_wrapping():
             raise ue.HTTPError(req.full_url, self.code, "HTTP Error", {}, body)
 
     orig_opener = tc._OPENER
-    orig_validate = tc._validate_url
+    orig_validate = ug.validate_url
     calls = []
     _FakeOpener.opened = []
 
-    def _spy_validate(url):
+    def _spy_validate(url, **kwargs):
         calls.append(url)
-        return orig_validate(url)
+        return orig_validate(url, **kwargs)
 
     try:
-        tc._validate_url = _spy_validate
+        ug.validate_url = _spy_validate
         # 500 用无 token 关键词的路径：_auth_keyword 的既有启发式（消息含
         # "token"/"登录" 等即归 auth）会对 refreshToken 路径的任意错误标 auth
         # ——属设计内行为（歧义错误宁可多试一次恢复链），非本用例关注点
@@ -5058,7 +5384,7 @@ def test_tajiduo_http_error_wrapping():
                    for c in _FakeOpener.opened), _FakeOpener.opened
     finally:
         tc._OPENER = orig_opener
-        tc._validate_url = orig_validate
+        ug.validate_url = orig_validate
     # 401 的 TajiduoError 经 sync_all 入口必须能进恢复链（死代码复活的可达性断言）
     err = tc.TajiduoError("接口 HTTP 401（/x）", status_code=401)
     assert err.auth is True, err.auth
