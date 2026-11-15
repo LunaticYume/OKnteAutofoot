@@ -106,7 +106,8 @@ def _read_bounded_retry(path):
     静默重试。谓词用 isinstance(exc, PermissionError) 而非写者侧的
     winerror∈{5,32} 白名单：读者侧错误来自 CRT open()，实证形态为
     PermissionError errno=13 winerror=None（独占句柄与真实并发 174 例一致，
-    .testarchive/2026-11-15-B27B-conc-tier/probe-winerror 类证据），不携带
+    .testarchive/2026-11-15-B27B-conc-hardening/defect-repro/
+    conc04-repro-run1.stderr.txt:8 类证据），不携带
     winerror。真损坏（JSONDecodeError 等 ValueError）与白名单外 OSError 立即
     原样上抛，由 load_json 分支语义处置（真损坏隔离、白名单外回落），本助手
     不吞不包装。FileNotFoundError（含发布瞬间主文件短暂缺失的空窗形态）
