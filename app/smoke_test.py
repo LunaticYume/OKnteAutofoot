@@ -91,7 +91,7 @@ class _StateFileGuard:
     """备份 data/state.json 与 data/yields.json，退出时恢复（原本不存在则删除）。
     panel_token.json 主文件与 .bak 同管（SEC-05：面板每次启动重写主文件，二次写
     会轮转出 .bak；原本不存在则测后删除，绝不把测试期令牌留在仓库 data/）。
-    B2.7A：panel_token 的 uuid 双形态 tmp（save_json_atomic 命名 state.py:147/:154）
+    B2.7A：panel_token 的 uuid 双形态 tmp（save_json_atomic 命名 state.py:177/:184）
     按形态扫描后纳入同一份快照——快照/恢复逻辑按 uuid 形态扩展，守卫语义不变
     （进守卫时存在→退出恢复原内容，进守卫时不存在→退出删除）。"""
 
