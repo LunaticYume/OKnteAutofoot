@@ -5,6 +5,7 @@ import os
 import shutil
 import sys
 import threading
+import time
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -58,6 +59,45 @@ def _path_lock(path):
         return lock
 
 
+# ---- BIZ-03：os.replace 发布步 Windows 瞬时占用白名单有界重试（2026-11-15）----
+# 可重试白名单：仅 OSError 且 winerror∈{5,32}（ERROR_ACCESS_DENIED /
+# ERROR_SHARING_VIOLATION），即并发读者仍持主文件句柄导致 os.replace 发布失败的
+# Windows 瞬时占用形态（BUG-REGISTER BIZ-03：写写竞争已由 per-path 锁排除，
+# 残余失败根因是读者句柄）。errno 仅作辅助信息不参与判定：无 winerror 的
+# OSError（含 POSIX errno 形态、裸 OSError、winerror=3 路径类等）一律不重试、
+# 立即原样外抛，保持既有 fail-fast 契约（既有 CONC-01 失败注入用例口径不变）。
+_REPLACE_RETRY_WINERRORS = frozenset((5, 32))
+# 毫秒级指数短退避：首试后再重试 5 次（10/20/40/80/160ms，总睡眠 310ms）。
+# 数据依据（audit/2026-11-12/BUG-REGISTER.md BIZ-03 证据栏在册实验）：并发读者
+# 冲突下 os.replace 3 次×50ms 重试把失败率从 315/320 降到 1/320——方向有效但
+# 该参数未清零，更长退避可清零；据此取 5 次重试、逐次翻倍覆盖更慢的句柄释放
+# 窗口，总预算数百毫秒（远低于秒级，最坏只把一次写盘延长数百毫秒，不会把瞬时
+# 占用放大成请求挂起）。不得无限重试：预算耗尽原异常原样外抛。
+_REPLACE_RETRY_BACKOFF_S = (0.010, 0.020, 0.040, 0.080, 0.160)
+
+
+def _replace_bounded_retry(src, dst):
+    """os.replace + BIZ-03 白名单有界重试（仅 Windows 瞬时占用 WinError 5/32）。
+
+    save_json_atomic 主发布步与 .bak 发布步共用：
+    - 可重试：OSError 且 winerror∈{5,32}（读者句柄未释放的瞬时占用）——按
+      _REPLACE_RETRY_BACKOFF_S 毫秒级指数退避静默重试（无打印无日志），首试+5
+      次重试=至多 6 次 os.replace、总睡眠 310ms；重试发生在调用方已持有的
+      per-path 锁内（本助手不自行加锁）。
+    - 不重试：其余一切异常（无 winerror、winerror=3 路径类、磁盘满等）立即
+      原样外抛；重试耗尽亦原异常原样外抛——不包装、不改型、不吞（.bak 步的
+      吞由调用方既有 try/except OSError 完成，与本助手无关）。
+    """
+    for backoff in _REPLACE_RETRY_BACKOFF_S:
+        try:
+            return os.replace(src, dst)
+        except OSError as exc:
+            if getattr(exc, "winerror", None) not in _REPLACE_RETRY_WINERRORS:
+                raise  # 白名单外：立即原样外抛（不重试、不包装）
+            time.sleep(backoff)
+    return os.replace(src, dst)  # 末次尝试在 try 外：失败即原异常原样外抛
+
+
 def save_json_atomic(path, data):
     """全项目唯一的 JSON 原子写实现（state.json/yields/requirements/runtime 共用）。
 
@@ -66,22 +106,43 @@ def save_json_atomic(path, data):
     缺失、只剩 .bak（真机曾出现该形态的 state.json）——现改为先复制后替换，
     主文件除原子替换瞬间外始终存在。
 
-    并发口径（CONC-01 修复，2026-11-14）：
+    并发口径（CONC-01 修复，2026-11-14；BIZ-03 发布步重试口径追加，2026-11-15）：
     - 同一目标路径的整个「tmp 写全 → .bak 复制 → os.replace 发布」序列在进程内
       经 per-path 锁串行（_path_lock），同目标并发写互不踩踏；不同目标完全并行
-      （per-path 粒度不引入跨文件串行）。
-    - os.replace 提供的是原子可见性：读者任何时刻只看到旧完整或新完整内容。
-      单写者下主文件绝不半截；并发写交叉下，发布内容恒为某一个写者的完整字节
-      （同目标为 last-writer-wins，不提供跨写者合并）。os.replace 不是断电
-      持久化保证（close 后数据仍在 OS 页缓存，断电时 rename 与数据都可能丢）
-      ——不得把「原子可见」宣传成「断电安全/持久化」；冷路径如需断电安全，
-      预留向后兼容签名 save_json_atomic(path, data, *, fsync=False)（默认关，
-      显式开启处在锁内、replace 前对 tmp 加 os.fsync），本实现暂不引入。
+      （per-path 粒度不引入跨文件串行）；主发布步与 .bak 发布步的瞬时占用重试
+      （见下第三条）同样发生在持有 per-path 锁内。
+    - 跨进程口径：per-path 锁只在进程内有效，跨进程对同一目标并发写无共享锁、
+      无互斥；uuid tmp 名只保证各进程失败残留互不踩踏，跨进程交错发布仍由
+      os.replace 原子性兜底（读者只见完整版本，见下条），重试不改变该口径。
+    - 发布步 Windows 瞬时占用白名单有界重试（BIZ-03，2026-11-15）：并发读者
+      仍持主文件句柄时 os.replace 抛 PermissionError(WinError 5) / 共享冲突
+      (WinError 32)。主发布步与 .bak 发布步对「OSError 且 winerror∈{5,32}」
+      （_REPLACE_RETRY_WINERRORS）按 10/20/40/80/160ms 毫秒级指数短退避静默
+      重试（_replace_bounded_retry：首试+5 次重试=至多 6 次 replace、总睡眠
+      310ms，重试不加打印不刷日志；数据依据=audit/2026-11-12/BUG-REGISTER.md
+      BIZ-03 证据栏在册实验：3 次×50ms 重试把读者冲突失败率从 315/320 降到
+      1/320，更长退避可清零，故取 5 次翻倍退避覆盖更慢的句柄释放窗口，总预算
+      数百毫秒）。errno 仅作辅助信息不参与判定——无 winerror 的 OSError（含
+      POSIX errno 形态、裸 OSError）一律不重试立即外抛；重试耗尽原异常原样
+      外抛（不包装、不改型）；主发布步最终失败向上传播，主文件保持旧完整、
+      本次 tmp 由 finally 自清；.bak 发布步预算耗尽后仍按既有语义吞掉（重试
+      后吞，备份落后一版可接受）。
+    - os.replace 提供的是原子可见性：读者任何时刻只看到旧完整或新完整内容，
+      打开成功后读到的字节流恒为旧完整或新完整——重试只是延长旧完整的可见
+      窗口，不改变该不变量。单写者下主文件绝不半截；并发写交叉下，发布内容
+      恒为某一个写者的完整字节（同目标为 last-writer-wins，不提供跨写者合并）。
+      os.replace 不是断电持久化保证（close 后数据仍在 OS 页缓存，断电时
+      rename 与数据都可能丢）——不得把「原子可见」宣传成「断电安全/持久化」；
+      冷路径如需断电安全，预留向后兼容签名 save_json_atomic(path, data, *,
+      fsync=False)（默认关，显式开启处在锁内、replace 前对 tmp 加 os.fsync），
+      本实现暂不引入。
     - 主 tmp 与 .bak.tmp 文件名都带 uuid4().hex：崩溃/失败残留只落本写者独有的
       <名字>.<uuid>.tmp，不会被其他写者或其他进程（跨进程无共享锁）误写误读，
       并杜绝固定名 .bak.tmp 的并发 copyfile 交错写坏 .bak。
     - 失败自清只删除本次写者自己创建的主 tmp 与 bak_tmp（绝不 glob 清理他人
-      tmp）；.bak 复制失败仍按原语义吞掉（备份落后一版可接受）。
+      tmp）；.bak 复制/发布失败仍按原语义吞掉（发布步先对 WinError 5/32 有界
+      重试，预算耗尽仍吞——重试后吞，备份落后一版语义不变，绝不因备份失败
+      丢掉本次写入）。
     """
     tmp = Path(str(path) + f".{uuid.uuid4().hex}.tmp")
     bak_tmp = None
@@ -93,11 +154,13 @@ def save_json_atomic(path, data):
             bak_tmp = Path(str(path) + f".bak.{uuid.uuid4().hex}.tmp")
             try:
                 shutil.copyfile(path, bak_tmp)
-                os.replace(bak_tmp, path + ".bak")
+                # BIZ-03：.bak 发布步套用与主发布步同一有界重试（瞬时占用先重试，
+                # 预算耗尽仍被下方 except 吞掉——重试后吞，备份落后一版语义不变）
+                _replace_bounded_retry(bak_tmp, path + ".bak")
                 bak_tmp = None  # 已被 replace 消费
             except OSError:
                 pass  # .bak 落后一版可接受；绝不因备份失败丢掉本次写入
-        os.replace(tmp, path)
+        _replace_bounded_retry(tmp, path)  # BIZ-03：主发布步白名单有界重试
         tmp = None  # 已被 replace 消费
     finally:
         # 失败自清：只清本次写者自己的 tmp；.bak replace 失败时 bak_tmp 残留

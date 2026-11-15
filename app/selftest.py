@@ -5,7 +5,9 @@ planner 缺口计算与计划生成、计划算法矩阵（取整/额度/预留/
 步骤与计划的结构化 reason、确定性与纯度不变量（纯读/同输入同输出/不写 state.json）、
 扫描落账归属 runner、runner 持续模式（busy→waiting→自动重试→stop 打断）、
 scan_used_stamina 取最大值、CONC-01/02 并发原子写与图鉴覆盖层锁（同文件并发写零异常
-零半截、双 upsert 不同 name 两条均在、失败注入不损坏目标文件）。
+零半截、双 upsert 不同 name 两条均在、失败注入不损坏目标文件）、BIZ-03 发布步
+瞬时占用白名单有界重试（WinError 5/32 首败重试成功、有界退避序列、预算耗尽原样
+外抛、不可重试立即外抛、.bak 步重试后吞边界）。
 
 运行方式（项目根目录）：
     D:/GamingAssistant/ok-nte/data/apps/ok-nte/python/python.exe -m app.selftest
@@ -18,6 +20,7 @@ scan_used_stamina 取最大值、CONC-01/02 并发原子写与图鉴覆盖层锁
 每个用例 print 一行 PASS/FAIL；全部通过退出码 0，否则 1。
 """
 import copy
+import errno
 import json
 import os
 import re
@@ -8059,6 +8062,281 @@ def test_conc01_failure_injection_no_residue():
         state_mod.save_json_atomic(target, {"v": 2, "blob": "z"})  # 恢复后重试可用
         with open(target, encoding="utf-8") as f:
             assert json.load(f)["v"] == 2
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ---------- BIZ-03：save_json_atomic 发布步瞬时占用白名单有界重试 ----------
+
+
+def _winerror_oserror(winerror, msg):
+    """构造带 winerror 属性的 OSError（BIZ-03 注入口径）。
+
+    OSError(errno.EACCES, msg) 构造后 winerror=None（3.13.13/win32 实测），须显式
+    赋值；先例：.testarchive/2026-11-14-B24-conc/scripts/verify/b09_diskfull.py 的
+    OSError(28) 注入同型。
+    """
+    exc = OSError(errno.EACCES, msg)
+    exc.winerror = winerror
+    return exc
+
+
+def _same_target(dst, target):
+    """fake os.replace 的 dst 是否指向 target（normcase+abspath 归一比较）。"""
+    return os.path.normcase(os.path.abspath(str(dst))) == \
+        os.path.normcase(os.path.abspath(target))
+
+
+@case
+def test_biz03a_retry_first_transient_then_success():
+    """BIZ-03 Case A：主发布步首次 WinError 5 瞬时占用、第二次成功 → 最终成功。
+
+    断言：不外抛、末态数据正确、主发布 replace 恰 2 次（首试+1 次重试）、
+    .bak 语义不变（发布前旧完整版本照常入 .bak）、目录无 tmp/bak_tmp 残留。
+    """
+    tmp = _conc_tmp("biz03a")
+    try:
+        target = os.path.join(tmp, "state.json")
+        old = {"v": 1, "blob": "y" * 400}
+        new = {"v": 2, "blob": "z" * 400}
+        state_mod.save_json_atomic(target, old)
+        orig_replace, calls = os.replace, {"main": 0, "other": 0}
+
+        def _flaky(a, b):
+            if _same_target(b, target):
+                calls["main"] += 1
+                if calls["main"] == 1:  # 仅主发布首试失败；.bak 发布不受注入影响
+                    raise _winerror_oserror(
+                        5, "注入: WinError 5 瞬时占用（BIZ-03 Case A）")
+            else:
+                calls["other"] += 1
+            return orig_replace(a, b)
+
+        os.replace = _flaky
+        try:
+            state_mod.save_json_atomic(target, new)
+        finally:
+            os.replace = orig_replace
+        with open(target, encoding="utf-8") as f:  # 最终成功、数据正确
+            assert json.load(f) == new, "重试成功后末态数据不正确"
+        with open(target + ".bak", encoding="utf-8") as f:  # .bak 语义不变
+            assert json.load(f) == old, ".bak 应保持发布前旧完整版本"
+        assert calls["main"] == 2, \
+            f"主发布应恰 2 次 replace（首试+1 重试）: {calls}"
+        assert calls["other"] == 1, f".bak 发布应恰 1 次: {calls}"
+        residue = [p for p in os.listdir(tmp) if p.endswith(".tmp")]
+        assert residue == [], f"tmp/bak_tmp 残留: {residue}"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_biz03b_retry_bounded_backoff():
+    """BIZ-03 Case B：前 2 次（≤预算-1）可重试错误（WinError 5、32 各一）后成功
+    → 验证重试次数与退避序列。
+
+    断言：replace 恰 3 次（首试+2 重试+成功）；time.sleep 记录序列恰为设计退避
+    前缀 [10ms, 20ms]；记录的 replace 调用时刻间隔 ≥ 对应退避值（真实退避发生，
+    sleep 透传不吞）；末态数据正确、无 tmp 残留。不预建主文件（无 .bak 步，
+    全部 replace 均为主发布）。
+    """
+    tmp = _conc_tmp("biz03b")
+    try:
+        target = os.path.join(tmp, "state.json")
+        new = {"v": 2, "blob": "z" * 400}
+        orig_replace, orig_sleep = os.replace, time.sleep
+        calls, sleeps, stamps = {"n": 0}, [], []
+
+        def _flaky(a, b):
+            calls["n"] += 1
+            stamps.append(time.monotonic())
+            if calls["n"] <= 2:  # 前两次失败：winerror 5、32 各一（覆盖白名单两值）
+                raise _winerror_oserror(
+                    5 if calls["n"] == 1 else 32,
+                    "注入: 瞬时占用（BIZ-03 Case B 第 %d 次）" % calls["n"])
+            return orig_replace(a, b)
+
+        def _rec_sleep(seconds):
+            sleeps.append(seconds)
+            return orig_sleep(seconds)  # 透传真实退避
+
+        os.replace, time.sleep = _flaky, _rec_sleep
+        try:
+            state_mod.save_json_atomic(target, new)
+        finally:
+            os.replace, time.sleep = orig_replace, orig_sleep
+        with open(target, encoding="utf-8") as f:  # 重试后最终成功
+            assert json.load(f) == new, "重试成功后末态数据不正确"
+        assert calls["n"] == 3, f"应恰 3 次 replace（首试+2 重试+成功）: {calls['n']}"
+        assert sleeps == [0.010, 0.020], \
+            f"退避序列应为设计前缀 [10,20]ms: {sleeps}"
+        assert len(stamps) == 3 and stamps[0] <= stamps[1] <= stamps[2], \
+            "replace 调用时刻应非降序"
+        for i, backoff in enumerate((0.010, 0.020)):
+            gap = stamps[i + 1] - stamps[i]
+            assert gap >= backoff - 1e-3, \
+                f"第 {i + 1} 次重试前退避 {gap:.4f}s 应 ≥ {backoff}s"
+        residue = [p for p in os.listdir(tmp) if p.endswith(".tmp")]
+        assert residue == [], f"tmp 残留: {residue}"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_biz03c_retry_budget_exhausted_raises():
+    """BIZ-03 Case C：主发布步全部允许次数均失败（WinError 32）→ 原异常原样
+    外抛（对象同一性）、主文件保持旧完整、tmp/bak_tmp 清理符合设计。
+
+    time.sleep 打桩为记录型空转（断言预算恰好耗尽：5 次退避=完整
+    [10,20,40,80,160]ms，且免真实 310ms 等待）；.bak 发布不受注入影响。
+    """
+    tmp = _conc_tmp("biz03c")
+    try:
+        target = os.path.join(tmp, "state.json")
+        old = {"v": 1, "blob": "y" * 400}
+        new = {"v": 2, "blob": "z" * 400}
+        state_mod.save_json_atomic(target, old)
+        orig_replace, orig_sleep = os.replace, time.sleep
+        injected = _winerror_oserror(
+            32, "注入: WinError 32 持续占用（BIZ-03 Case C）")
+        calls, sleeps = {"main": 0, "other": 0}, []
+
+        def _always(a, b):
+            if _same_target(b, target):
+                calls["main"] += 1
+                raise injected  # 每次主发布都抛同一异常实例（验原样外抛）
+            calls["other"] += 1
+            return orig_replace(a, b)
+
+        def _nop_sleep(seconds):
+            sleeps.append(seconds)
+
+        os.replace, time.sleep = _always, _nop_sleep
+        try:
+            try:
+                state_mod.save_json_atomic(target, new)
+            except OSError as e:
+                assert e is injected, f"应原样外抛同一异常对象: {e!r}"
+            else:
+                raise AssertionError("重试预算耗尽必须抛出 OSError")
+        finally:
+            os.replace, time.sleep = orig_replace, orig_sleep
+        assert calls["main"] == 6, \
+            f"主发布应恰 6 次（首试+5 重试，预算上限）: {calls['main']}"
+        assert sleeps == [0.010, 0.020, 0.040, 0.080, 0.160], \
+            f"应恰好耗尽完整退避预算: {sleeps}"
+        assert calls["other"] == 1, f".bak 发布应恰 1 次: {calls['other']}"
+        with open(target, encoding="utf-8") as f:  # 主文件保持旧完整
+            assert json.load(f) == old, "发布失败主文件应保持旧完整内容"
+        with open(target + ".bak", encoding="utf-8") as f:
+            assert json.load(f) == old, ".bak 应为发布前旧版"
+        residue = [p for p in os.listdir(tmp) if p.endswith(".tmp")]
+        assert residue == [], f"失败后 tmp/bak_tmp 残留: {residue}"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_biz03d_non_retryable_fails_immediately():
+    """BIZ-03 Case D：不可重试错误立即外抛——不重试（replace 恰 1 次、零退避）。
+
+    覆盖三种形态：裸 OSError（无 winerror）、winerror=3 路径类错误、
+    FileNotFoundError；断言 time.sleep 零调用、主文件保持旧态（不存在）、
+    无 tmp 残留。
+    """
+    tmp = _conc_tmp("biz03d")
+    orig_replace, orig_sleep = os.replace, time.sleep
+    try:
+        non_retryable = (
+            ("bare", OSError(errno.EACCES,
+                             "注入: 无 winerror 的裸 OSError（BIZ-03 Case D）")),
+            ("winerror3", _winerror_oserror(
+                3, "注入: WinError 3 路径类错误（BIZ-03 Case D）")),
+            ("fnf", FileNotFoundError(
+                errno.ENOENT, "注入: FileNotFoundError（BIZ-03 Case D）")),
+        )
+        for label, injected in non_retryable:
+            target = os.path.join(tmp, "state_%s.json" % label)
+            calls, sleeps = {"n": 0}, []
+
+            def _fail(a, b, _injected=injected, _calls=calls):
+                _calls["n"] += 1
+                raise _injected
+
+            def _nop_sleep(*_seconds):
+                sleeps.append(1)
+
+            os.replace, time.sleep = _fail, _nop_sleep
+            try:
+                try:
+                    state_mod.save_json_atomic(target, {"v": 9})
+                except OSError as e:
+                    assert e is injected, f"[{label}] 应原样外抛同一异常: {e!r}"
+                else:
+                    raise AssertionError(f"[{label}] 不可重试错误必须外抛")
+            finally:
+                os.replace, time.sleep = orig_replace, orig_sleep
+            assert calls["n"] == 1, \
+                f"[{label}] 不重试: replace 应恰 1 次，实际 {calls['n']}"
+            assert sleeps == [], f"[{label}] 零退避（time.sleep 不应被调用）"
+            assert not os.path.exists(target), \
+                f"[{label}] 主文件不应被创建（保持旧态）"
+        residue = [p for p in os.listdir(tmp) if p.endswith(".tmp")]
+        assert residue == [], f"tmp 残留: {residue}"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_biz03e_bak_step_transient_boundary():
+    """BIZ-03 Case E：.bak 发布步遇瞬时占用（WinError 5 全预算失败）→ 重试后吞
+    （备份落后一版语义不变），主写入不受影响。
+
+    实现选择申报（与 state.py save_json_atomic docstring 一致）：.bak 发布步
+    套用与主发布步同一 _replace_bounded_retry——预算耗尽仍被既有
+    try/except OSError 吞掉。断言：不外抛、主文件落新数据、.bak 保持注入前
+    旧版（落后一版以上可接受）、.bak 发布恰 6 次（首试+5 重试）且耗尽完整
+    退避序列、bak_tmp 残留被 finally 自清。
+    """
+    tmp = _conc_tmp("biz03e")
+    try:
+        target = os.path.join(tmp, "state.json")
+        old = {"v": 1, "blob": "y" * 400}
+        mid = {"v": 2, "blob": "m" * 400}
+        new = {"v": 3, "blob": "z" * 400}
+        state_mod.save_json_atomic(target, old)  # v1：主文件建立（无 .bak 步）
+        state_mod.save_json_atomic(target, mid)  # v2：.bak 建立（=old）
+        orig_replace, orig_sleep = os.replace, time.sleep
+        injected = _winerror_oserror(
+            5, "注入: WinError 5 .bak 发布瞬时占用（BIZ-03 Case E）")
+        calls, sleeps = {"main": 0, "bak": 0}, []
+
+        def _flaky(a, b):
+            if _same_target(b, target + ".bak"):
+                calls["bak"] += 1
+                raise injected  # .bak 发布每次都失败（瞬时占用形态）
+            calls["main"] += 1
+            return orig_replace(a, b)  # 主发布不受注入影响
+
+        def _nop_sleep(seconds):
+            sleeps.append(seconds)
+
+        os.replace, time.sleep = _flaky, _nop_sleep
+        try:
+            state_mod.save_json_atomic(target, new)
+        finally:
+            os.replace, time.sleep = orig_replace, orig_sleep
+        with open(target, encoding="utf-8") as f:  # 主写入不受影响
+            assert json.load(f) == new, ".bak 步失败不得影响主写入"
+        with open(target + ".bak", encoding="utf-8") as f:  # 备份落后一版语义不变
+            assert json.load(f) == old, ".bak 应保持注入前旧版且不被写坏"
+        assert calls["bak"] == 6, \
+            f".bak 发布应重试至预算 6 次（首试+5 重试）: {calls['bak']}"
+        assert sleeps == [0.010, 0.020, 0.040, 0.080, 0.160], \
+            f".bak 步应耗尽完整退避预算: {sleeps}"
+        assert calls["main"] == 1, f"主发布应恰 1 次: {calls['main']}"
+        residue = [p for p in os.listdir(tmp) if p.endswith(".tmp")]
+        assert residue == [], f"bak_tmp/tmp 残留: {residue}"
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
