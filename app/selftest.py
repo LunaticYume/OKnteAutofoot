@@ -31,6 +31,7 @@ stress 档用法（B2.7B 起，python -m app.selftest --stress）：
 """
 import copy
 import errno
+import hashlib
 import json
 import os
 import re
@@ -2423,8 +2424,10 @@ def compat_status_in(report):
 
 @case
 def test_game_data_custom_overlay():
-    tmp = tempfile.mkdtemp(prefix="oknte_codex_")
+    tmp = _conc_tmp("codex_overlay")
     orig_custom = game_data_mod.CUSTOM_FILE
+    guard = _CustomFileGuard(orig_custom)  # B2.7C 防泄漏门禁：real_path=patch 前真值
+    guard.__enter__()
     game_data_mod.CUSTOM_FILE = os.path.join(tmp, "game_data_custom.json")
     try:
         base_bytes = open(game_data_mod.GAME_DATA_FILE, "rb").read()
@@ -2461,7 +2464,14 @@ def test_game_data_custom_overlay():
         assert xun3.get("version") != "手工覆盖", "删除覆盖层后应回落基础目录值"
     finally:
         game_data_mod.CUSTOM_FILE = orig_custom
+        guard_exc = None
+        try:
+            guard.__exit__(None, None, None)  # B2.7C：先复核防泄漏门禁再清理
+        except BaseException as e:  # noqa: BLE001
+            guard_exc = e
         shutil.rmtree(tmp, ignore_errors=True)
+        if guard_exc is not None:
+            raise guard_exc
 
 
 @case
@@ -7930,15 +7940,20 @@ def test_conc01_same_file_concurrent_writes():
 
             def worker(tid, target=target, writes=writes,
                        barrier=barrier, errors=errors, elock=elock):
-                barrier.wait(30)  # 起点对齐；超时抛 BrokenBarrierError 进 errors
-                for i in range(writes):
-                    try:
-                        state_mod.save_json_atomic(
-                            target, {"writer": "w%d" % tid, "seq": i,
-                                     "blob": "x" * 1400})
-                    except BaseException as e:  # noqa: BLE001
-                        with elock:
-                            errors.append("%s: %s" % (type(e).__name__, e))
+                try:
+                    barrier.wait(30)  # 起点对齐；超时/破坏抛 BrokenBarrierError 进
+                    # errors（B2.7C：wait 纳入 worker try 边界首语句，不再裸逸出）
+                    for i in range(writes):
+                        try:
+                            state_mod.save_json_atomic(
+                                target, {"writer": "w%d" % tid, "seq": i,
+                                         "blob": "x" * 1400})
+                        except BaseException as e:  # noqa: BLE001
+                            with elock:
+                                errors.append("%s: %s" % (type(e).__name__, e))
+                except BaseException as e:  # noqa: BLE001
+                    with elock:  # B2.7C：barrier 异常与写循环异常同一收集通道
+                        errors.append("%s: %s" % (type(e).__name__, e))
 
             ths = [threading.Thread(target=worker, args=(i,), name="W%d" % i,
                                     daemon=True) for i in range(n_threads)]
@@ -7967,9 +7982,14 @@ def test_conc02_custom_overlay_concurrent_upsert():
     B) upsert×remove 交叉 → 与串行语义一致（评审 EXP-1b：初盘甲乙丙，
        并发 upsert 丁 + remove 乙，两种交错同态 → 末态必为 [甲,丙,丁]）；
     C) 同名双 upsert（载荷全同，可交换）→ 末态恰好 1 条且内容为该载荷。
+
+    B2.7C：CUSTOM_FILE patch 期间以 _CustomFileGuard 守卫真实 CUSTOM_FILE
+    （orig_custom，patch 前捕获）不删除/不改变/无新增副产物（防泄漏门禁）。
     """
     tmp = _conc_tmp("conc02_custom")
     orig_custom = game_data_mod.CUSTOM_FILE
+    guard = _CustomFileGuard(orig_custom)
+    guard.__enter__()
     game_data_mod.CUSTOM_FILE = os.path.join(tmp, "game_data_custom.json")
     try:
         # ---- A) 2×200 不同 name ----
@@ -7977,14 +7997,18 @@ def test_conc02_custom_overlay_concurrent_upsert():
         errors, elock = [], threading.Lock()
 
         def upsert_worker(prefix, n, barrier=barrier, errors=errors, elock=elock):
-            barrier.wait(30)
-            for i in range(n):
-                try:
-                    game_data_mod.upsert_custom(
-                        "characters", {"name": f"{prefix}-{i:03d}", "version": "c02"})
-                except BaseException as e:  # noqa: BLE001
-                    with elock:
-                        errors.append("%s: %s" % (type(e).__name__, e))
+            try:
+                barrier.wait(30)  # B2.7C：wait 纳入 try 边界首语句，超时/破坏进 errors
+                for i in range(n):
+                    try:
+                        game_data_mod.upsert_custom(
+                            "characters", {"name": f"{prefix}-{i:03d}", "version": "c02"})
+                    except BaseException as e:  # noqa: BLE001
+                        with elock:
+                            errors.append("%s: %s" % (type(e).__name__, e))
+            except BaseException as e:  # noqa: BLE001
+                with elock:  # B2.7C：barrier 异常与写循环异常同一收集通道
+                    errors.append("%s: %s" % (type(e).__name__, e))
 
         ths = [threading.Thread(target=upsert_worker, args=(p, 200), name=p,
                                 daemon=True) for p in ("并发甲", "并发乙")]
@@ -8006,15 +8030,15 @@ def test_conc02_custom_overlay_concurrent_upsert():
         errors, remove_result = [], {}
 
         def up_ding(errors=errors, barrier=barrier):
-            barrier.wait(30)
             try:
+                barrier.wait(30)  # B2.7C：wait 纳入 try 边界首语句
                 game_data_mod.upsert_custom("characters", {"name": "丁", "version": "x"})
             except BaseException as e:  # noqa: BLE001
                 errors.append("%s: %s" % (type(e).__name__, e))
 
         def rm_yi(remove_result=remove_result, errors=errors, barrier=barrier):
-            barrier.wait(30)
             try:
+                barrier.wait(30)  # B2.7C：wait 纳入 try 边界首语句
                 remove_result["r"] = game_data_mod.remove_custom("characters", "乙")
             except BaseException as e:  # noqa: BLE001
                 errors.append("%s: %s" % (type(e).__name__, e))
@@ -8034,8 +8058,8 @@ def test_conc02_custom_overlay_concurrent_upsert():
         payload = {"name": "同名甲", "rarity": "S", "version": "same"}
 
         def up_same(errors=errors, barrier=barrier):
-            barrier.wait(30)
             try:
+                barrier.wait(30)  # B2.7C：wait 纳入 try 边界首语句
                 game_data_mod.upsert_custom("characters", dict(payload))
             except BaseException as e:  # noqa: BLE001
                 errors.append("%s: %s" % (type(e).__name__, e))
@@ -8053,7 +8077,14 @@ def test_conc02_custom_overlay_concurrent_upsert():
         assert residue == [], f"tmp 残留: {residue}"
     finally:
         game_data_mod.CUSTOM_FILE = orig_custom
+        guard_exc = None
+        try:
+            guard.__exit__(None, None, None)  # B2.7C：先复核防泄漏门禁再清理
+        except BaseException as e:  # noqa: BLE001
+            guard_exc = e
         shutil.rmtree(tmp, ignore_errors=True)
+        if guard_exc is not None:
+            raise guard_exc
 
 
 @case
@@ -8372,8 +8403,9 @@ def test_biz03e_bak_step_transient_boundary():
 
 # ---------- B2.7B：并发档位固化（16 线程档/读写并发/业务并发/锁卫生，2026-11-15） ----------
 # B2.4 独立复核跑过的高并发场景（16 线程档、读写并发、大统计）沉淀为正式门禁。
-# 全部确定性：Barrier/Event 同步、barrier.wait(30) 超时进 errors、daemon 线程、
-# _join_all 硬截止、禁随机 sleep（读者节奏用固定 sleep）、禁无限等待；
+# 全部确定性：Barrier/Event 同步、barrier.wait(30) 纳入 worker try 边界首语句
+# （B2.7C 修正：超时/破坏 BrokenBarrierError 与写循环异常同走 errors 收集通道）、
+# daemon 线程、_join_all 硬截止、禁随机 sleep（读者节奏用固定 sleep）、禁无限等待；
 # 临时目录一律 _conc_tmp（仓库 .tmp/，E 盘），finally rmtree 自清。
 
 
@@ -8383,6 +8415,130 @@ def _conc_residue(tmp):
     两种 glob 并集（先例：B2.7A test_token_cleanup_uuid_tmp_both_shapes）。"""
     return sorted({str(p) for pat in ("*.tmp", "*.bak.*.tmp")
                    for p in Path(tmp).glob(pat)})
+
+
+class _CustomFileGuard:
+    """B2.7C：CUSTOM_FILE patch 用例防泄漏门禁（真实数据不变量复核）。
+
+    先例形态：smoke_test._StateFileGuard（快照/退出复核，uuid 双形态 tmp 按精确
+    正则扫描）；与本守卫的差异：_StateFileGuard 退出时恢复快照，本守卫**对测试前
+    已存在的文件只读——绝不写回/恢复/删除**（恢复=覆盖用户数据），只删除守卫期
+    新增的测试垃圾。
+
+    用法：monkeypatch 前捕获 ``orig_custom = game_data_mod.CUSTOM_FILE``，构造
+    ``guard = _CustomFileGuard(orig_custom)`` 并 ``guard.__enter__()``（或 with
+    消费），finally 中 ``CUSTOM_FILE`` 恢复原值后调用 ``guard.__exit__`` 复核。
+
+    __enter__ 快照四类对象（每项记录 existed 与内容 sha256）：
+    1. real_path 本体；
+    2. real_path + ".bak" 同名副本；
+    3. 同 basename 的 *.corrupt（state.load_json 真损坏隔离形态，state.py:230/:235
+       os.replace(path, path + ".corrupt")）；
+    4. uuid 双形态 tmp（state.py save_json_atomic 命名 :177/:184）：
+       basename + ".<32位hex>.tmp" 与 basename + ".bak.<32位hex>.tmp"——按 basename
+       前缀精确正则扫描，不过宽 glob（近邻/无关文件名不命中）。
+
+    __exit__ 复核（用户数据不变量）：测试前存在者必须仍存在且 sha256 逐字节
+    不变——不许删/改/覆盖；测试前不存在者必须仍不存在——守卫期新增者（含
+    .bak/.corrupt/tmp 副产物同口径）先捕获证据（before/after 清单与哈希进失败
+    消息），再删除该测试垃圾，然后断言失败（测试前本无此物）。守卫通用（任何
+    real_path 皆可守）；自检见 test_conc09（全部在 _conc_tmp 沙箱内，绝不指向
+    真实 data/）。
+    """
+
+    def __init__(self, real_path):
+        self._real = str(real_path)
+        self._snap = {}  # path -> (form, existed, sha256)
+
+    @staticmethod
+    def _sha256_file(path):
+        """文件内容 sha256（逐字节不变量复核口径）。"""
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+    def _family_paths(self):
+        """受守卫四类对象的当前清单：{path: form}。real/.bak 两固定形态恒在
+        （不存在者快照 existed=False，退出可检出「守卫期新增」）；corrupt 与
+        uuid 双形态 tmp 按目录清单精确扫描。"""
+        real = self._real
+        d = os.path.dirname(real) or "."
+        base = os.path.basename(real)
+        fam = {real: "real", real + ".bak": "bak"}
+        # uuid 双形态：state.py:177 <名字>.<32hex>.tmp 与 :184 <名字>.bak.<32hex>.tmp
+        # ——basename 前缀精确锚定（先例 smoke_test._PANEL_TOKEN_UUID_TMP_RE 口径）
+        uuid_re = re.compile(r"^%s(?:\.bak)?\.[0-9a-f]{32}\.tmp$" % re.escape(base))
+        try:
+            names = os.listdir(d)
+        except OSError:
+            names = []
+        for name in names:
+            path = os.path.join(d, name)
+            if uuid_re.fullmatch(name):
+                fam[path] = "uuid_tmp"
+            elif name.endswith(".corrupt") and name.startswith(base + "."):
+                fam[path] = "corrupt"
+        return fam
+
+    def _state(self, path):
+        """当前形态状态：(existed, sha256)。不存在者 (False, None)。"""
+        if os.path.isfile(path):
+            return (True, self._sha256_file(path))
+        return (False, None)
+
+    def __enter__(self):
+        for path, form in self._family_paths().items():
+            existed, digest = self._state(path)
+            self._snap[path] = (form, existed, digest)
+        return self
+
+    def __exit__(self, *exc):
+        after = self._family_paths()
+        problems = []  # (kind, path, form, before(existed,sha), after(existed,sha))
+        garbage = []   # 守卫期新增（测试垃圾）：取证后删除
+        for path in sorted(set(self._snap) | set(after)):
+            form = after.get(path) or self._snap[path][0]
+            a_existed, a_digest = self._state(path)
+            if path not in self._snap:
+                problems.append(("新增", path, form, (False, None),
+                                 (a_existed, a_digest)))
+                garbage.append(path)
+                continue
+            _, b_existed, b_digest = self._snap[path]
+            if b_existed and not a_existed:
+                problems.append(("被删", path, form, (b_existed, b_digest),
+                                 (a_existed, a_digest)))
+            elif b_existed and a_digest != b_digest:
+                problems.append(("被改", path, form, (b_existed, b_digest),
+                                 (a_existed, a_digest)))
+            elif not b_existed and a_existed:
+                problems.append(("新增", path, form, (b_existed, b_digest),
+                                 (a_existed, a_digest)))
+                garbage.append(path)
+        # 先取证（problems 已含 before/after 哈希与形态）再删守卫期新增垃圾；
+        # 测试前已存在者一律不碰（只读守卫，绝不写回/恢复/删除）
+        for path in garbage:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        if problems:
+
+            def _fmt(state):
+                existed, digest = state
+                return "existed=%s sha256=%s" % (existed, digest or "-")
+
+            lines = ["%s [form=%s kind=%s] before(%s) after(%s)%s" % (
+                path, form, kind, _fmt(before), _fmt(after_state),
+                "（守卫期新增测试垃圾已删除）" if kind == "新增" else "")
+                for kind, path, form, before, after_state in problems]
+            raise AssertionError(
+                "B2.7C CUSTOM_FILE 防泄漏门禁：真实数据不变量被破坏，共 %d 项"
+                "（测试前存在者必须逐字节不变，测试前不存在者不得出现）:\n%s"
+                % (len(problems), "\n".join(lines)))
+        return False
 
 
 @case
@@ -8407,15 +8563,20 @@ def test_conc03_16thread_same_file_writes():
 
         def worker(tid, target=target, writes=writes,
                    barrier=barrier, errors=errors, elock=elock):
-            barrier.wait(30)  # 起点对齐；超时抛 BrokenBarrierError 进 errors
-            for i in range(writes):
-                try:
-                    state_mod.save_json_atomic(
-                        target, {"writer": "w%d" % tid, "seq": i,
-                                 "blob": "x" * 1400})
-                except BaseException as e:  # noqa: BLE001
-                    with elock:
-                        errors.append("%s: %s" % (type(e).__name__, e))
+            try:
+                barrier.wait(30)  # 起点对齐；超时/破坏抛 BrokenBarrierError 进
+                # errors（B2.7C：wait 纳入 worker try 边界首语句，不再裸逸出）
+                for i in range(writes):
+                    try:
+                        state_mod.save_json_atomic(
+                            target, {"writer": "w%d" % tid, "seq": i,
+                                     "blob": "x" * 1400})
+                    except BaseException as e:  # noqa: BLE001
+                        with elock:
+                            errors.append("%s: %s" % (type(e).__name__, e))
+            except BaseException as e:  # noqa: BLE001
+                with elock:  # B2.7C：barrier 异常与写循环异常同一收集通道
+                    errors.append("%s: %s" % (type(e).__name__, e))
 
         ths = [threading.Thread(target=worker, args=(i,), name="W%d" % i,
                                 daemon=True) for i in range(n_threads)]
@@ -8469,15 +8630,20 @@ def test_conc04_read_write_concurrency():
 
         def writer(tid, target=target, barrier=barrier, errors=writer_errors,
                    lock=wlock):
-            barrier.wait(30)  # 起点对齐；超时抛 BrokenBarrierError 进 errors
-            for i in range(writes):
-                try:
-                    state_mod.save_json_atomic(
-                        target, {"writer": "w%d" % tid, "seq": i,
-                                 "blob": "x" * 1400})
-                except BaseException as e:  # noqa: BLE001
-                    with lock:
-                        errors.append("%s: %s" % (type(e).__name__, e))
+            try:
+                barrier.wait(30)  # 起点对齐；超时/破坏抛 BrokenBarrierError 进
+                # errors（B2.7C：wait 纳入 writer try 边界首语句，不再裸逸出）
+                for i in range(writes):
+                    try:
+                        state_mod.save_json_atomic(
+                            target, {"writer": "w%d" % tid, "seq": i,
+                                     "blob": "x" * 1400})
+                    except BaseException as e:  # noqa: BLE001
+                        with lock:
+                            errors.append("%s: %s" % (type(e).__name__, e))
+            except BaseException as e:  # noqa: BLE001
+                with lock:  # B2.7C：barrier 异常与写循环异常同一收集通道
+                    errors.append("%s: %s" % (type(e).__name__, e))
 
         def reader(target=target, done=done_event, errors=reader_errors,
                    lock=rlock, counter=reads):
@@ -8549,10 +8715,13 @@ def test_conc05_custom_multi_key_concurrent():
     CONC-02 口径放大（test_conc02 段 A 为 2×200）：entry 形状照抄 conc02 段 A
     （保证通过校验）；断言 0 异常、custom_entries() 恰 200 条、预期 name 集合
     全在（零丢失）、文档可解析、无 tmp 残留。CUSTOM_FILE monkeypatch 照
-    test_conc02 先例 finally 恢复。
+    test_conc02 先例 finally 恢复；B2.7C 起以 _CustomFileGuard 守卫真实
+    CUSTOM_FILE 不被泄漏/改写。
     """
     tmp = _conc_tmp("conc05_multi")
     orig_custom = game_data_mod.CUSTOM_FILE
+    guard = _CustomFileGuard(orig_custom)
+    guard.__enter__()
     game_data_mod.CUSTOM_FILE = os.path.join(tmp, "game_data_custom.json")
     try:
         n_threads, per_thread = 8, 25
@@ -8560,15 +8729,19 @@ def test_conc05_custom_multi_key_concurrent():
         errors, elock = [], threading.Lock()
 
         def worker(t, barrier=barrier, errors=errors, elock=elock):
-            barrier.wait(30)
-            for k in range(per_thread):
-                try:
-                    game_data_mod.upsert_custom(
-                        "characters", {"name": f"自测角色-{t}-{k}",
-                                       "version": "c05"})
-                except BaseException as e:  # noqa: BLE001
-                    with elock:
-                        errors.append("%s: %s" % (type(e).__name__, e))
+            try:
+                barrier.wait(30)  # B2.7C：wait 纳入 try 边界首语句，超时/破坏进 errors
+                for k in range(per_thread):
+                    try:
+                        game_data_mod.upsert_custom(
+                            "characters", {"name": f"自测角色-{t}-{k}",
+                                           "version": "c05"})
+                    except BaseException as e:  # noqa: BLE001
+                        with elock:
+                            errors.append("%s: %s" % (type(e).__name__, e))
+            except BaseException as e:  # noqa: BLE001
+                with elock:  # B2.7C：barrier 异常与写循环异常同一收集通道
+                    errors.append("%s: %s" % (type(e).__name__, e))
 
         ths = [threading.Thread(target=worker, args=(t,), name=f"U{t}",
                                 daemon=True) for t in range(n_threads)]
@@ -8588,7 +8761,14 @@ def test_conc05_custom_multi_key_concurrent():
         assert residue == [], f"uuid 双形态 tmp 残留: {residue}"
     finally:
         game_data_mod.CUSTOM_FILE = orig_custom
+        guard_exc = None
+        try:
+            guard.__exit__(None, None, None)  # B2.7C：先复核防泄漏门禁再清理
+        except BaseException as e:  # noqa: BLE001
+            guard_exc = e
         shutil.rmtree(tmp, ignore_errors=True)
+        if guard_exc is not None:
+            raise guard_exc
 
 
 @case
@@ -8598,10 +8778,13 @@ def test_conc06_custom_same_key_concurrent():
     与 test_conc02 段 C（载荷全同、可交换）不同，本例载荷互异（f"载荷-{t}"）：
     验证同名并发 upsert 的 last-writer-wins 串行化语义——任意交错末态收敛到
     恰 1 条且 payload 属于 8 个已写值集合（绝不混合/半截/多出）。断言 0 异常、
-    该 name 恰 1 条、文档可解析、无 tmp 残留。
+    该 name 恰 1 条、文档可解析、无 tmp 残留；B2.7C 起以 _CustomFileGuard 守卫
+    真实 CUSTOM_FILE 不被泄漏/改写。
     """
     tmp = _conc_tmp("conc06_same")
     orig_custom = game_data_mod.CUSTOM_FILE
+    guard = _CustomFileGuard(orig_custom)
+    guard.__enter__()
     game_data_mod.CUSTOM_FILE = os.path.join(tmp, "game_data_custom.json")
     try:
         n_threads, per_thread = 8, 5
@@ -8610,15 +8793,19 @@ def test_conc06_custom_same_key_concurrent():
         written = {f"载荷-{t}" for t in range(n_threads)}
 
         def worker(t, barrier=barrier, errors=errors, elock=elock):
-            barrier.wait(30)
-            for _ in range(per_thread):
-                try:
-                    game_data_mod.upsert_custom(
-                        "characters", {"name": "自测并发同键",
-                                       "payload": f"载荷-{t}"})
-                except BaseException as e:  # noqa: BLE001
-                    with elock:
-                        errors.append("%s: %s" % (type(e).__name__, e))
+            try:
+                barrier.wait(30)  # B2.7C：wait 纳入 try 边界首语句，超时/破坏进 errors
+                for _ in range(per_thread):
+                    try:
+                        game_data_mod.upsert_custom(
+                            "characters", {"name": "自测并发同键",
+                                           "payload": f"载荷-{t}"})
+                    except BaseException as e:  # noqa: BLE001
+                        with elock:
+                            errors.append("%s: %s" % (type(e).__name__, e))
+            except BaseException as e:  # noqa: BLE001
+                with elock:  # B2.7C：barrier 异常与写循环异常同一收集通道
+                    errors.append("%s: %s" % (type(e).__name__, e))
 
         ths = [threading.Thread(target=worker, args=(t,), name=f"S{t}",
                                 daemon=True) for t in range(n_threads)]
@@ -8638,7 +8825,14 @@ def test_conc06_custom_same_key_concurrent():
         assert residue == [], f"uuid 双形态 tmp 残留: {residue}"
     finally:
         game_data_mod.CUSTOM_FILE = orig_custom
+        guard_exc = None
+        try:
+            guard.__exit__(None, None, None)  # B2.7C：先复核防泄漏门禁再清理
+        except BaseException as e:  # noqa: BLE001
+            guard_exc = e
         shutil.rmtree(tmp, ignore_errors=True)
+        if guard_exc is not None:
+            raise guard_exc
 
 
 @case
@@ -8654,10 +8848,13 @@ def test_conc07_lock_hygiene_repeated():
     CUSTOM_FILE 共 3——per-path 锁 get-or-create 常驻不清理，state.py
     _path_lock 文档口径）、第 2-5 轮增量 0（无异常膨胀）、每轮墙钟
     time.perf_counter() < 30s（死锁兜底；口径先例 test_biz03b :8159-8161
-    perf_counter=QPC 注）。
+    perf_counter=QPC 注）；B2.7C 起以 _CustomFileGuard 守卫真实 CUSTOM_FILE
+    不被泄漏/改写。
     """
     tmp = _conc_tmp("conc07_hygiene")
     orig_custom = game_data_mod.CUSTOM_FILE
+    guard = _CustomFileGuard(orig_custom)
+    guard.__enter__()
     game_data_mod.CUSTOM_FILE = os.path.join(tmp, "game_data_custom.json")
     try:
         json_a = os.path.join(tmp, "hygiene_a.json")
@@ -8672,26 +8869,34 @@ def test_conc07_lock_hygiene_repeated():
 
             def even_worker(barrier=barrier, errors=errors, elock=elock,
                             ja=json_a, jb=json_b):
-                barrier.wait(30)
-                for i in range(per_json_writes):
-                    for tgt in (ja, jb):
+                try:
+                    barrier.wait(30)  # B2.7C：wait 纳入 try 边界首语句
+                    for i in range(per_json_writes):
+                        for tgt in (ja, jb):
+                            try:
+                                state_mod.save_json_atomic(
+                                    tgt, {"seq": i, "blob": "x" * 1400})
+                            except BaseException as e:  # noqa: BLE001
+                                with elock:
+                                    errors.append("%s: %s" % (type(e).__name__, e))
+                except BaseException as e:  # noqa: BLE001
+                    with elock:  # B2.7C：barrier 异常与写循环异常同一收集通道
+                        errors.append("%s: %s" % (type(e).__name__, e))
+
+            def odd_worker(t, barrier=barrier, errors=errors, elock=elock):
+                try:
+                    barrier.wait(30)  # B2.7C：wait 纳入 try 边界首语句
+                    for k in range(per_thread_upserts):
                         try:
-                            state_mod.save_json_atomic(
-                                tgt, {"seq": i, "blob": "x" * 1400})
+                            game_data_mod.upsert_custom(
+                                "characters", {"name": f"自测混合-{t}-{k}",
+                                               "version": "c07"})
                         except BaseException as e:  # noqa: BLE001
                             with elock:
                                 errors.append("%s: %s" % (type(e).__name__, e))
-
-            def odd_worker(t, barrier=barrier, errors=errors, elock=elock):
-                barrier.wait(30)
-                for k in range(per_thread_upserts):
-                    try:
-                        game_data_mod.upsert_custom(
-                            "characters", {"name": f"自测混合-{t}-{k}",
-                                           "version": "c07"})
-                    except BaseException as e:  # noqa: BLE001
-                        with elock:
-                            errors.append("%s: %s" % (type(e).__name__, e))
+                except BaseException as e:  # noqa: BLE001
+                    with elock:  # B2.7C：barrier 异常与写循环异常同一收集通道
+                        errors.append("%s: %s" % (type(e).__name__, e))
 
             ths = [threading.Thread(target=even_worker, name=f"HE{rnd}-{i}",
                                     daemon=True)
@@ -8724,6 +8929,215 @@ def test_conc07_lock_hygiene_repeated():
             json.load(f)
     finally:
         game_data_mod.CUSTOM_FILE = orig_custom
+        guard_exc = None
+        try:
+            guard.__exit__(None, None, None)  # B2.7C：先复核防泄漏门禁再清理
+        except BaseException as e:  # noqa: BLE001
+            guard_exc = e
+        shutil.rmtree(tmp, ignore_errors=True)
+        if guard_exc is not None:
+            raise guard_exc
+
+
+# ---------- B2.7C：测试语义收口（barrier 异常边界自证 / 防泄漏守卫自检，2026-11-16） ----------
+
+
+@case
+def test_conc08_barrier_break_reported():
+    """B2.7C 注入①：barrier 破坏必须进正式失败通道（worker 异常边界自证）。
+
+    B2.7B 复核缺口的确定性收口自证：修复前 17 处 barrier.wait 位于 worker 异常
+    收集 try 之外——barrier 破坏/超时会以线程未捕获异常形式静默逸出（threading
+    默认 excepthook 打印后消散），用例 errors==[] 照常通过（假绿）。本例按修复后
+    worker 边界形态（try 首语句 wait + except BaseException → errors 收集）起
+    4 写者线程写同一预建 JSON；全部 start() 后主线程立即 barrier.abort()
+    （标准库语义：已阻塞与未到达的 wait 全部立即抛 threading.BrokenBarrierError），
+    _join_all(ths, timeout=30)。断言一：errors 非空且每条都含 BrokenBarrierError
+    （worker 异常进入可观察失败通道）；断言二：全部线程已退出（_join_all 硬截止）；
+    断言三（测试确实会 FAIL 的证明）：同构 mini 流程（预建文件+同款边界+abort+
+    join+成功档 errors==[] 断言）包在 try/except AssertionError 里复跑，断言
+    AssertionError 确实抛出且失败消息含 BrokenBarrierError——证明 barrier 破坏
+    →正式用例确定性 FAIL（假绿通道已封死）。
+    注：wait(30) 预算耗尽的超时路径与 abort 路径抛同一异常类
+    threading.BrokenBarrierError，30 秒慢路径不另测。
+    """
+    tmp = _conc_tmp("conc08_abort")
+    try:
+        target = os.path.join(tmp, "state_conc08.json")
+        state_mod.save_json_atomic(target, {"writer": "w0", "seq": -1,
+                                            "blob": "x" * 1400})  # 预建合法首版
+        n_threads = 4
+        barrier = threading.Barrier(n_threads)
+        errors, elock = [], threading.Lock()
+
+        def worker(tid, target=target, barrier=barrier, errors=errors,
+                   elock=elock):
+            # 与修复后正式并发档同款边界：try 首语句 wait，异常统一进 errors
+            try:
+                barrier.wait(30)
+                for i in range(25):
+                    try:
+                        state_mod.save_json_atomic(
+                            target, {"writer": "w%d" % tid, "seq": i,
+                                     "blob": "x" * 1400})
+                    except BaseException as e:  # noqa: BLE001
+                        with elock:
+                            errors.append("%s: %s" % (type(e).__name__, e))
+            except BaseException as e:  # noqa: BLE001
+                with elock:
+                    errors.append("%s: %s" % (type(e).__name__, e))
+
+        ths = [threading.Thread(target=worker, args=(i,), name="W%d" % i,
+                                daemon=True) for i in range(n_threads)]
+        for t in ths:
+            t.start()
+        barrier.abort()  # 已阻塞与未到达的 wait 全部立即抛 BrokenBarrierError
+        _join_all(ths, timeout=30)  # 断言二：全部线程已退出（硬截止兜底）
+        assert errors, "断言一：barrier 破坏必须进 errors 失败通道，实际为空"
+        assert all("BrokenBarrierError" in e for e in errors), \
+            f"断言一：每条 error 都应含 BrokenBarrierError: {errors[:5]}"
+        # ---- 断言三：同构 mini 流程复跑——成功档断言在 barrier 破坏下确定性 FAIL ----
+        m_target = os.path.join(tmp, "state_conc08_mini.json")
+        state_mod.save_json_atomic(m_target, {"writer": "w0", "seq": -1,
+                                              "blob": "x" * 1400})
+        m_barrier = threading.Barrier(n_threads)
+        m_errors, m_elock = [], threading.Lock()
+
+        def m_worker(tid, target=m_target, barrier=m_barrier, errors=m_errors,
+                     elock=m_elock):
+            try:
+                barrier.wait(30)
+                for i in range(25):
+                    try:
+                        state_mod.save_json_atomic(
+                            target, {"writer": "w%d" % tid, "seq": i,
+                                     "blob": "x" * 1400})
+                    except BaseException as e:  # noqa: BLE001
+                        with elock:
+                            errors.append("%s: %s" % (type(e).__name__, e))
+            except BaseException as e:  # noqa: BLE001
+                with elock:
+                    errors.append("%s: %s" % (type(e).__name__, e))
+
+        m_ths = [threading.Thread(target=m_worker, args=(i,), name="M%d" % i,
+                                  daemon=True) for i in range(n_threads)]
+        for t in m_ths:
+            t.start()
+        m_barrier.abort()
+        _join_all(m_ths, timeout=30)
+        raised = None
+        try:
+            assert m_errors == [], "mini 并发写异常: %s" % (m_errors[:5],)
+        except AssertionError as e:
+            raised = e
+        assert raised is not None, \
+            "断言三：barrier 破坏下成功档断言必须 FAIL（防假绿自证失效）"
+        assert "BrokenBarrierError" in str(raised), \
+            f"断言三：失败消息应含 BrokenBarrierError: {raised}"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_conc09_custom_file_guard_detects_leak():
+    """B2.7C 注入②：_CustomFileGuard 防泄漏守卫自检（四场景全在 _conc_tmp
+    沙箱内，零碰真实 data/）。结构仿 test_statefileguard_uuid_pattern 的
+    快照-扰动-断言；守卫消费用 with。
+
+    场景一：沙箱「真实路径」已有文件且隔离写只进另一 tmp（非守卫家族）→
+    守卫通过；场景二：已存在文件在守卫期内被改写 → 守卫断言失败且该文件原样
+    保留（不许删/覆盖语义自证：守卫退出后内容与改写后一致、未被恢复，失败
+    消息含 before/after 哈希与形态）；场景三：不存在路径在守卫期内被新建 →
+    守卫失败+垃圾已被守卫清除+错误信息含内容哈希证据；场景四：已存在文件旁
+    出现 uuid 双形态 tmp 副产物（state.py:177/:184 命名口径）→ 守卫失败+
+    垃圾已清，固定名 .tmp 近邻不纳入守卫（不过宽 glob 自证）。
+    """
+    tmp = _conc_tmp("conc09_guard")
+    try:
+        # ---- 场景一：已有文件 + 隔离写只进另一 tmp → 守卫通过 ----
+        sandbox1 = os.path.join(tmp, "sandbox1")
+        os.makedirs(sandbox1)
+        real1 = os.path.join(sandbox1, "game_data_custom.json")
+        Path(real1).write_text('{"v": 1}', encoding="utf-8")
+        with _CustomFileGuard(real1):
+            Path(os.path.join(tmp, "scratch1.json")).write_text(
+                '{"isolated": true}', encoding="utf-8")  # 隔离写：非守卫家族
+        assert Path(real1).read_text(encoding="utf-8") == '{"v": 1}', \
+            "场景一：守卫通过路径不得触碰受守卫文件"
+        assert not os.path.exists(real1 + ".bak"), "场景一：守卫不得制造 .bak"
+
+        # ---- 场景二：已存在文件守卫期内被改写 → 断言失败且原样保留（不恢复）----
+        sandbox2 = os.path.join(tmp, "sandbox2")
+        os.makedirs(sandbox2)
+        real2 = os.path.join(sandbox2, "game_data_custom.json")
+        old_body = '{"v": 1}'
+        Path(real2).write_text(old_body, encoding="utf-8")
+        old_hex = hashlib.sha256(old_body.encode("utf-8")).hexdigest()
+        new_body = '{"v": 2, "touched": true}'
+        new_hex = hashlib.sha256(new_body.encode("utf-8")).hexdigest()
+        caught = None
+        try:
+            with _CustomFileGuard(real2):
+                Path(real2).write_text(new_body, encoding="utf-8")  # 守卫期改写
+        except AssertionError as e:
+            caught = e
+        assert caught is not None, "场景二：守卫期内改写已存在文件必须被捕获"
+        msg2 = str(caught)
+        assert old_hex in msg2 and new_hex in msg2, \
+            f"场景二：失败消息必须含 before/after 哈希: {msg2}"
+        assert "kind=被改" in msg2 and "form=real" in msg2, \
+            f"场景二：失败消息必须含形态清单: {msg2}"
+        assert Path(real2).read_text(encoding="utf-8") == new_body, \
+            "场景二：守卫必须原样保留被改文件（绝不写回/恢复快照——不许删/覆盖语义）"
+
+        # ---- 场景三：不存在路径守卫期内被新建 → 失败+垃圾已清+哈希证据 ----
+        sandbox3 = os.path.join(tmp, "sandbox3")
+        os.makedirs(sandbox3)
+        real3 = os.path.join(sandbox3, "game_data_custom.json")  # 测试前不存在
+        leak_body = '{"born": "leak"}'
+        leak_hex = hashlib.sha256(leak_body.encode("utf-8")).hexdigest()
+        caught = None
+        try:
+            with _CustomFileGuard(real3):
+                Path(real3).write_text(leak_body, encoding="utf-8")
+        except AssertionError as e:
+            caught = e
+        assert caught is not None, "场景三：守卫期内新建必须被捕获"
+        msg3 = str(caught)
+        assert "kind=新增" in msg3 and leak_hex in msg3, \
+            f"场景三：失败消息必须含内容哈希证据: {msg3}"
+        assert not os.path.exists(real3), \
+            "场景三：守卫期新增垃圾必须已被守卫删除（测试垃圾不留盘）"
+
+        # ---- 场景四：uuid 双形态 tmp 副产物 → 失败+垃圾已清；近邻不误伤 ----
+        sandbox4 = os.path.join(tmp, "sandbox4")
+        os.makedirs(sandbox4)
+        real4 = os.path.join(sandbox4, "game_data_custom.json")
+        Path(real4).write_text('{"v": 1}', encoding="utf-8")
+        hex1, hex2 = "ab" * 16, "cd" * 16  # 32 位 hex（uuid4().hex 同形态）
+        u_main = os.path.join(sandbox4, "game_data_custom.json.%s.tmp" % hex1)
+        u_bak = os.path.join(sandbox4, "game_data_custom.json.bak.%s.tmp" % hex2)
+        near = os.path.join(sandbox4, "game_data_custom.json.tmp")  # 固定名近邻
+        caught = None
+        try:
+            with _CustomFileGuard(real4):
+                Path(near).write_text("near", encoding="utf-8")  # 非守卫形态
+                Path(u_main).write_text("tmp-main", encoding="utf-8")
+                Path(u_bak).write_text("tmp-bak", encoding="utf-8")
+        except AssertionError as e:
+            caught = e
+        assert caught is not None, "场景四：uuid 双形态 tmp 副产物必须被捕获"
+        msg4 = str(caught)
+        assert "kind=新增" in msg4 and "form=uuid_tmp" in msg4, \
+            f"场景四：失败消息必须含形态清单: {msg4}"
+        assert hashlib.sha256(b"tmp-main").hexdigest() in msg4, \
+            f"场景四：失败消息应含副产物内容哈希: {msg4}"
+        assert not os.path.exists(u_main) and not os.path.exists(u_bak), \
+            "场景四：uuid 双形态 tmp 垃圾必须已被守卫清除"
+        assert os.path.exists(near), "场景四：固定名 .tmp 近邻不得被误删（精确扫描）"
+        assert Path(real4).read_text(encoding="utf-8") == '{"v": 1}', \
+            "场景四：守卫失败路径同样不得触碰测试前已存在的文件"
+    finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
@@ -8753,15 +9167,19 @@ def test_stress_conc01_16t_high_volume():
 
         def worker(tid, target=target, writes=writes,
                    barrier=barrier, errors=errors, elock=elock):
-            barrier.wait(30)
-            for i in range(writes):
-                try:
-                    state_mod.save_json_atomic(
-                        target, {"writer": "w%d" % tid, "seq": i,
-                                 "blob": "x" * 1400})
-                except BaseException as e:  # noqa: BLE001
-                    with elock:
-                        errors.append("%s: %s" % (type(e).__name__, e))
+            try:
+                barrier.wait(30)  # B2.7C：wait 纳入 try 边界首语句，超时/破坏进 errors
+                for i in range(writes):
+                    try:
+                        state_mod.save_json_atomic(
+                            target, {"writer": "w%d" % tid, "seq": i,
+                                     "blob": "x" * 1400})
+                    except BaseException as e:  # noqa: BLE001
+                        with elock:
+                            errors.append("%s: %s" % (type(e).__name__, e))
+            except BaseException as e:  # noqa: BLE001
+                with elock:  # B2.7C：barrier 异常与写循环异常同一收集通道
+                    errors.append("%s: %s" % (type(e).__name__, e))
 
         ths = [threading.Thread(target=worker, args=(i,), name="W%d" % i,
                                 daemon=True) for i in range(n_threads)]
@@ -8806,15 +9224,19 @@ def test_stress_conc02_readwrite_long():
 
         def writer(tid, target=target, barrier=barrier, errors=writer_errors,
                    lock=wlock):
-            barrier.wait(30)
-            for i in range(writes):
-                try:
-                    state_mod.save_json_atomic(
-                        target, {"writer": "w%d" % tid, "seq": i,
-                                 "blob": "x" * 1400})
-                except BaseException as e:  # noqa: BLE001
-                    with lock:
-                        errors.append("%s: %s" % (type(e).__name__, e))
+            try:
+                barrier.wait(30)  # B2.7C：wait 纳入 try 边界首语句，超时/破坏进 errors
+                for i in range(writes):
+                    try:
+                        state_mod.save_json_atomic(
+                            target, {"writer": "w%d" % tid, "seq": i,
+                                     "blob": "x" * 1400})
+                    except BaseException as e:  # noqa: BLE001
+                        with lock:
+                            errors.append("%s: %s" % (type(e).__name__, e))
+            except BaseException as e:  # noqa: BLE001
+                with lock:  # B2.7C：barrier 异常与写循环异常同一收集通道
+                    errors.append("%s: %s" % (type(e).__name__, e))
 
         def reader(target=target, done=done_event, errors=reader_errors,
                    lock=rlock, counter=reads):
@@ -8885,10 +9307,13 @@ def test_stress_conc03_custom_volume():
     A 段（conc05 放大）：断言 0 异常、恰 800 条、预期 name 集合全在；
     B 段（conc06 放大）：同名「自测压力同键」16 线程各 10 次互异 payload，
     断言该 name 恰 1 条且 payload 属于 16 个已写值集合。两段后文档可解析、
-    无 tmp 残留。CUSTOM_FILE monkeypatch 照 test_conc02 先例 finally 恢复。
+    无 tmp 残留。CUSTOM_FILE monkeypatch 照 test_conc02 先例 finally 恢复；
+    B2.7C 起以 _CustomFileGuard 守卫真实 CUSTOM_FILE 不被泄漏/改写。
     """
     tmp = _conc_tmp("stress_conc03")
     orig_custom = game_data_mod.CUSTOM_FILE
+    guard = _CustomFileGuard(orig_custom)
+    guard.__enter__()
     game_data_mod.CUSTOM_FILE = os.path.join(tmp, "game_data_custom.json")
     try:
         n_threads = 16
@@ -8898,15 +9323,19 @@ def test_stress_conc03_custom_volume():
         errors, elock = [], threading.Lock()
 
         def up_worker(t, barrier=barrier, errors=errors, elock=elock):
-            barrier.wait(30)
-            for k in range(per_thread):
-                try:
-                    game_data_mod.upsert_custom(
-                        "characters", {"name": f"自测压力角色-{t}-{k}",
-                                       "version": "sc03"})
-                except BaseException as e:  # noqa: BLE001
-                    with elock:
-                        errors.append("%s: %s" % (type(e).__name__, e))
+            try:
+                barrier.wait(30)  # B2.7C：wait 纳入 try 边界首语句，超时/破坏进 errors
+                for k in range(per_thread):
+                    try:
+                        game_data_mod.upsert_custom(
+                            "characters", {"name": f"自测压力角色-{t}-{k}",
+                                           "version": "sc03"})
+                    except BaseException as e:  # noqa: BLE001
+                        with elock:
+                            errors.append("%s: %s" % (type(e).__name__, e))
+            except BaseException as e:  # noqa: BLE001
+                with elock:  # B2.7C：barrier 异常与写循环异常同一收集通道
+                    errors.append("%s: %s" % (type(e).__name__, e))
 
         ths = [threading.Thread(target=up_worker, args=(t,), name=f"UP{t}",
                                 daemon=True) for t in range(n_threads)]
@@ -8927,15 +9356,19 @@ def test_stress_conc03_custom_volume():
         written_b = {f"压力载荷-{t}" for t in range(n_threads)}
 
         def storm_worker(t, barrier=barrier, errors=errors_b, elock=elock_b):
-            barrier.wait(30)
-            for _ in range(per_thread_b):
-                try:
-                    game_data_mod.upsert_custom(
-                        "characters", {"name": "自测压力同键",
-                                       "payload": f"压力载荷-{t}"})
-                except BaseException as e:  # noqa: BLE001
-                    with elock:
-                        errors.append("%s: %s" % (type(e).__name__, e))
+            try:
+                barrier.wait(30)  # B2.7C：wait 纳入 try 边界首语句，超时/破坏进 errors
+                for _ in range(per_thread_b):
+                    try:
+                        game_data_mod.upsert_custom(
+                            "characters", {"name": "自测压力同键",
+                                           "payload": f"压力载荷-{t}"})
+                    except BaseException as e:  # noqa: BLE001
+                        with elock:
+                            errors.append("%s: %s" % (type(e).__name__, e))
+            except BaseException as e:  # noqa: BLE001
+                with elock:  # B2.7C：barrier 异常与写循环异常同一收集通道
+                    errors.append("%s: %s" % (type(e).__name__, e))
 
         ths_b = [threading.Thread(target=storm_worker, args=(t,), name=f"ST{t}",
                                   daemon=True) for t in range(n_threads)]
@@ -8958,7 +9391,14 @@ def test_stress_conc03_custom_volume():
         assert residue == [], f"uuid 双形态 tmp 残留: {residue}"
     finally:
         game_data_mod.CUSTOM_FILE = orig_custom
+        guard_exc = None
+        try:
+            guard.__exit__(None, None, None)  # B2.7C：先复核防泄漏门禁再清理
+        except BaseException as e:  # noqa: BLE001
+            guard_exc = e
         shutil.rmtree(tmp, ignore_errors=True)
+        if guard_exc is not None:
+            raise guard_exc
 
 
 @stress_case
@@ -8967,10 +9407,13 @@ def test_stress_conc04_repeat_rounds():
 
     每轮断言同 conc07：_join_all(timeout=60) 无存活线程、enumerate 线程名集合
     回归基线、无 tmp 残留、每轮墙钟 perf_counter < 30s；_PATH_LOCKS 增量只在
-    第 1 轮后做一次预期值断言（2 JSON+CUSTOM_FILE 共 3）、其后各轮恒 0。
+    第 1 轮后做一次预期值断言（2 JSON+CUSTOM_FILE 共 3）、其后各轮恒 0；
+    B2.7C 起以 _CustomFileGuard 守卫真实 CUSTOM_FILE 不被泄漏/改写。
     """
     tmp = _conc_tmp("stress_conc04")
     orig_custom = game_data_mod.CUSTOM_FILE
+    guard = _CustomFileGuard(orig_custom)
+    guard.__enter__()
     game_data_mod.CUSTOM_FILE = os.path.join(tmp, "game_data_custom.json")
     try:
         json_a = os.path.join(tmp, "hygiene_a.json")
@@ -8985,26 +9428,34 @@ def test_stress_conc04_repeat_rounds():
 
             def even_worker(barrier=barrier, errors=errors, elock=elock,
                             ja=json_a, jb=json_b):
-                barrier.wait(30)
-                for i in range(per_json_writes):
-                    for tgt in (ja, jb):
+                try:
+                    barrier.wait(30)  # B2.7C：wait 纳入 try 边界首语句
+                    for i in range(per_json_writes):
+                        for tgt in (ja, jb):
+                            try:
+                                state_mod.save_json_atomic(
+                                    tgt, {"seq": i, "blob": "x" * 1400})
+                            except BaseException as e:  # noqa: BLE001
+                                with elock:
+                                    errors.append("%s: %s" % (type(e).__name__, e))
+                except BaseException as e:  # noqa: BLE001
+                    with elock:  # B2.7C：barrier 异常与写循环异常同一收集通道
+                        errors.append("%s: %s" % (type(e).__name__, e))
+
+            def odd_worker(t, barrier=barrier, errors=errors, elock=elock):
+                try:
+                    barrier.wait(30)  # B2.7C：wait 纳入 try 边界首语句
+                    for k in range(per_thread_upserts):
                         try:
-                            state_mod.save_json_atomic(
-                                tgt, {"seq": i, "blob": "x" * 1400})
+                            game_data_mod.upsert_custom(
+                                "characters", {"name": f"自测压力混合-{t}-{k}",
+                                               "version": "sc04"})
                         except BaseException as e:  # noqa: BLE001
                             with elock:
                                 errors.append("%s: %s" % (type(e).__name__, e))
-
-            def odd_worker(t, barrier=barrier, errors=errors, elock=elock):
-                barrier.wait(30)
-                for k in range(per_thread_upserts):
-                    try:
-                        game_data_mod.upsert_custom(
-                            "characters", {"name": f"自测压力混合-{t}-{k}",
-                                           "version": "sc04"})
-                    except BaseException as e:  # noqa: BLE001
-                        with elock:
-                            errors.append("%s: %s" % (type(e).__name__, e))
+                except BaseException as e:  # noqa: BLE001
+                    with elock:  # B2.7C：barrier 异常与写循环异常同一收集通道
+                        errors.append("%s: %s" % (type(e).__name__, e))
 
             ths = [threading.Thread(target=even_worker, name=f"SE{rnd}-{i}",
                                     daemon=True)
@@ -9037,7 +9488,14 @@ def test_stress_conc04_repeat_rounds():
             json.load(f)
     finally:
         game_data_mod.CUSTOM_FILE = orig_custom
+        guard_exc = None
+        try:
+            guard.__exit__(None, None, None)  # B2.7C：先复核防泄漏门禁再清理
+        except BaseException as e:  # noqa: BLE001
+            guard_exc = e
         shutil.rmtree(tmp, ignore_errors=True)
+        if guard_exc is not None:
+            raise guard_exc
 
 
 # ---------- FETCH-06：open_pinned 响应体大小边界（app/url_guard.py，B2.6B） ----------
