@@ -12,6 +12,16 @@ scan_used_stamina 取最大值、CONC-01/02 并发原子写与图鉴覆盖层锁
 运行方式（项目根目录）：
     D:/GamingAssistant/ok-nte/data/apps/ok-nte/python/python.exe -m app.selftest
 
+stress 档用法（B2.7B 起，python -m app.selftest --stress）：
+- 何时跑：发布前/并发专项复核；默认（无参）日常门禁不含 stress 档。
+- stress 档内容（4 例）：test_stress_conc01_16t_high_volume（16 线程×200=3200 写
+  同一 JSON）、test_stress_conc02_readwrite_long（16 写者×100 + 8 读者并发读写）、
+  test_stress_conc03_custom_volume（800 个不同 key upsert + 16 线程×10 同名风暴）、
+  test_stress_conc04_repeat_rounds（20 轮×16 线程混合负载）——均为日常档
+  conc03-07 同口径断言的放大负载版。
+- 为何不进默认门禁：stress 单例耗时数秒~数十秒，放进日常档会显著拖慢每次
+  全量回归；断言口径与日常档一致，仅放大负载规模，需要时以 --stress 显式运行。
+
 约束：
 - 绝不写入 D:/GamingAssistant/ok-nte 下任何文件；ok-nte 根目录一律用 tempfile 伪造。
 - 绝不真正拉起 ok-nte 子进程；runner 用例把 app.runner.OkNte 换成假对象。
@@ -56,6 +66,16 @@ CASES = []
 
 def case(fn):
     CASES.append(fn)
+    return fn
+
+
+# stress 档注册表（B2.7B）：stress 用例只进 STRESS_CASES、不进 CASES——日常档
+# 计数不含它们；仅 main() 解析到 --stress 时与 CASES 合并运行（用法见模块 docstring）。
+STRESS_CASES = []
+
+
+def stress_case(fn):
+    STRESS_CASES.append(fn)
     return fn
 
 
@@ -8350,6 +8370,676 @@ def test_biz03e_bak_step_transient_boundary():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# ---------- B2.7B：并发档位固化（16 线程档/读写并发/业务并发/锁卫生，2026-11-15） ----------
+# B2.4 独立复核跑过的高并发场景（16 线程档、读写并发、大统计）沉淀为正式门禁。
+# 全部确定性：Barrier/Event 同步、barrier.wait(30) 超时进 errors、daemon 线程、
+# _join_all 硬截止、禁随机 sleep（读者节奏用固定 sleep）、禁无限等待；
+# 临时目录一律 _conc_tmp（仓库 .tmp/，E 盘），finally rmtree 自清。
+
+
+def _conc_residue(tmp):
+    """uuid 双形态 tmp 残留 glob（state.py save_json_atomic 命名口径）：
+    主 tmp <名字>.<32hex>.tmp 与 .bak 发布 tmp <名字>.bak.<32hex>.tmp 两形态，
+    两种 glob 并集（先例：B2.7A test_token_cleanup_uuid_tmp_both_shapes）。"""
+    return sorted({str(p) for pat in ("*.tmp", "*.bak.*.tmp")
+                   for p in Path(tmp).glob(pat)})
+
+
+@case
+def test_conc03_16thread_same_file_writes():
+    """B2.7B 并发档 ①：16 线程×25 写同一 JSON（Barrier(16) 对齐，合计 400 写）。
+
+    B2.4「16 线程档」高并发场景沉淀（修复后 16 线程 perf 实测 1600/1600 成功，
+    .testarchive/2026-11-14-B24-conc/conc-verify-summary.md §3；本机校准
+    3200 写 ≈17.5s，5.4ms/写）。断言：0 异常、末态 json.load 成功且顶层 keys
+    恰为 writer/seq/blob 三键、blob 为 1400 个 x、writer 匹配 w\\d+；.bak 存在
+    且可解析（先写首版保证 .bak 链）；目录无 *.tmp 与 .bak.*.tmp 残留
+    （uuid 双形态 glob）；_join_all timeout=60。
+    """
+    tmp = _conc_tmp("conc03_16t")
+    try:
+        target = os.path.join(tmp, "state_16t.json")
+        state_mod.save_json_atomic(target, {"writer": "w0", "seq": -1,
+                                            "blob": "x" * 1400})  # 首版：.bak 链成立
+        n_threads, writes = 16, 25
+        barrier = threading.Barrier(n_threads)
+        errors, elock = [], threading.Lock()
+
+        def worker(tid, target=target, writes=writes,
+                   barrier=barrier, errors=errors, elock=elock):
+            barrier.wait(30)  # 起点对齐；超时抛 BrokenBarrierError 进 errors
+            for i in range(writes):
+                try:
+                    state_mod.save_json_atomic(
+                        target, {"writer": "w%d" % tid, "seq": i,
+                                 "blob": "x" * 1400})
+                except BaseException as e:  # noqa: BLE001
+                    with elock:
+                        errors.append("%s: %s" % (type(e).__name__, e))
+
+        ths = [threading.Thread(target=worker, args=(i,), name="W%d" % i,
+                                daemon=True) for i in range(n_threads)]
+        for t in ths:
+            t.start()
+        _join_all(ths, timeout=60)
+        assert errors == [], f"16 线程×25 并发写异常: {errors[:5]}"
+        with open(target, encoding="utf-8") as f:  # 末态可解析（json.load 即断言）
+            doc = json.load(f)
+        assert set(doc.keys()) == {"writer", "seq", "blob"}, doc.keys()
+        assert doc["blob"] == "x" * 1400 and re.fullmatch(r"w\d+", doc["writer"])
+        with open(target + ".bak", encoding="utf-8") as f:  # .bak 存在且可解析
+            bak = json.load(f)
+        assert set(bak.keys()) == {"writer", "seq", "blob"}, bak.keys()
+        residue = _conc_residue(tmp)
+        assert residue == [], f"uuid 双形态 tmp 残留: {residue}"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_conc04_read_write_concurrency():
+    """B2.7B 并发档 ②：8 写者×25 写（Barrier(8) 对齐）+ 6 读者 Event 驱动并发读写。
+
+    B2.7B §六新缺陷（ID 待报告阶段登记）永久回归用例：本例初版读者以裸
+    open+json.loads 直读（生产读者等价形态）实测暴露读者侧瞬时访问失败——
+    8 轮隔离直调全 FAIL，读者可见错误分布全为 PermissionError [Errno 13]
+    （99~163 次/轮，零 JSONDecodeError/零形状违规）；并实测 state.load_json
+    把该瞬时占用误判为损坏、os.replace 将完好主文件隔离进伪 .corrupt
+    （独立复现 expA/A2 共 9/9 轮）。修复（load_json 对读者侧 PermissionError
+    有界重试 + 瞬时占用排除出 .corrupt 隔离）后，读者改走生产读取路径
+    state.load_json（与 main.py:3318/:3810 GET /api/game-data 经
+    custom_entries 的暴露面同型），断言：读者零失败零损坏（三键形状+
+    blob=1400x）、零伪 .corrupt 隔离、写者零异常（BIZ-03 预算在该档充分）、
+    reads>0、末态可解析、uuid 双形态 tmp 零残留。读者节奏固定 20ms sleep
+    （禁随机 sleep 口径下的确定性档；该档写者预算零耗尽，无间隔热读者档
+    实测超预算 ~91% 见 .testarchive/2026-11-15-B27B-conc-tier/probe-sweep.log）；
+    读者自带硬截止 deadline=time.monotonic()+60（防写者死锁导致读者永转）；
+    主线程 _join_all(writers) 后 done_event.set() 再 _join_all(readers)。
+    """
+    tmp = _conc_tmp("conc04_rw")
+    try:
+        target = os.path.join(tmp, "state_rw.json")
+        state_mod.save_json_atomic(target, {"writer": "w0", "seq": -1,
+                                            "blob": "x" * 1400})  # 预建合法首版
+        n_writers, writes, n_readers = 8, 25, 6
+        barrier = threading.Barrier(n_writers)
+        done_event = threading.Event()
+        writer_errors, reader_errors = [], []
+        reads, wlock, rlock = [0], threading.Lock(), threading.Lock()
+
+        def writer(tid, target=target, barrier=barrier, errors=writer_errors,
+                   lock=wlock):
+            barrier.wait(30)  # 起点对齐；超时抛 BrokenBarrierError 进 errors
+            for i in range(writes):
+                try:
+                    state_mod.save_json_atomic(
+                        target, {"writer": "w%d" % tid, "seq": i,
+                                 "blob": "x" * 1400})
+                except BaseException as e:  # noqa: BLE001
+                    with lock:
+                        errors.append("%s: %s" % (type(e).__name__, e))
+
+        def reader(target=target, done=done_event, errors=reader_errors,
+                   lock=rlock, counter=reads):
+            # §六修复回归：读者走生产读取路径 state.load_json（修复后瞬时占用
+            # 在 load_json 内部被有界重试吸收，读者侧零失败、零伪 .corrupt）
+            deadline = time.monotonic() + 60  # 硬截止：写者死锁也不得让读者永转
+            while not done.is_set():
+                if time.monotonic() > deadline:
+                    with lock:
+                        errors.append("deadline: 读者硬截止 60s 超限")
+                    break
+                time.sleep(0.020)  # 固定 20ms 节奏（禁随机 sleep 口径下的确定性档）
+                try:
+                    doc = state_mod.load_json(target)
+                except BaseException as e:  # noqa: BLE001 — 修复后读者路径不得外逸异常
+                    with lock:
+                        errors.append("%s: %s" % (type(e).__name__, e))
+                    continue
+                if not isinstance(doc, dict) or \
+                        set(doc.keys()) != {"writer", "seq", "blob"} or \
+                        doc.get("blob") != "x" * 1400:
+                    with lock:  # 半截/损坏/None（主+.bak 均不可读）可见
+                        errors.append("shape: 非三键形状或 blob 非 1400x: %r"
+                                      % (sorted(doc.keys())
+                                         if isinstance(doc, dict)
+                                         else type(doc).__name__))
+                    continue
+                with lock:
+                    counter[0] += 1
+
+        rths = [threading.Thread(target=reader, name="R%d" % i, daemon=True)
+                for i in range(n_readers)]
+        wths = [threading.Thread(target=writer, args=(i,), name="W%d" % i,
+                                 daemon=True) for i in range(n_writers)]
+        for t in rths:
+            t.start()
+        for t in wths:
+            t.start()
+        _join_all(wths, timeout=60)
+        done_event.set()
+        _join_all(rths, timeout=60)
+        assert writer_errors == [], \
+            f"写者异常（BIZ-03 预算应充分）: {writer_errors[:5]}"
+        dist = {}
+        for e in reader_errors:
+            key = e.split(":", 1)[0]
+            dist[key] = dist.get(key, 0) + 1
+        assert reader_errors == [], \
+            f"读者可见错误分布={dist} (样例: {reader_errors[:3]})"
+        assert reads[0] > 0, \
+            f"读者成功读数应为正（防读者空转恒过）: reads={reads[0]}"
+        with open(target, encoding="utf-8") as f:  # 末态可解析
+            doc = json.load(f)
+        assert set(doc.keys()) == {"writer", "seq", "blob"}, doc.keys()
+        quarantine = sorted(str(p) for p in Path(tmp).glob("*.corrupt"))
+        assert quarantine == [], \
+            (f"B2.7B §六伪 .corrupt 回归：瞬时占用不得把完好主文件隔离进 "
+             f".corrupt: {quarantine}")
+        residue = _conc_residue(tmp)
+        assert residue == [], f"uuid 双形态 tmp 残留: {residue}"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_conc05_custom_multi_key_concurrent():
+    """B2.7B 并发档 ③：8 线程×25 个不同 name 并发 upsert_custom（Barrier(8)）。
+
+    CONC-02 口径放大（test_conc02 段 A 为 2×200）：entry 形状照抄 conc02 段 A
+    （保证通过校验）；断言 0 异常、custom_entries() 恰 200 条、预期 name 集合
+    全在（零丢失）、文档可解析、无 tmp 残留。CUSTOM_FILE monkeypatch 照
+    test_conc02 先例 finally 恢复。
+    """
+    tmp = _conc_tmp("conc05_multi")
+    orig_custom = game_data_mod.CUSTOM_FILE
+    game_data_mod.CUSTOM_FILE = os.path.join(tmp, "game_data_custom.json")
+    try:
+        n_threads, per_thread = 8, 25
+        barrier = threading.Barrier(n_threads)
+        errors, elock = [], threading.Lock()
+
+        def worker(t, barrier=barrier, errors=errors, elock=elock):
+            barrier.wait(30)
+            for k in range(per_thread):
+                try:
+                    game_data_mod.upsert_custom(
+                        "characters", {"name": f"自测角色-{t}-{k}",
+                                       "version": "c05"})
+                except BaseException as e:  # noqa: BLE001
+                    with elock:
+                        errors.append("%s: %s" % (type(e).__name__, e))
+
+        ths = [threading.Thread(target=worker, args=(t,), name=f"U{t}",
+                                daemon=True) for t in range(n_threads)]
+        for t in ths:
+            t.start()
+        _join_all(ths, timeout=60)
+        assert errors == [], f"并发 upsert 异常: {errors[:5]}"
+        doc = game_data_mod.custom_entries()
+        names = [e["name"] for e in doc["characters"]]
+        assert len(names) == 200, f"期望恰 200 条，实际 {len(names)}"
+        expected = {f"自测角色-{t}-{k}" for t in range(n_threads)
+                    for k in range(per_thread)}
+        assert expected <= set(names), "预期 name 集合存在丢失"
+        with open(game_data_mod.CUSTOM_FILE, encoding="utf-8") as f:  # 文档可解析
+            json.load(f)
+        residue = _conc_residue(tmp)
+        assert residue == [], f"uuid 双形态 tmp 残留: {residue}"
+    finally:
+        game_data_mod.CUSTOM_FILE = orig_custom
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_conc06_custom_same_key_concurrent():
+    """B2.7B 并发档 ④：8 线程对同名「自测并发同键」各写不同 payload 每线程 5 次。
+
+    与 test_conc02 段 C（载荷全同、可交换）不同，本例载荷互异（f"载荷-{t}"）：
+    验证同名并发 upsert 的 last-writer-wins 串行化语义——任意交错末态收敛到
+    恰 1 条且 payload 属于 8 个已写值集合（绝不混合/半截/多出）。断言 0 异常、
+    该 name 恰 1 条、文档可解析、无 tmp 残留。
+    """
+    tmp = _conc_tmp("conc06_same")
+    orig_custom = game_data_mod.CUSTOM_FILE
+    game_data_mod.CUSTOM_FILE = os.path.join(tmp, "game_data_custom.json")
+    try:
+        n_threads, per_thread = 8, 5
+        barrier = threading.Barrier(n_threads)
+        errors, elock = [], threading.Lock()
+        written = {f"载荷-{t}" for t in range(n_threads)}
+
+        def worker(t, barrier=barrier, errors=errors, elock=elock):
+            barrier.wait(30)
+            for _ in range(per_thread):
+                try:
+                    game_data_mod.upsert_custom(
+                        "characters", {"name": "自测并发同键",
+                                       "payload": f"载荷-{t}"})
+                except BaseException as e:  # noqa: BLE001
+                    with elock:
+                        errors.append("%s: %s" % (type(e).__name__, e))
+
+        ths = [threading.Thread(target=worker, args=(t,), name=f"S{t}",
+                                daemon=True) for t in range(n_threads)]
+        for t in ths:
+            t.start()
+        _join_all(ths, timeout=60)
+        assert errors == [], f"同名并发 upsert 异常: {errors[:5]}"
+        doc = game_data_mod.custom_entries()
+        same = [e for e in doc["characters"] if e["name"] == "自测并发同键"]
+        assert len(same) == 1, \
+            f"同名条目应恰 1 条（last-writer-wins 串行化）: {len(same)} 条"
+        assert same[0].get("payload") in written, \
+            f"末态 payload 应属于 8 个已写值集合: {same[0]!r}"
+        with open(game_data_mod.CUSTOM_FILE, encoding="utf-8") as f:  # 文档可解析
+            json.load(f)
+        residue = _conc_residue(tmp)
+        assert residue == [], f"uuid 双形态 tmp 残留: {residue}"
+    finally:
+        game_data_mod.CUSTOM_FILE = orig_custom
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_conc07_lock_hygiene_repeated():
+    """B2.7B 并发档 ⑤：5 轮短压力混合负载（JSON 原子写 + 覆盖层 upsert）锁卫生。
+
+    每轮开始记录基线线程名集合（{t.name for t in threading.enumerate()}）与
+    len(state._PATH_LOCKS) 基线；16 线程 Barrier(16) 混合负载——偶数线程
+    save_json_atomic 写 2 个固定 tmp JSON 各 8 次，奇数线程 upsert_custom 不同
+    name 5 次（CUSTOM_FILE 在用例开始前 monkeypatch、finally 恢复）。每轮断言：
+    _join_all(timeout=60) 无存活线程、enumerate 线程名集合回归基线（无线程
+    泄漏）、无 tmp 残留、_PATH_LOCKS 增量第 1 轮后恰 3（2 个 JSON 加
+    CUSTOM_FILE 共 3——per-path 锁 get-or-create 常驻不清理，state.py
+    _path_lock 文档口径）、第 2-5 轮增量 0（无异常膨胀）、每轮墙钟
+    time.perf_counter() < 30s（死锁兜底；口径先例 test_biz03b :8159-8161
+    perf_counter=QPC 注）。
+    """
+    tmp = _conc_tmp("conc07_hygiene")
+    orig_custom = game_data_mod.CUSTOM_FILE
+    game_data_mod.CUSTOM_FILE = os.path.join(tmp, "game_data_custom.json")
+    try:
+        json_a = os.path.join(tmp, "hygiene_a.json")
+        json_b = os.path.join(tmp, "hygiene_b.json")
+        n_threads, per_json_writes, per_thread_upserts = 16, 8, 5
+        expected_new = 3  # 2 个 JSON 目标 + CUSTOM_FILE（首轮 get-or-create）
+        for rnd in range(1, 6):
+            names_base = {t.name for t in threading.enumerate()}
+            locks_before = len(state_mod._PATH_LOCKS)
+            barrier = threading.Barrier(n_threads)
+            errors, elock = [], threading.Lock()
+
+            def even_worker(barrier=barrier, errors=errors, elock=elock,
+                            ja=json_a, jb=json_b):
+                barrier.wait(30)
+                for i in range(per_json_writes):
+                    for tgt in (ja, jb):
+                        try:
+                            state_mod.save_json_atomic(
+                                tgt, {"seq": i, "blob": "x" * 1400})
+                        except BaseException as e:  # noqa: BLE001
+                            with elock:
+                                errors.append("%s: %s" % (type(e).__name__, e))
+
+            def odd_worker(t, barrier=barrier, errors=errors, elock=elock):
+                barrier.wait(30)
+                for k in range(per_thread_upserts):
+                    try:
+                        game_data_mod.upsert_custom(
+                            "characters", {"name": f"自测混合-{t}-{k}",
+                                           "version": "c07"})
+                    except BaseException as e:  # noqa: BLE001
+                        with elock:
+                            errors.append("%s: %s" % (type(e).__name__, e))
+
+            ths = [threading.Thread(target=even_worker, name=f"HE{rnd}-{i}",
+                                    daemon=True)
+                   for i in range(0, n_threads, 2)]
+            ths += [threading.Thread(target=odd_worker, args=(t,),
+                                     name=f"HO{rnd}-{t}", daemon=True)
+                    for t in range(1, n_threads, 2)]
+            t0 = time.perf_counter()
+            for t in ths:
+                t.start()
+            _join_all(ths, timeout=60)
+            wall = time.perf_counter() - t0
+            assert errors == [], f"第 {rnd} 轮混合负载异常: {errors[:5]}"
+            assert wall < 30.0, \
+                f"第 {rnd} 轮墙钟 {wall:.2f}s ≥ 30s（死锁兜底口径）"
+            now_names = {t.name for t in threading.enumerate()}
+            assert now_names == names_base, \
+                (f"第 {rnd} 轮线程泄漏: 新增={now_names - names_base} "
+                 f"缺失={names_base - now_names}")
+            grew = len(state_mod._PATH_LOCKS) - locks_before
+            if rnd == 1:
+                assert grew == expected_new, \
+                    (f"第 1 轮 _PATH_LOCKS 增量应恰 {expected_new}"
+                     f"（2 JSON+CUSTOM_FILE）: {grew}")
+            else:
+                assert grew == 0, f"第 {rnd} 轮 _PATH_LOCKS 异常膨胀: +{grew}"
+            residue = _conc_residue(tmp)
+            assert residue == [], f"第 {rnd} 轮 uuid 双形态 tmp 残留: {residue}"
+        with open(game_data_mod.CUSTOM_FILE, encoding="utf-8") as f:  # 文档可解析
+            json.load(f)
+    finally:
+        game_data_mod.CUSTOM_FILE = orig_custom
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ---------- B2.7B stress 档（--stress 时运行，发布前/专项复核用） ----------
+# 日常档 conc03-07 同口径断言的放大负载版：断言口径不变，仅放大负载规模
+# （16 线程×200 高量写 / 长时读写并发 / 800 key upsert+同名风暴 / 20 轮重复）。
+# 不进 CASES、不进日常档计数；python -m app.selftest --stress 时运行
+# （用法见模块 docstring「stress 档用法」）。
+
+
+@stress_case
+def test_stress_conc01_16t_high_volume():
+    """stress ①：16 线程×200=3200 写同一 JSON（conc03 形状放大）。
+
+    断言集同 conc03：0 异常、末态三键形状、.bak 存在且可解析、uuid 双形态
+    tmp 零残留。本机校准 3200 写 ≈17.5s（5.4ms/写）——_join_all timeout=60
+    有 3 倍余量。
+    """
+    tmp = _conc_tmp("stress_conc01")
+    try:
+        target = os.path.join(tmp, "state_16t_high.json")
+        state_mod.save_json_atomic(target, {"writer": "w0", "seq": -1,
+                                            "blob": "x" * 1400})  # 首版：.bak 链成立
+        n_threads, writes = 16, 200
+        barrier = threading.Barrier(n_threads)
+        errors, elock = [], threading.Lock()
+
+        def worker(tid, target=target, writes=writes,
+                   barrier=barrier, errors=errors, elock=elock):
+            barrier.wait(30)
+            for i in range(writes):
+                try:
+                    state_mod.save_json_atomic(
+                        target, {"writer": "w%d" % tid, "seq": i,
+                                 "blob": "x" * 1400})
+                except BaseException as e:  # noqa: BLE001
+                    with elock:
+                        errors.append("%s: %s" % (type(e).__name__, e))
+
+        ths = [threading.Thread(target=worker, args=(i,), name="W%d" % i,
+                                daemon=True) for i in range(n_threads)]
+        for t in ths:
+            t.start()
+        _join_all(ths, timeout=60)
+        assert errors == [], f"16×200 高量并发写异常: {errors[:5]}"
+        with open(target, encoding="utf-8") as f:
+            doc = json.load(f)
+        assert set(doc.keys()) == {"writer", "seq", "blob"}, doc.keys()
+        assert doc["blob"] == "x" * 1400 and re.fullmatch(r"w\d+", doc["writer"])
+        with open(target + ".bak", encoding="utf-8") as f:
+            bak = json.load(f)
+        assert set(bak.keys()) == {"writer", "seq", "blob"}, bak.keys()
+        residue = _conc_residue(tmp)
+        assert residue == [], f"uuid 双形态 tmp 残留: {residue}"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@stress_case
+def test_stress_conc02_readwrite_long():
+    """stress ②：16 写者×100 写 + 8 读者并发读写（conc04 模式放大）。
+
+    B2.7B §六新缺陷（ID 待报告阶段登记）永久回归用例（conc04 同款放大）：
+    断言集同 conc04——writer_errors==[]（BIZ-03 预算充分性在 1600 写档实证；
+    复现轮曾实测写者预算耗尽 WinError 5 形态 2/3 轮）、读者走生产读取路径
+    state.load_json 且 reader_errors==[]（零损坏可见）、零伪 .corrupt 隔离、
+    reads>0、末态可解析、无 tmp 残留。读者节奏固定 30ms sleep（1600 发布档
+    写者预算零耗尽的确定性档）；读者自带 60s 硬截止。
+    """
+    tmp = _conc_tmp("stress_conc02")
+    try:
+        target = os.path.join(tmp, "state_rw_long.json")
+        state_mod.save_json_atomic(target, {"writer": "w0", "seq": -1,
+                                            "blob": "x" * 1400})  # 预建合法首版
+        n_writers, writes, n_readers = 16, 100, 8
+        barrier = threading.Barrier(n_writers)
+        done_event = threading.Event()
+        writer_errors, reader_errors = [], []
+        reads, wlock, rlock = [0], threading.Lock(), threading.Lock()
+
+        def writer(tid, target=target, barrier=barrier, errors=writer_errors,
+                   lock=wlock):
+            barrier.wait(30)
+            for i in range(writes):
+                try:
+                    state_mod.save_json_atomic(
+                        target, {"writer": "w%d" % tid, "seq": i,
+                                 "blob": "x" * 1400})
+                except BaseException as e:  # noqa: BLE001
+                    with lock:
+                        errors.append("%s: %s" % (type(e).__name__, e))
+
+        def reader(target=target, done=done_event, errors=reader_errors,
+                   lock=rlock, counter=reads):
+            # §六修复回归：读者走生产读取路径 state.load_json（与 conc04 同款）
+            deadline = time.monotonic() + 60  # 硬截止：写者死锁也不得让读者永转
+            while not done.is_set():
+                if time.monotonic() > deadline:
+                    with lock:
+                        errors.append("deadline: 读者硬截止 60s 超限")
+                    break
+                time.sleep(0.030)  # 固定 30ms 节奏（1600 发布档写者预算零耗尽确定性档）
+                try:
+                    doc = state_mod.load_json(target)
+                except BaseException as e:  # noqa: BLE001 — 修复后读者路径不得外逸异常
+                    with lock:
+                        errors.append("%s: %s" % (type(e).__name__, e))
+                    continue
+                if not isinstance(doc, dict) or \
+                        set(doc.keys()) != {"writer", "seq", "blob"} or \
+                        doc.get("blob") != "x" * 1400:
+                    with lock:  # 半截/损坏/None（主+.bak 均不可读）可见
+                        errors.append("shape: 非三键形状或 blob 非 1400x: %r"
+                                      % (sorted(doc.keys())
+                                         if isinstance(doc, dict)
+                                         else type(doc).__name__))
+                    continue
+                with lock:
+                    counter[0] += 1
+
+        rths = [threading.Thread(target=reader, name="R%d" % i, daemon=True)
+                for i in range(n_readers)]
+        wths = [threading.Thread(target=writer, args=(i,), name="W%d" % i,
+                                 daemon=True) for i in range(n_writers)]
+        for t in rths:
+            t.start()
+        for t in wths:
+            t.start()
+        _join_all(wths, timeout=60)
+        done_event.set()
+        _join_all(rths, timeout=60)
+        assert writer_errors == [], \
+            f"写者异常（BIZ-03 预算应充分）: {writer_errors[:5]}"
+        dist = {}
+        for e in reader_errors:
+            key = e.split(":", 1)[0]
+            dist[key] = dist.get(key, 0) + 1
+        assert reader_errors == [], \
+            f"读者可见错误分布={dist} (样例: {reader_errors[:3]})"
+        assert reads[0] > 0, \
+            f"读者成功读数应为正（防读者空转恒过）: reads={reads[0]}"
+        with open(target, encoding="utf-8") as f:
+            doc = json.load(f)
+        assert set(doc.keys()) == {"writer", "seq", "blob"}, doc.keys()
+        quarantine = sorted(str(p) for p in Path(tmp).glob("*.corrupt"))
+        assert quarantine == [], \
+            (f"B2.7B §六伪 .corrupt 回归：瞬时占用不得把完好主文件隔离进 "
+             f".corrupt: {quarantine}")
+        residue = _conc_residue(tmp)
+        assert residue == [], f"uuid 双形态 tmp 残留: {residue}"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@stress_case
+def test_stress_conc03_custom_volume():
+    """stress ③：16 线程×50=800 个不同 key upsert + 16 线程×10 同名风暴（两段）。
+
+    A 段（conc05 放大）：断言 0 异常、恰 800 条、预期 name 集合全在；
+    B 段（conc06 放大）：同名「自测压力同键」16 线程各 10 次互异 payload，
+    断言该 name 恰 1 条且 payload 属于 16 个已写值集合。两段后文档可解析、
+    无 tmp 残留。CUSTOM_FILE monkeypatch 照 test_conc02 先例 finally 恢复。
+    """
+    tmp = _conc_tmp("stress_conc03")
+    orig_custom = game_data_mod.CUSTOM_FILE
+    game_data_mod.CUSTOM_FILE = os.path.join(tmp, "game_data_custom.json")
+    try:
+        n_threads = 16
+        # ---- A) 16×50 不同 key ----
+        per_thread = 50
+        barrier = threading.Barrier(n_threads)
+        errors, elock = [], threading.Lock()
+
+        def up_worker(t, barrier=barrier, errors=errors, elock=elock):
+            barrier.wait(30)
+            for k in range(per_thread):
+                try:
+                    game_data_mod.upsert_custom(
+                        "characters", {"name": f"自测压力角色-{t}-{k}",
+                                       "version": "sc03"})
+                except BaseException as e:  # noqa: BLE001
+                    with elock:
+                        errors.append("%s: %s" % (type(e).__name__, e))
+
+        ths = [threading.Thread(target=up_worker, args=(t,), name=f"UP{t}",
+                                daemon=True) for t in range(n_threads)]
+        for t in ths:
+            t.start()
+        _join_all(ths, timeout=60)
+        assert errors == [], f"A 段 800 key upsert 异常: {errors[:5]}"
+        doc = game_data_mod.custom_entries()
+        names = [e["name"] for e in doc["characters"]]
+        assert len(names) == 800, f"A 段期望恰 800 条，实际 {len(names)}"
+        expected = {f"自测压力角色-{t}-{k}" for t in range(n_threads)
+                    for k in range(per_thread)}
+        assert expected <= set(names), "A 段预期 name 集合存在丢失"
+        # ---- B) 16×10 同名风暴 ----
+        per_thread_b = 10
+        barrier = threading.Barrier(n_threads)
+        errors_b, elock_b = [], threading.Lock()
+        written_b = {f"压力载荷-{t}" for t in range(n_threads)}
+
+        def storm_worker(t, barrier=barrier, errors=errors_b, elock=elock_b):
+            barrier.wait(30)
+            for _ in range(per_thread_b):
+                try:
+                    game_data_mod.upsert_custom(
+                        "characters", {"name": "自测压力同键",
+                                       "payload": f"压力载荷-{t}"})
+                except BaseException as e:  # noqa: BLE001
+                    with elock:
+                        errors.append("%s: %s" % (type(e).__name__, e))
+
+        ths_b = [threading.Thread(target=storm_worker, args=(t,), name=f"ST{t}",
+                                  daemon=True) for t in range(n_threads)]
+        for t in ths_b:
+            t.start()
+        _join_all(ths_b, timeout=60)
+        assert errors_b == [], f"B 段同名风暴异常: {errors_b[:5]}"
+        doc = game_data_mod.custom_entries()
+        same = [e for e in doc["characters"] if e["name"] == "自测压力同键"]
+        assert len(same) == 1, \
+            f"B 段同名条目应恰 1 条（last-writer-wins）: {len(same)} 条"
+        assert same[0].get("payload") in written_b, \
+            f"B 段末态 payload 应属于 16 个已写值集合: {same[0]!r}"
+        assert len([e for e in doc["characters"]
+                    if e["name"].startswith("自测压力角色-")]) == 800, \
+            "B 段风暴不得扰动 A 段 800 条"
+        with open(game_data_mod.CUSTOM_FILE, encoding="utf-8") as f:  # 文档可解析
+            json.load(f)
+        residue = _conc_residue(tmp)
+        assert residue == [], f"uuid 双形态 tmp 残留: {residue}"
+    finally:
+        game_data_mod.CUSTOM_FILE = orig_custom
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@stress_case
+def test_stress_conc04_repeat_rounds():
+    """stress ④：20 轮×16 线程混合负载（conc07 模式放大）。
+
+    每轮断言同 conc07：_join_all(timeout=60) 无存活线程、enumerate 线程名集合
+    回归基线、无 tmp 残留、每轮墙钟 perf_counter < 30s；_PATH_LOCKS 增量只在
+    第 1 轮后做一次预期值断言（2 JSON+CUSTOM_FILE 共 3）、其后各轮恒 0。
+    """
+    tmp = _conc_tmp("stress_conc04")
+    orig_custom = game_data_mod.CUSTOM_FILE
+    game_data_mod.CUSTOM_FILE = os.path.join(tmp, "game_data_custom.json")
+    try:
+        json_a = os.path.join(tmp, "hygiene_a.json")
+        json_b = os.path.join(tmp, "hygiene_b.json")
+        n_threads, per_json_writes, per_thread_upserts, rounds = 16, 8, 5, 20
+        expected_new = 3
+        for rnd in range(1, rounds + 1):
+            names_base = {t.name for t in threading.enumerate()}
+            locks_before = len(state_mod._PATH_LOCKS)
+            barrier = threading.Barrier(n_threads)
+            errors, elock = [], threading.Lock()
+
+            def even_worker(barrier=barrier, errors=errors, elock=elock,
+                            ja=json_a, jb=json_b):
+                barrier.wait(30)
+                for i in range(per_json_writes):
+                    for tgt in (ja, jb):
+                        try:
+                            state_mod.save_json_atomic(
+                                tgt, {"seq": i, "blob": "x" * 1400})
+                        except BaseException as e:  # noqa: BLE001
+                            with elock:
+                                errors.append("%s: %s" % (type(e).__name__, e))
+
+            def odd_worker(t, barrier=barrier, errors=errors, elock=elock):
+                barrier.wait(30)
+                for k in range(per_thread_upserts):
+                    try:
+                        game_data_mod.upsert_custom(
+                            "characters", {"name": f"自测压力混合-{t}-{k}",
+                                           "version": "sc04"})
+                    except BaseException as e:  # noqa: BLE001
+                        with elock:
+                            errors.append("%s: %s" % (type(e).__name__, e))
+
+            ths = [threading.Thread(target=even_worker, name=f"SE{rnd}-{i}",
+                                    daemon=True)
+                   for i in range(0, n_threads, 2)]
+            ths += [threading.Thread(target=odd_worker, args=(t,),
+                                     name=f"SO{rnd}-{t}", daemon=True)
+                    for t in range(1, n_threads, 2)]
+            t0 = time.perf_counter()
+            for t in ths:
+                t.start()
+            _join_all(ths, timeout=60)
+            wall = time.perf_counter() - t0
+            assert errors == [], f"第 {rnd} 轮混合负载异常: {errors[:5]}"
+            assert wall < 30.0, \
+                f"第 {rnd} 轮墙钟 {wall:.2f}s ≥ 30s（死锁兜底口径）"
+            now_names = {t.name for t in threading.enumerate()}
+            assert now_names == names_base, \
+                (f"第 {rnd} 轮线程泄漏: 新增={now_names - names_base} "
+                 f"缺失={names_base - now_names}")
+            grew = len(state_mod._PATH_LOCKS) - locks_before
+            if rnd == 1:
+                assert grew == expected_new, \
+                    (f"第 1 轮 _PATH_LOCKS 增量应恰 {expected_new}"
+                     f"（2 JSON+CUSTOM_FILE）: {grew}")
+            else:
+                assert grew == 0, f"第 {rnd} 轮 _PATH_LOCKS 异常膨胀: +{grew}"
+            residue = _conc_residue(tmp)
+            assert residue == [], f"第 {rnd} 轮 uuid 双形态 tmp 残留: {residue}"
+        with open(game_data_mod.CUSTOM_FILE, encoding="utf-8") as f:  # 文档可解析
+            json.load(f)
+    finally:
+        game_data_mod.CUSTOM_FILE = orig_custom
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 # ---------- FETCH-06：open_pinned 响应体大小边界（app/url_guard.py，B2.6B） ----------
 # 覆盖：MAX_RESPONSE_BYTES 上下沿（below/exact/limit+1/远超）、未知长度与分块
 # 聚合形态、premature-close 不误判、空体与二进制往返、重定向/SSRF 先于读体、
@@ -9156,10 +9846,15 @@ def test_elev_stale_sweep():
 
 
 def main():
-    print("=== app.selftest 自测开始 ===")
+    stress = "--stress" in sys.argv[1:]
+    cases = CASES + STRESS_CASES if stress else CASES
+    if stress:
+        print("=== app.selftest 自测开始（stress 档）===")
+    else:
+        print("=== app.selftest 自测开始（日常档）===")
     passed = 0
     failed = 0
-    for fn in CASES:
+    for fn in cases:
         name = fn.__name__
         try:
             fn()
@@ -9170,7 +9865,7 @@ def main():
         else:
             passed += 1
             print(f"PASS {name}")
-    print(f"=== 自测结果: 通过 {passed}/{len(CASES)} ===")
+    print(f"=== 自测结果: 通过 {passed}/{len(cases)} ===")
     sys.exit(0 if failed == 0 else 1)
 
 

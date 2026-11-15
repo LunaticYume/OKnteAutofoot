@@ -98,6 +98,35 @@ def _replace_bounded_retry(src, dst):
     return os.replace(src, dst)  # 末次尝试在 try 外：失败即原异常原样外抛
 
 
+def _read_bounded_retry(path):
+    """json.load 读取 + 瞬时占用有界重试（BIZ-03 读者侧镜像，2026-11-15 B2.7B §六）。
+
+    读者 open()/json.load 与写者 os.replace 发布窗口相撞的瞬时 PermissionError
+    按 _REPLACE_RETRY_BACKOFF_S 同预算（首试+5 重试=至多 6 次、总睡眠 310ms）
+    静默重试。谓词用 isinstance(exc, PermissionError) 而非写者侧的
+    winerror∈{5,32} 白名单：读者侧错误来自 CRT open()，实证形态为
+    PermissionError errno=13 winerror=None（独占句柄与真实并发 174 例一致，
+    .testarchive/2026-11-15-B27B-conc-tier/probe-winerror 类证据），不携带
+    winerror。真损坏（JSONDecodeError 等 ValueError）与白名单外 OSError 立即
+    原样上抛，由 load_json 分支语义处置（真损坏隔离、白名单外回落），本助手
+    不吞不包装。FileNotFoundError（含发布瞬间主文件短暂缺失的空窗形态）
+    不重试：按其语义立即上抛走 .bak 回落，避免生产对确实不存在的文件每次
+    读都白耗 310ms 预算。
+    """
+    for backoff in _REPLACE_RETRY_BACKOFF_S:
+        try:
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+        except ValueError:
+            raise  # 真损坏不是瞬时占用：立即上抛走隔离分支
+        except PermissionError:
+            time.sleep(backoff)  # 瞬时占用形态：按预算退避后重读
+        except OSError:
+            raise  # 白名单外 IO 错误：立即原样上抛（不重试、不包装）
+    with open(path, encoding="utf-8") as f:  # 末次尝试在 try 外：失败即原样外抛
+        return json.load(f)
+
+
 def save_json_atomic(path, data):
     """全项目唯一的 JSON 原子写实现（state.json/yields/requirements/runtime 共用）。
 
@@ -179,21 +208,34 @@ def save_json_atomic(path, data):
 
 
 def load_json(path):
-    """容错读取：主文件优先；损坏时留档 .corrupt 并回退 .bak；都没有返回 None。"""
-    def _read(p):
-        with open(p, encoding="utf-8") as f:
-            return json.load(f)
+    """容错读取：主文件优先；损坏时留档 .corrupt 并回退 .bak；都没有返回 None。
+
+    B2.7B §六（2026-11-15）：主/.bak 读取经 _read_bounded_retry 对瞬时占用
+    （读者 open() 与写者 os.replace 发布窗口相撞的 PermissionError，实测
+    ~2-3%/次读）做同预算有界重试；瞬时占用重试耗尽只回落 .bak，绝不进入
+    .corrupt 隔离——隔离仅限真损坏（ValueError）与白名单外 OSError（既有
+    语义不变）。修复的实测缺陷形态：并发读写下读者撞上发布窗口的瞬时
+    PermissionError 被旧分支当损坏，os.replace 把完好主文件隔离进 .corrupt
+    （完好新版本退出流通、读者持续读到 .bak 旧版直至下次保存）。
+    """
     try:
-        return _read(path)
+        return _read_bounded_retry(path)
     except FileNotFoundError:
         pass
-    except (OSError, ValueError):
-        try:  # 保留损坏文件供人工检查，再尝试上一次完好版本
+    except PermissionError:
+        pass  # 瞬时占用重试耗尽：绝不隔离（完好主文件只是暂时不可读），回落 .bak
+    except OSError:
+        try:  # 白名单外 IO 错误维持既有隔离语义：保留原文件供人工检查
+            os.replace(path, path + ".corrupt")
+        except OSError:
+            pass
+    except ValueError:
+        try:  # 真损坏：保留损坏文件供人工检查，再尝试上一次完好版本
             os.replace(path, path + ".corrupt")
         except OSError:
             pass
     try:
-        return _read(path + ".bak")
+        return _read_bounded_retry(path + ".bak")
     except (OSError, ValueError):
         return None
 
