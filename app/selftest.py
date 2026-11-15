@@ -8149,7 +8149,9 @@ def test_biz03b_retry_bounded_backoff():
 
         def _flaky(a, b):
             calls["n"] += 1
-            stamps.append(time.monotonic())
+            # 高精度时钟测退避间隔：Windows time.monotonic() 粒度 15.6ms，3.12 下
+            # 10ms 退避会两次落进同一刻度测得 0.0000s（perf_counter=QPC 无此问题）
+            stamps.append(time.perf_counter())
             if calls["n"] <= 2:  # 前两次失败：winerror 5、32 各一（覆盖白名单两值）
                 raise _winerror_oserror(
                     5 if calls["n"] == 1 else 32,
