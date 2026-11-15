@@ -47,6 +47,8 @@ data/panel_token.json.tmp
 
 # 提权辅助进程握手配置（SEC-10 运行时生成，含 token 与 parent_pid；只存本机，绝不入库）
 data/elev_helper_config-*.json
+# 提权辅助进程端点文件（运行时生成，panel 退出自清；gitignore 防瞬态噪音——B2.7A 复核发现）
+data/elev_helper_endpoint-*.json
 
 # 塔吉多同步原始 payload 诊断留存（含个人角色面板数据；只存本机，绝不入库）
 data/tajiduo_last_payload.json
