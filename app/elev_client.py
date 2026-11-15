@@ -28,6 +28,7 @@ from . import elev_helper as _eh
 
 CREATE_NO_WINDOW = _eh.CREATE_NO_WINDOW
 CONFIG_NAME_RE = _eh.CONFIG_NAME_RE
+ENDPOINT_NAME_RE = _eh.ENDPOINT_NAME_RE
 STDOUT_NAME_RE = _eh.STDOUT_NAME_RE
 LAUNCHER_NAME = _eh.LAUNCHER_NAME
 TASKS = _eh.TASKS
@@ -114,6 +115,56 @@ def _default_log_dir():
     return DATA_DIR
 
 
+def _sweep_stale_helper_files(log_dir, keep_paths=()):
+    """B2.7A 握手前陈旧孤儿清扫（兜硬杀孤儿，不改变既有正常退出删除链）。
+
+    策略：正常退出双侧已删——客户端 finally 删 config（_start finally）、helper
+    读毕即删 config（elev_helper.run 起始）、helper finally 删 endpoint——本清扫
+    兜的是父进程/helper 被硬杀（taskkill /F、崩溃、断电）残留的孤儿：config 形态
+    含会话令牌明文（高危，helper 读毕即删永不触发）、endpoint 形态仅 pid/port/
+    指纹（非机密）。扫描时机在 _start 写本轮 config 之前（单写者点，客户端进程
+    内执行，无需特权；与 helper 无并发写冲突——helper 只删自己的）。
+
+    匹配口径：复用 elev_helper.CONFIG_NAME_RE 原样 ＋ 同风格 ENDPOINT_NAME_RE
+    （B2.7A 导出），严格全名匹配不过宽 glob。防误删活跃会话三道闸：
+    ① 本轮将要使用的路径经 keep_paths 显式排除；
+    ② 名内嵌 pid 仍存活（OpenProcess 探测 _pid_alive；探测出错按存活处理）→
+       跳过——天然排除本轮与并发活跃会话；
+    ③ 文件 mtime 不早于本轮会话开始时间 → 跳过（pid 复用极端情形第二道闸，
+    ②③双条件任一不满足即跳过）。
+    OSError 全程静默尽力而为（沿 _start finally 既有兜底风格）：单文件失败不
+    重试不刷日志，绝不影响拉起主流程。
+    """
+    sweep_at = time.time()
+    keep = {os.path.normcase(os.path.abspath(str(p))) for p in keep_paths}
+    try:
+        names = os.listdir(log_dir)
+    except OSError:
+        return
+    for name in names:
+        if CONFIG_NAME_RE.fullmatch(name):
+            pid = int(name[len("elev_helper_config-"):-len(".json")]
+                      .split("-", 1)[0])
+        elif ENDPOINT_NAME_RE.fullmatch(name):
+            pid = int(name[len("elev_helper_endpoint-"):-len(".json")])
+        else:
+            continue  # 非本家族文件名（审计 JSONL 等）一律不碰
+        path = os.path.join(str(log_dir), name)
+        if os.path.normcase(os.path.abspath(path)) in keep:
+            continue  # ① 本轮路径：绝不碰
+        if pid == os.getpid() or _pid_alive(pid):
+            continue  # ② pid 存活（含本轮自身 pid）：活跃会话跳过
+        try:
+            if os.stat(path).st_mtime >= sweep_at:
+                continue  # ③ 会话开始后新写的：pid 复用兜底闸
+        except OSError:
+            continue
+        try:
+            os.remove(path)
+        except OSError:
+            pass  # 尽力而为：失败不重试、不刷日志、不影响主流程
+
+
 class ElevClient:
     """面板侧会话管理：拉起（UAC/测试）、指纹一致性维护、白名单操作调用、退出清理。"""
 
@@ -177,6 +228,13 @@ class ElevClient:
                                timeout)
 
     def _start(self, root, py_path, log_dir, game_process, timeout):
+        name = "elev_helper_config-%d-%s.json" % (os.getpid(), secrets.token_hex(4))
+        cfg_path = Path(log_dir) / name
+        endpoint_path = Path(log_dir) / ("elev_helper_endpoint-%d.json"
+                                         % os.getpid())
+        # B2.7A：写本轮 config 前清扫历史会话硬杀孤儿（正常退出双侧已删，此处
+        # 兜底；本轮两个路径经 keep 排除，活跃会话经 pid 存活闸排除）
+        _sweep_stale_helper_files(log_dir, keep_paths=(cfg_path, endpoint_path))
         token = secrets.token_hex(32)
         cfg = {
             "schema": _eh.CONFIG_SCHEMA,
@@ -186,10 +244,6 @@ class ElevClient:
             "log_dir": log_dir,
             "game_process": game_process,
         }
-        name = "elev_helper_config-%d-%s.json" % (os.getpid(), secrets.token_hex(4))
-        cfg_path = Path(log_dir) / name
-        endpoint_path = Path(log_dir) / ("elev_helper_endpoint-%d.json"
-                                         % os.getpid())
         ps_error = ""
         proc = None
         try:

@@ -44,6 +44,9 @@ CREATE_NO_WINDOW = 0x08000000
 CONFIG_SCHEMA = 1
 # 配置文件名由面板生成并经 argv 传入；白名单正则防 argv 注入任意路径
 CONFIG_NAME_RE = re.compile(r"^elev_helper_config-\d{1,10}-[0-9a-f]{8}\.json$")
+# 端点文件名（面板生成、helper _write_endpoint 写入；非机密）：B2.7A 导出供
+# 面板侧握手前孤儿清扫（elev_client._sweep_stale_helper_files）与写入侧共用同口径
+ENDPOINT_NAME_RE = re.compile(r"^elev_helper_endpoint-\d{1,10}\.json$")
 TOKEN_RE = re.compile(r"^[0-9a-f]{32,128}$")
 # runner stdout 镜像文件名：仅面板数据目录下、无路径分隔符，固定前缀防任意文件写
 STDOUT_NAME_RE = re.compile(r"^ok-nte-headless-[A-Za-z0-9._-]{1,80}\.log$")

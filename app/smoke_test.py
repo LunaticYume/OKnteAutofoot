@@ -16,6 +16,7 @@
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -77,10 +78,22 @@ SAMPLE_CHARACTER = {
 }
 
 
+# B2.7A：panel_token uuid 双形态 tmp 匹配（save_json_atomic 命名，state.py:147
+# 主 tmp / :154 bak tmp）：panel_token.json.<32位hex>.tmp 与
+# panel_token.json.bak.<32位hex>.tmp——面板进程若在写中途被杀会残留这两种形态
+# （含令牌明文），固定名单覆盖不到，按此正则随守卫一并快照/恢复；32 位 hex
+# 严格收窄不过宽 glob：旧固定名 panel_token.json.tmp 与无关文件名不命中。
+_PANEL_TOKEN_UUID_TMP_RE = re.compile(
+    r"^panel_token\.json(?:\.bak)?\.[0-9a-f]{32}\.tmp$")
+
+
 class _StateFileGuard:
     """备份 data/state.json 与 data/yields.json，退出时恢复（原本不存在则删除）。
-    panel_token.json 三件套同管（SEC-05：面板每次启动重写主文件，二次写会轮转出
-    .bak；原本不存在则测后删除，绝不把测试期令牌留在仓库 data/）。"""
+    panel_token.json 主文件与 .bak 同管（SEC-05：面板每次启动重写主文件，二次写
+    会轮转出 .bak；原本不存在则测后删除，绝不把测试期令牌留在仓库 data/）。
+    B2.7A：panel_token 的 uuid 双形态 tmp（save_json_atomic 命名 state.py:147/:154）
+    按形态扫描后纳入同一份快照——快照/恢复逻辑按 uuid 形态扩展，守卫语义不变
+    （进守卫时存在→退出恢复原内容，进守卫时不存在→退出删除）。"""
 
     def __enter__(self):
         self._files = {}
@@ -89,14 +102,27 @@ class _StateFileGuard:
                      os.path.join(data_dir, "yields.json"),
                      os.path.join(data_dir, "requirements.json"),
                      os.path.join(data_dir, "panel_token.json"),
-                     os.path.join(data_dir, "panel_token.json.bak"),
-                     os.path.join(data_dir, "panel_token.json.tmp")):
+                     os.path.join(data_dir, "panel_token.json.bak")):
             existed = os.path.isfile(path)
             raw = None
             if existed:
                 with open(path, "rb") as f:
                     raw = f.read()
             self._files[path] = (existed, raw)
+        # uuid 双形态 tmp（B2.7A）：与固定名同一快照/恢复语义
+        try:
+            names = os.listdir(data_dir)
+        except OSError:
+            names = []
+        for name in names:
+            if _PANEL_TOKEN_UUID_TMP_RE.fullmatch(name):
+                path = os.path.join(data_dir, name)
+                existed = os.path.isfile(path)
+                raw = None
+                if existed:
+                    with open(path, "rb") as f:
+                        raw = f.read()
+                self._files[path] = (existed, raw)
         return self
 
     def __exit__(self, *exc):
@@ -105,6 +131,22 @@ class _StateFileGuard:
                 Path(path).write_bytes(raw)
             elif os.path.isfile(path):
                 os.remove(path)
+        # B2.7A：uuid 形态守卫期新增残留（进守卫时不存在、不在快照内）→
+        # 一并删除，同固定名「原本不存在则测后删除」语义——绝不把测试期
+        # 令牌 tmp 留在仓库 data/（面板写中途被杀的残留形态）。
+        data_dir = os.path.dirname(STATE_FILE)
+        try:
+            names = os.listdir(data_dir)
+        except OSError:
+            names = []
+        for name in names:
+            path = os.path.join(data_dir, name)
+            if _PANEL_TOKEN_UUID_TMP_RE.fullmatch(name) \
+                    and path not in self._files and os.path.isfile(path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
         return False
 
 

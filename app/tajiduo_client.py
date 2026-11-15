@@ -47,7 +47,7 @@ import urllib.parse
 import uuid
 
 from . import url_guard
-from .state import DATA_DIR, load_json, save_json_atomic
+from .state import DATA_DIR, _path_lock, load_json, save_json_atomic
 
 # ---------- 常量白名单（URL 唯一来源；前端/请求体传入的 URL 一律不采信） ----------
 
@@ -263,19 +263,36 @@ _NoRedirect = url_guard._NoRedirect
 _OPENER = url_guard.OPENER
 
 
+# B2.7A（FETCH-08）HTTPError 异常体读取上限（字节）：与 FETCH-06 正常响应体
+# read(MAX+1) 有界读（B2.6B，url_guard.py MAX_RESPONSE_BYTES 收敛面）同族异位——
+# 异常体读点在 _wrap_http_error 本地、不在该收敛面内。展示仅需前 200 字节，
+# 读取同样必须有界：读 MAX+1（+1 为溢出探测惯用法）后只留 MAX，绝不全量读入
+# 内存（B2.7A 取证轮实测 33MiB 错误体曾被 e.read() 全量消费，34,603,008 字节）。
+ERROR_BODY_MAX_BYTES = 200
+
+
 def _wrap_http_error(e, url):
     """urllib.error.HTTPError → TajiduoError（2026-11-09 会话恢复可达修复）：
     此前 HTTP 401 原生异常击穿 do_POST（HTTPError 是 OSError 子类，sync 端点
     兜成 500），三级恢复链 _recover_auth 对 HTTP 层 401 完全不可达（死代码）。
     401/402/403 → auth=True（TajiduoError 构造器按 status_code 归 auth），
     恢复链①续期→②laohu 重登→③友好重绑从此自然可达；其余状态码包装为带
-    路径的非 auth 错误。响应体前 200 字节进 raw 供诊断（官方错误原文不透传
-    给用户，由调用方的友好文案兜底）。"""
+    路径的非 auth 错误。响应体有界读（B2.7A FETCH-08）：只读
+    ERROR_BODY_MAX_BYTES+1 字节后切片前 200 字节再 decode——展示与旧实现
+    完全一致（字节 0..199），但超大错误体不再全量读入内存；finally e.close()
+    缩短 fp 存活窗口（HTTPError 为上下文管理器，关不上按尽力而为不掩盖主错）。
+    官方错误原文不透传给用户，由调用方的友好文案兜底。"""
     path = urllib.parse.urlsplit(url).path or "/"
     try:
-        body = e.read()[:200].decode("utf-8", errors="replace")
+        body = e.read(ERROR_BODY_MAX_BYTES + 1)[:ERROR_BODY_MAX_BYTES] \
+            .decode("utf-8", errors="replace")
     except (OSError, ValueError, AttributeError):
         body = ""  # fp 缺失/已消费等极端形态：诊断体拿不到就置空，错误本身照抛
+    finally:
+        try:
+            e.close()
+        except (OSError, ValueError, AttributeError):
+            pass
     return TajiduoError(f"接口 HTTP {e.code}（{path}）",
                         raw={"body": body} if body else None,
                         status_code=int(e.code))
@@ -796,13 +813,48 @@ def save_token_store(store):
     save_json_atomic(TOKEN_FILE, store)
 
 
+# B2.7A（TJD-09）uuid 双形态残留匹配（严格收窄，不过宽 glob）：仅 save_json_atomic
+# 崩溃/硬杀残留的两形态（命名见 state.py:147 主 tmp / :154 bak tmp；其 finally
+# 自清 state.py:165-178 只覆盖「本次写者存活至 finally」形态，进程硬杀/崩溃残留
+# 超出该防线）——basename 前缀精确匹配「tajiduo_token.json.」，uuid 段收窄为
+# 32 位 hex；gacha_history/last_payload/state 等同形态他人 tmp 一概不命中。
+_TOKEN_UUID_TMP_RE = re.compile(
+    r"^tajiduo_token\.json(?:\.bak)?\.[0-9a-f]{32}\.tmp$")
+
+
 def clear_token_store():
-    """解绑：删除凭证文件（.bak 一并，防半截残留被 load_json 链路捡回）。"""
-    for suffix in ("", ".bak", ".tmp"):
+    """解绑：删除凭证文件（.bak 一并，防半截残留被 load_json 链路捡回）。
+
+    B2.7A（TJD-09）uuid 双形态残留清理：save_json_atomic 的主 tmp
+    tajiduo_token.json.<32位hex>.tmp 与 bak tmp tajiduo_token.json.bak.<32位hex>.tmp
+    （state.py:147/:154）在进程崩溃/硬杀时会残留明文凭证，既有 finally 自清
+    只覆盖「本次写者存活至 finally」形态——清理面按 basename 前缀精确匹配
+    ＋32 位 hex 收窄为上述两形态（不过宽 glob：同名形他人 tmp 一概不碰）；
+    固定名三件套（本体/.bak/旧 .tmp 死路径兼容）照删。
+    全程持 state._path_lock(TOKEN_FILE)：与并发 save_json_atomic(TOKEN_FILE)
+    的「tmp 写全→.bak 复制→replace 发布」整序列互斥——活跃写者刚创建、尚在
+    写入中的 uuid tmp 绝不会被本轮清理误删（锁序＝调用方 _TJD_LOCK 业务锁→
+    path 叶锁，与 bind 路径 main.py _TJD_LOCK→save_token_store 单向序一致）。
+    逐文件删除失败沿用既有 except OSError: pass 尽力而为口径：单个 unlink
+    失败不中断其余清理，解绑主流程照常完成（logout 不 500 的前提）。
+    """
+    token_dir = os.path.dirname(TOKEN_FILE) or "."
+    with _path_lock(TOKEN_FILE):
+        for suffix in ("", ".bak", ".tmp"):
+            try:
+                os.remove(TOKEN_FILE + suffix)
+            except OSError:
+                pass
         try:
-            os.remove(TOKEN_FILE + suffix)
+            names = os.listdir(token_dir)
         except OSError:
-            pass
+            names = []  # 目录不可读等极端形态：uuid 残留清扫放弃，固定名已尽力
+        for name in names:
+            if _TOKEN_UUID_TMP_RE.fullmatch(name):
+                try:
+                    os.remove(os.path.join(token_dir, name))
+                except OSError:
+                    pass
 
 
 def build_client():

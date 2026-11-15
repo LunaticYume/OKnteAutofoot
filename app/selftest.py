@@ -8703,6 +8703,458 @@ def test_fetch06k_response_closed_on_oversize():
     assert ug._PINS.get("wiki.mysqil.com") is None, dict(ug._PINS)
 
 
+# ---------- B2.7A：token uuid 双形态清理 / HTTPError 错误体有界读 / 守卫与清扫（2026-11-15） ----------
+# 覆盖：clear_token_store uuid 双形态残留清理（TJD-09：双形态+固定名全清、
+# 无关文件零扰动、per-path 锁与在途写者互斥、单点 unlink 失败尽力而为）；
+# _wrap_http_error 错误体有界读（FETCH-08：短体展示兼容、恰 200B 上沿、201B
+# 只读 201、33MiB 远超上限读量有界、未知长度/分块供给形态、凭据脱敏消息口径）；
+# smoke _StateFileGuard uuid 形态守卫（姊妹项）；elev 握手前陈旧孤儿清扫
+# （姊妹项）。全部离线纯桩——HTTPError 本地构造（先例
+# test_tajiduo_http_error_wrapping），临时目录一律仓库内 .tmp/（显式 dir=），
+# 绝不发真实网络请求。判据对齐 audit/2026-11-12/BUG-REGISTER.md:95（FETCH-08）
+# 与 :96（TJD-09）登记验证法；读量计数为内存判据（tracemalloc 在
+# CPython 3.13/win32 不跟踪 BytesIO.read 大块分配，取证口径见
+# .testarchive/2026-11-15-B27A-cleanup/httperror-repro-result.json）。
+import io
+import urllib.error as ue
+
+
+class _HttpErrFP:
+    """HTTPError 错误体读数桩：BytesIO 语义 + 每次 read 记 (n, 返回量)，
+    close 留痕（供「只读 MAX+1」「finally e.close() 必达」断言）。"""
+
+    def __init__(self, body):
+        self._b = io.BytesIO(body)
+        self.read_calls = []    # 每次 read 记 n
+        self.read_total = 0     # 累计消费字节数（读量判据）
+        self.close_calls = 0
+        self._closed = False
+
+    @property
+    def closed(self):
+        return self._closed
+
+    def read(self, n=-1):
+        data = self._b.read(n)
+        self.read_calls.append(n)
+        self.read_total += len(data)
+        return data
+
+    def close(self):
+        self.close_calls += 1
+        self._closed = True
+
+
+class _HttpErrChunkedFP:
+    """HTTPError 错误体分块供给桩（真实 chunked/缓冲流消费形态：read(n)
+    跨块聚合至 n 或流尾，块内截断不影响聚合总量——沿 FETCH-06 _Fetch06Resp
+    聚合口径）。"""
+
+    def __init__(self, body, chunk_size=7):
+        self._mv = memoryview(body)
+        self.pos = 0
+        self._chunk = chunk_size
+        self.read_calls = []
+        self.read_total = 0
+        self._closed = False
+
+    @property
+    def closed(self):
+        return self._closed
+
+    def read(self, n=-1):
+        remaining = len(self._mv) - self.pos
+        want = remaining if (n is None or n < 0) else min(n, remaining)
+        parts, got = [], 0
+        while got < want:
+            take = min(self._chunk, want - got)
+            parts.append(self._mv[self.pos:self.pos + take].tobytes())
+            self.pos += take
+            got += take
+        self.read_calls.append(n)
+        self.read_total += got
+        return b"".join(parts)
+
+    def close(self):
+        self._closed = True
+
+
+@case
+def test_token_cleanup_uuid_tmp_both_shapes():
+    """TJD-09 ①：崩溃/硬杀残留的 uuid 双形态 tmp（主 tmp
+    tajiduo_token.json.<32hex>.tmp 与 bak tmp tajiduo_token.json.bak.<32hex>.tmp）
+    ＋固定名三件套 → clear_token_store() 后全部消失（复现矩阵 before 双形态
+    残留缺陷修复后按同判据复跑=0 残留）。"""
+    from app import tajiduo_client as tc
+    import tempfile
+    os.makedirs(".tmp", exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=".tmp") as tmp:
+        orig_file = tc.TOKEN_FILE
+        tc.TOKEN_FILE = os.path.join(tmp, "tajiduo_token.json")
+        try:
+            uuid_hex = "4ead0dd1b11a407a833bdb4f31d9648f"   # 基线复现同款 32hex
+            bak_hex = "7c81f65994e14b4ab8f6740fdf27b0d6"
+            made = {
+                "tajiduo_token.json": '{"device_id":"HTX"}',
+                "tajiduo_token.json.bak": '{"device_id":"HTX0"}',
+                "tajiduo_token.json.tmp": "legacy-fixed-tmp",
+                "tajiduo_token.json.%s.tmp" % uuid_hex: '{"cred":"main"}',
+                "tajiduo_token.json.bak.%s.tmp" % bak_hex: '{"cred":"bak"}',
+            }
+            for name, content in made.items():
+                Path(tmp, name).write_text(content, encoding="utf-8")
+            tc.clear_token_store()
+            leftover = sorted(os.listdir(tmp))
+            assert leftover == [], \
+                "uuid 双形态＋固定名三件套必须 0 残留: %s" % leftover
+        finally:
+            tc.TOKEN_FILE = orig_file
+
+
+@case
+def test_token_cleanup_unrelated_preserved():
+    """TJD-09 ②（不过宽 glob 负例面）：同目录同形态他人 tmp（gacha_history/
+    last_payload/state 前缀）与 token 前缀形态近邻（31 位 hex/大写 hex/33 位
+    hex/非 hex 短段/双 .bak/尾缀多段/无 .tmp 后缀）一律保留且逐字节未动。"""
+    from app import tajiduo_client as tc
+    import tempfile
+    os.makedirs(".tmp", exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=".tmp") as tmp:
+        orig_file = tc.TOKEN_FILE
+        tc.TOKEN_FILE = os.path.join(tmp, "tajiduo_token.json")
+        uuid_hex = "4ead0dd1b11a407a833bdb4f31d9648f"
+        try:
+            kept = {
+                # 同目录同形态他人 tmp（basename 前缀不同）
+                "gacha_history.json": "g",
+                "gacha_history.json.tmp": "g-tmp",
+                "gacha_history.json.%s.tmp" % uuid_hex: "g-uuid",
+                "gacha_history.json.bak.%s.tmp" % uuid_hex: "g-bak-uuid",
+                "tajiduo_last_payload.json.%s.tmp" % uuid_hex: "p-uuid",
+                "state.json.%s.tmp" % uuid_hex: "s-uuid",
+                # token 前缀近邻但形态不严格命中（uuid 收窄负例）
+                "tajiduo_token.json.abc.tmp": "not-hex32",
+                "tajiduo_token.json.%s.tmp" % ("a" * 31): "hex31",
+                "tajiduo_token.json.%s.tmp" % ("A" * 32): "upper-hex",
+                "tajiduo_token.json.%s.tmp" % ("g" * 33): "hex33",
+                "tajiduo_token.json.bak.bak.%s.tmp" % uuid_hex: "double-bak",
+                "tajiduo_token.json.%s.tmp.bak" % uuid_hex: "suffix-after-tmp",
+                "tajiduo_token.json.%s" % uuid_hex: "no-tmp-suffix",
+            }
+            for name, content in kept.items():
+                Path(tmp, name).write_text(content, encoding="utf-8")
+            tc.clear_token_store()
+            for name, content in kept.items():
+                assert Path(tmp, name).read_text(encoding="utf-8") == content, name
+            assert sorted(os.listdir(tmp)) == sorted(kept), \
+                "无关/近邻文件必须零增零减"
+        finally:
+            tc.TOKEN_FILE = orig_file
+
+
+@case
+def test_token_cleanup_holds_path_lock():
+    """TJD-09 ③（锁语义）：clear_token_store 与并发 save_json_atomic(TOKEN_FILE)
+    共用同一 per-path 锁——主线程持 state._path_lock(TOKEN_FILE) 模拟在途写者
+    整序列时，清理必须阻塞等待（不得越过锁删活跃写者刚落盘的 uuid tmp）；
+    锁释放后清理完成且残留照清。事件+线程按可测性设计。"""
+    from app import tajiduo_client as tc
+    from app import state as state_mod
+    import tempfile
+    import threading
+    import time as time_mod
+    os.makedirs(".tmp", exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=".tmp") as tmp:
+        orig_file = tc.TOKEN_FILE
+        tc.TOKEN_FILE = os.path.join(tmp, "tajiduo_token.json")
+        lock = state_mod._path_lock(tc.TOKEN_FILE)
+        held = False
+        try:
+            Path(tmp, "tajiduo_token.json").write_text("{}", encoding="utf-8")
+            lock.acquire()  # 模拟在途写者：save_json_atomic 整序列持锁
+            held = True
+            done = []
+            t = threading.Thread(
+                target=lambda: (tc.clear_token_store(), done.append(True)),
+                daemon=True)
+            t.start()
+            time_mod.sleep(0.15)
+            assert not done, "path 锁被在途写者持有时清理必须阻塞（互斥）"
+            active_tmp = Path(tmp, "tajiduo_token.json.%s.tmp" % ("1" * 32))
+            active_tmp.write_text("{}", encoding="utf-8")  # 在途写者刚落盘
+            time_mod.sleep(0.05)
+            assert done == [] and active_tmp.exists(), \
+                "清理被锁阻塞期间不得误删活跃写者 tmp"
+            lock.release()
+            held = False
+            t.join(5.0)
+            assert done, "锁释放后清理必须完成"
+            assert not Path(tmp, "tajiduo_token.json").exists(), "释放后固定名照删"
+            assert not active_tmp.exists(), "释放后 uuid 残留照清"
+        finally:
+            if held:
+                lock.release()
+            tc.TOKEN_FILE = orig_file
+
+
+@case
+def test_token_cleanup_failure_tolerance():
+    """TJD-09 ④（尽力而为）：制造单个 unlink 必失败形态（固定名 .bak 换成
+    同名目录——os.remove 目录在 Windows/POSIX 双平台均抛 OSError 子类）→
+    clear_token_store() 不抛（logout 不 500 的前提），其余 uuid 双形态与
+    固定名本体照常清理完成——失败项保留、其余项不中断。"""
+    from app import tajiduo_client as tc
+    import tempfile
+    os.makedirs(".tmp", exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=".tmp") as tmp:
+        orig_file = tc.TOKEN_FILE
+        tc.TOKEN_FILE = os.path.join(tmp, "tajiduo_token.json")
+        try:
+            uuid_hex = "7c81f65994e14b4ab8f6740fdf27b0d6"
+            Path(tmp, "tajiduo_token.json").write_text("{}", encoding="utf-8")
+            Path(tmp, "tajiduo_token.json.%s.tmp" % uuid_hex).write_text(
+                "{}", encoding="utf-8")
+            Path(tmp, "tajiduo_token.json.bak.%s.tmp" % uuid_hex).write_text(
+                "{}", encoding="utf-8")
+            bak_dir = Path(tmp, "tajiduo_token.json.bak")
+            bak_dir.mkdir()  # unlink 必失败形态（同名目录）
+            tc.clear_token_store()  # 不得抛：单个失败绝不中断整轮清理
+            assert bak_dir.is_dir(), "失败项尽力而为：保留不重试"
+            assert not Path(tmp, "tajiduo_token.json").exists(), "本体照删"
+            assert not Path(tmp, "tajiduo_token.json.%s.tmp" % uuid_hex).exists(), \
+                "主 tmp 照清（失败不中断）"
+            assert not Path(tmp, "tajiduo_token.json.bak.%s.tmp" % uuid_hex).exists(), \
+                "bak tmp 照清（失败不中断）"
+        finally:
+            tc.TOKEN_FILE = orig_file
+
+
+@case
+def test_httperr_short_body_compat():
+    """FETCH-08 ①（展示不变性·短体）：33B 短错误体 → raw body 与旧实现
+    e.read()[:200] 完全一致（字节 0..199 口径）；TajiduoError 照常返回
+    status_code/auth/路径消息。本地构造 HTTPError（BytesIO），绝不触网。"""
+    from app import tajiduo_client as tc
+    body = b'{"code":401,"msg":"token expired"}'
+    url = "https://bbs-api.tajiduo.com/usercenter/api/refreshToken"
+    e = ue.HTTPError(url, 401, "HTTP Error", {}, io.BytesIO(body))
+    err = tc._wrap_http_error(e, url)
+    assert err.status_code == 401, err.status_code
+    assert err.auth is True, err.auth
+    assert err.raw.get("body") == body.decode("utf-8"), err.raw
+    assert "refreshToken" in str(err), str(err)
+
+
+@case
+def test_httperr_exact_limit():
+    """FETCH-08 ②（恰 200B 上沿）：恰 200 字节错误体 → raw body 全 200 字符
+    （字节 0..199 全保留——与旧实现逐字符一致）。"""
+    from app import tajiduo_client as tc
+    body = (b"0123456789abcdefghijklmnopqrstuvwxyz" * 7)[:200]
+    e = ue.HTTPError("https://bbs-api.tajiduo.com/x", 500, "HTTP Error", {},
+                     io.BytesIO(body))
+    err = tc._wrap_http_error(e, "https://bbs-api.tajiduo.com/x")
+    shown = err.raw.get("body", "")
+    assert shown == body.decode("utf-8", errors="replace"), len(shown)
+    assert len(shown) == 200, len(shown)
+
+
+@case
+def test_httperr_limit_plus_one():
+    """FETCH-08 ③（201B → 只留 200B 且只读 201）：MAX+1 供给 → raw body 恰
+    前 200 字节（第 201 字节被切片丢弃）；读数恰一次 read(201)、消费 201 字节
+    （读数桩断言，绝不读第 202 字节起）；finally e.close() 必达 fp。"""
+    from app import tajiduo_client as tc
+    body = b"y" * 201
+    fp = _HttpErrFP(body)
+    e = ue.HTTPError("https://bbs-api.tajiduo.com/x", 502, "HTTP Error", {}, fp)
+    err = tc._wrap_http_error(e, "https://bbs-api.tajiduo.com/x")
+    assert err.raw.get("body") == "y" * 200, len(err.raw.get("body", ""))
+    assert fp.read_calls == [201], fp.read_calls   # 恰一次 read(MAX+1)
+    assert fp.read_total == 201, fp.read_total     # 只读 201，绝不多读
+    assert fp.close_calls == 1, fp.close_calls     # finally e.close() 到达 fp
+
+
+@case
+def test_httperr_very_large_bounded():
+    """FETCH-08 ④（33MiB 远超上限，复现矩阵同体量）：33MiB 错误体 → 读数恰
+    一次 read(201)、消费 201 字节（≈体量的 0.0006%，绝不全量消费——内存判据
+    以读量计数为准，tracemalloc 在 CPython 3.13/win32 不跟踪 BytesIO.read
+    大块分配，取证口径见 .testarchive/2026-11-15-B27A-cleanup/
+    httperror-repro-result.json）；TajiduoError 照常返回 status_code 与 path
+    消息，raw body ≤200 字符。"""
+    from app import tajiduo_client as tc
+    body = b"z" * (33 * 1024 * 1024)   # 34,603,008 字节（基线取证同体量）
+    fp = _HttpErrFP(body)
+    url = "https://bbs-api.tajiduo.com/apihub/awapi/yh/gacha"
+    e = ue.HTTPError(url, 500, "HTTP Error", {}, fp)
+    err = tc._wrap_http_error(e, url)
+    assert fp.read_calls == [201], fp.read_calls
+    assert fp.read_total == 201, fp.read_total
+    assert fp.read_total < len(body) // 1000, \
+        "读量必须远小于体量（不全量进内存）: %d/%d" % (fp.read_total, len(body))
+    assert len(err.raw.get("body", "")) == 200, len(err.raw.get("body", ""))
+    assert err.status_code == 500 and err.auth is False, (err.status_code, err.auth)
+    assert "gacha" in str(err), str(err)
+
+
+@case
+def test_httperr_unknown_length():
+    """FETCH-08 ⑤（未知长度流）：无声明长度形态（旧实现 e.read() 无参会读到
+    EOF 聚合整流）→ 有界读恰 read(201)、消费 201 字节，流尾余量未被消费。"""
+    from app import tajiduo_client as tc
+    body = b"u" * 4096
+    fp = _HttpErrFP(body)
+    e = ue.HTTPError("https://bbs-api.tajiduo.com/x", 503, "HTTP Error", {}, fp)
+    err = tc._wrap_http_error(e, "https://bbs-api.tajiduo.com/x")
+    assert fp.read_calls == [201], fp.read_calls
+    assert fp.read_total == 201, fp.read_total
+    assert fp.read_total < len(body), "流尾余量不得被消费"
+    assert len(err.raw.get("body", "")) == 200, len(err.raw.get("body", ""))
+
+
+@case
+def test_httperr_chunked_error_body():
+    """FETCH-08 ⑥（分块供给）：7 字节小块分片供给 1KB 错误体（真实 chunked
+    消费形态：read(n) 跨块聚合至 n）→ 聚合恰 201 字节、raw body 恰前 200
+    字符、读数恰一次 read(201)。"""
+    from app import tajiduo_client as tc
+    body = b"c" * 1024
+    fp = _HttpErrChunkedFP(body, chunk_size=7)
+    e = ue.HTTPError("https://bbs-api.tajiduo.com/x", 500, "HTTP Error", {}, fp)
+    err = tc._wrap_http_error(e, "https://bbs-api.tajiduo.com/x")
+    assert fp.read_calls == [201], fp.read_calls
+    assert fp.read_total == 201, fp.read_total
+    assert err.raw.get("body") == "c" * 200, len(err.raw.get("body", ""))
+
+
+@case
+def test_httperr_credentials_redaction():
+    """FETCH-08 ⑦（凭据脱敏口径不变）：错误体含 token 样串 → 只进 raw 的 body
+    字段；错误消息保持 path-only 口径（「接口 HTTP <code>（<path>）」逐字符
+    锁死），str(e)/args 绝不含响应体内容（官方错误原文不透传用户）。"""
+    from app import tajiduo_client as tc
+    secret = "Bearer_SECRET_TOKEN_VALUE_NOT_A_REAL_CREDENTIAL"
+    body = ('{"code":401,"msg":"session expired %s"}' % secret).encode("utf-8")
+    url = "https://bbs-api.tajiduo.com/usercenter/api/refreshToken"
+    e = ue.HTTPError(url, 401, "HTTP Error", {}, io.BytesIO(body))
+    err = tc._wrap_http_error(e, url)
+    assert secret in err.raw.get("body", ""), "诊断原文只进 raw.body"
+    assert set(err.raw.keys()) == {"body"}, err.raw
+    assert secret not in str(err), "str(e) 必不含响应体"
+    assert secret not in err.args[0], "异常消息必不含响应体"
+    assert str(err) == "接口 HTTP 401（/usercenter/api/refreshToken）", str(err)
+
+
+@case
+def test_statefileguard_uuid_pattern():
+    """姊妹项（smoke 守卫 uuid 形态）：_StateFileGuard 快照/恢复逻辑对
+    panel_token uuid 双形态 tmp 生效——守卫期改写/删除/新增 uuid tmp，退出后
+    恢复为进守卫时快照（进守卫时存在→恢复原内容；守卫期新增→删除）；形态
+    近邻与无关前缀不纳入守卫（不过宽 glob）。STATE_FILE 重定向 .tmp 临时目录，
+    绝不碰仓库 data/。"""
+    from app import smoke_test as sm
+    import tempfile
+    os.makedirs(".tmp", exist_ok=True)
+    hex1, hex2 = "0" * 32, "f" * 32
+    with tempfile.TemporaryDirectory(dir=".tmp") as tmp:
+        orig_state = sm.STATE_FILE
+        sm.STATE_FILE = os.path.join(tmp, "state.json")
+        try:
+            guarded = {
+                "state.json": "s0",
+                "panel_token.json": "t0",
+                "panel_token.json.bak": "b0",
+                "panel_token.json.%s.tmp" % hex1: "u0",
+                "panel_token.json.bak.%s.tmp" % hex2: "v0",
+            }
+            unguarded = {
+                "unrelated.json.%s.tmp" % hex1: "x0",          # 非守卫前缀
+                "panel_token.json.%s.tmp" % ("a" * 31): "n0",  # 31 位 hex 近邻
+                "panel_token.json.%s.tmp.bak" % hex1: "n1",    # 尾缀近邻
+            }
+            for name, content in {**guarded, **unguarded}.items():
+                Path(tmp, name).write_text(content, encoding="utf-8")
+            guard = sm._StateFileGuard()
+            guard.__enter__()
+            # 守卫期扰动：uuid tmp 改写/删除/新增 + 固定名改写 + 主文件删除
+            Path(tmp, "panel_token.json.%s.tmp" % hex1).write_text(
+                "CHANGED", encoding="utf-8")
+            os.remove(Path(tmp, "panel_token.json.bak.%s.tmp" % hex2))
+            Path(tmp, "panel_token.json.%s.tmp" % hex2).write_text(
+                "NEW", encoding="utf-8")
+            Path(tmp, "panel_token.json").write_text("T-CHANGED", encoding="utf-8")
+            os.remove(Path(tmp, "state.json"))
+            guard.__exit__(None, None, None)
+            # 恢复语义：进守卫时存在的恢复原内容（含 uuid 双形态）
+            for name, content in guarded.items():
+                assert Path(tmp, name).read_text(encoding="utf-8") == content, name
+            # 守卫期新增（快照中不存在）→ 退出删除
+            assert not Path(tmp, "panel_token.json.%s.tmp" % hex2).exists()
+            # 未纳入守卫的近邻/无关文件不受守卫影响
+            for name, content in unguarded.items():
+                assert Path(tmp, name).read_text(encoding="utf-8") == content, name
+        finally:
+            sm.STATE_FILE = orig_state
+
+
+@case
+def test_elev_stale_sweep():
+    """姊妹项（elev 握手前陈旧孤儿清扫）：手造旧 config/endpoint 孤儿（死 pid
+    ＋回溯 mtime）→ _sweep_stale_helper_files 删除；本轮 keep 路径、pid 存活
+    （含本轮自身 pid）、mtime 晚于会话开始、形态近邻与非本家族文件全部保留
+    （三道闸不过删）；无 keep 保护时旧孤儿照删。死 pid 来源（零子进程）＝
+    EnumProcesses 快照当前全部 pid 后取快照外不存在的 pid（前置自检
+    _pid_alive=False 锁死；极端 pid 复用窗口毫秒级且必由断言兜底失败）。"""
+    from app import elev_client as ec
+    import ctypes
+    import tempfile
+    os.makedirs(".tmp", exist_ok=True)
+    arr = (ctypes.c_ulong * 65536)()
+    needed = ctypes.c_ulong()
+    enum = getattr(ctypes.windll.kernel32, "K32EnumProcesses", None) \
+        or ctypes.windll.psapi.EnumProcesses
+    if not enum(arr, ctypes.sizeof(arr), ctypes.byref(needed)):
+        raise AssertionError("EnumProcesses 前置失败")
+    live_pids = set(arr[:needed.value // ctypes.sizeof(ctypes.c_ulong)])
+    dead_pid = next(p_ for p_ in range(100000, 400000, 4) if p_ not in live_pids)
+    assert not ec._pid_alive(dead_pid), "死 pid 探测前置自检"
+    live_pid = os.getpid()
+    with tempfile.TemporaryDirectory(dir=".tmp") as tmp:
+        stale_cfg = Path(tmp, "elev_helper_config-%d-abcd1234.json" % dead_pid)
+        stale_ep = Path(tmp, "elev_helper_endpoint-%d.json" % dead_pid)
+        round_cfg = Path(tmp, "elev_helper_config-%d-feedbeef.json" % dead_pid)
+        fresh_cfg = Path(tmp, "elev_helper_config-%d-1234abcd.json" % dead_pid)
+        live_cfg = Path(tmp, "elev_helper_config-%d-abcd1234.json" % live_pid)
+        live_ep = Path(tmp, "elev_helper_endpoint-%d.json" % live_pid)
+        near = {
+            "9hex": Path(tmp, "elev_helper_config-%d-aabbccdd1.json" % dead_pid),
+            "缺hex段": Path(tmp, "elev_helper_config-%d.json" % dead_pid),
+            "endpoint尾缀": Path(tmp, "elev_helper_endpoint-%d.json.bak" % dead_pid),
+            "endpoint 11位pid": Path(tmp, "elev_helper_endpoint-99999999999.json"),
+        }
+        audit_like = Path(tmp, "elev_helper_audit.jsonl")
+        for f in (stale_cfg, stale_ep, round_cfg, fresh_cfg, live_cfg, live_ep,
+                  audit_like, *near.values()):
+            f.write_text("{}", encoding="utf-8")
+        old = time.time() - 3600.0
+        for f in (stale_cfg, stale_ep, round_cfg):
+            os.utime(f, (old, old))          # 陈旧孤儿形态：mtime 早于会话开始
+        os.utime(fresh_cfg, (time.time() + 120.0,) * 2)  # 会话开始后新写（闸③）
+        ec._sweep_stale_helper_files(tmp, keep_paths=(round_cfg,))
+        assert not stale_cfg.exists(), "旧 config 孤儿必须删除"
+        assert not stale_ep.exists(), "旧 endpoint 孤儿必须删除"
+        assert round_cfg.exists(), "本轮 keep 路径绝不碰（闸①）"
+        assert live_cfg.exists() and live_ep.exists(), \
+            "pid 存活（含本轮自身 pid）跳过（闸②）"
+        assert fresh_cfg.exists(), "mtime 晚于会话开始跳过（闸③）"
+        for label, f in near.items():
+            assert f.exists(), "形态近邻不命中: %s" % label
+        assert audit_like.exists(), "非本家族文件（审计 JSONL 等）一律不碰"
+        ec._sweep_stale_helper_files(tmp)    # 无 keep：闸①仅对 keep 内生效
+        assert not round_cfg.exists(), "无 keep 保护时旧孤儿照删"
+
+
 def main():
     print("=== app.selftest 自测开始 ===")
     passed = 0
