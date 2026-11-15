@@ -4516,8 +4516,11 @@ def test_tajiduo_request_construction_and_ssrf():
         def __init__(self, payload):
             self._raw = json.dumps(payload).encode("utf-8")
 
-        def read(self):
-            return self._raw
+        def read(self, n=-1):
+            # FETCH-06 起 open_pinned 传 read(MAX+1)：n>=0 按真实
+            # http.client.HTTPResponse.read(n) 语义至多 n 字节（本桩供给量远
+            # 小于上限，等价原全量返回，既有调用方零改动）
+            return self._raw if n is None or n < 0 else self._raw[:n]
 
         def __enter__(self):
             return self
@@ -4699,20 +4702,21 @@ def _xmod01_matrix_one(mod, ug, name, accepts, rejects):
 
 @case
 def test_xmod01_url_guard_shared_layer():
-    """B25 共享层单元（app/url_guard.py）：六类错误码互异且各为一个 URLGuardError
-    子类、URLGuardError 是 ValueError 子类（调用方既有 except 零改动兼容）、
-    host_allowed 参数化（子域开关 + rstrip 全部尾点 + lower 归一化）、validate_url
-    返回 PinnedURL（url 原样透传 + 归一化主机 + 校验期公网 IP 集）、三模块重复件
-    已收敛（_NoRedirect/_OPENER 别名同源）、重定向一律拒绝。全程伪造 DNS，不触网。"""
+    """B25 共享层单元（app/url_guard.py）：七类错误码互异且各为一个 URLGuardError
+    子类（B2.6B FETCH-06 增 ERR_RESPONSE_TOO_LARGE）、URLGuardError 是 ValueError
+    子类（调用方既有 except 零改动兼容）、host_allowed 参数化（子域开关 +
+    rstrip 全部尾点 + lower 归一化）、validate_url 返回 PinnedURL（url 原样透传 +
+    归一化主机 + 校验期公网 IP 集）、三模块重复件已收敛（_NoRedirect/_OPENER
+    别名同源）、重定向一律拒绝。全程伪造 DNS，不触网。"""
     from app import sites_fetch as sf
     from app import wiki_fetch as wf
     from app import tajiduo_client as tc
     from app import url_guard as ug
     import socket as socket_mod
     classes = (ug.ERR_SCHEME, ug.ERR_HOST, ug.ERR_PORT, ug.ERR_CREDENTIALS,
-               ug.ERR_DNS, ug.ERR_PRIVATE_IP)
-    assert len(set(classes)) == 6, "六类错误必须各为一个独立子类"
-    assert len({c.code for c in classes}) == 6, "六类 code 必须互异"
+               ug.ERR_DNS, ug.ERR_PRIVATE_IP, ug.ERR_RESPONSE_TOO_LARGE)
+    assert len(set(classes)) == 7, "七类错误必须各为一个独立子类"
+    assert len({c.code for c in classes}) == 7, "七类 code 必须互异"
     assert issubclass(ug.URLGuardError, ValueError), "调用方 except ValueError 兼容"
     # host_allowed 参数化：子域开关 + 归一化（rstrip 全部尾点，覆盖双尾点形态）
     assert ug.host_allowed("API.Everness.INFO", allowed_hosts=("everness.info",),
@@ -4899,8 +4903,11 @@ def test_xmod01_pinning_toctou_offline():
         def __init__(self, payload):
             self._payload = payload
 
-        def read(self):
-            return self._payload
+        def read(self, n=-1):
+            # FETCH-06 起 open_pinned 传 read(MAX+1)：n>=0 按真实
+            # http.client.HTTPResponse.read(n) 语义至多 n 字节（本桩供给
+            # b"probe-ok" 远小于上限，等价原全量返回，既有调用方零改动）
+            return self._payload if n is None or n < 0 else self._payload[:n]
 
         def __enter__(self):
             return self
@@ -8341,6 +8348,359 @@ def test_biz03e_bak_step_transient_boundary():
         assert residue == [], f"bak_tmp/tmp 残留: {residue}"
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ---------- FETCH-06：open_pinned 响应体大小边界（app/url_guard.py，B2.6B） ----------
+# 覆盖：MAX_RESPONSE_BYTES 上下沿（below/exact/limit+1/远超）、未知长度与分块
+# 聚合形态、premature-close 不误判、空体与二进制往返、重定向/SSRF 先于读体、
+# 超限时 response 必经关闭（生命周期语义）。全部离线纯桩——fake-DNS 沿 B25
+# 专项 _xmod01_gai 形态、响应桩实现真实 http.client.HTTPResponse.read(n) 语义
+# （沿 B2.6B 基线 .testarchive/2026-11-15-B26B-fetch06/repro_fetch06.py），
+# 绝不发真实网络请求。登记验证法对齐（audit/2026-11-12/BUG-REGISTER.md:67）：
+# test_fetch06c 沿 mock 超限响应体经 sites_fetch._http_get_bytes 模块薄委托
+# 断言抛 ValueError。
+import http.client
+
+
+class _Fetch06Resp:
+    """真实 http.client.HTTPResponse.read(n) 语义桩（基线 repro_fetch06.py 的
+    Resp/ChunkedResp/PrematureResp 三合一）：
+    - read(n>=0)：至多 n 字节、按 chunk_size 跨块聚合、EOF 后回 b''（短读不抛，
+      同 stdlib amt 路径）；声明长度（declared_len）已知时 amt 剪到声明余量；
+    - read() / read(n<0)：读到 EOF 聚合（unknown-length 语义）；
+    - capped want 大于底层供给（声明长度>供给）时按 stdlib _safe_read 口径抛
+      http.client.IncompleteRead(partial, missing)（premature-close 形态）；
+      未知长度供给耗尽只短读不抛（同 stdlib）；
+    - 支持 with 上下文（__exit__ 留痕并调 close）；read/close/上下文全部记录。
+    """
+
+    def __init__(self, body, *, declared_len=None, chunk_size=8192):
+        self._mv = memoryview(body)
+        self.pos = 0             # 读取推进位置（供「未全量消费」断言）
+        # declared_len=None → 未知长度（stdlib self.length=None，无声明剪裁）；
+        # premature-close 用例显式传 declared_len>len(body)
+        self._declared = declared_len
+        self._chunk = chunk_size
+        self.read_calls = []     # 每次 read 记 (n, 实际返回字节数)
+        self.close_calls = 0
+        self.exited = False
+
+    def read(self, n=-1):
+        if n == 0:
+            self.read_calls.append((0, 0))
+            return b""
+        remaining_stream = len(self._mv) - self.pos
+        if n is None or n < 0:
+            want = remaining_stream          # 读到 EOF 聚合
+        elif self._declared is not None:
+            want = min(n, self._declared - self.pos)  # stdlib：amt 剪到声明余量
+        else:
+            want = min(n, remaining_stream)  # 未知长度：至多 n 或至 EOF
+        if want > remaining_stream:  # 声明长度供给不足 → premature-close 形态
+            collected = self._mv[self.pos:].tobytes()
+            self.pos = len(self._mv)
+            self.read_calls.append((n, len(collected)))
+            raise http.client.IncompleteRead(collected,
+                                             want - remaining_stream)
+        parts, got = [], 0  # 跨块聚合（真实 chunked/缓冲流消费形态）
+        while got < want:
+            take = min(self._chunk, want - got)
+            parts.append(self._mv[self.pos:self.pos + take])
+            self.pos += take
+            got += take
+        out = b"".join(parts)
+        self.read_calls.append((n, len(out)))
+        return out
+
+    def close(self):
+        self.close_calls += 1
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.exited = True
+        self.close()
+        return False
+
+
+class _Fetch06Opener:
+    """FETCH-06 桩 opener：open() 返回 resp_factory() 产出的响应桩（绝不建连）；
+    记录 open 次数与最近响应，供「校验/重定向先于读体」「close 必经」断言。"""
+
+    def __init__(self, resp_factory):
+        self._factory = resp_factory
+        self.open_calls = 0
+        self.resp = None
+
+    def open(self, req, timeout=None):
+        self.open_calls += 1
+        self.resp = self._factory()
+        return self.resp
+
+
+class _Fetch06Dns:
+    """FETCH-06 fake-DNS 上下文（沿 _xmod01_gai 形态）：with 期间把
+    socket.getaddrinfo 换成表桩，退出还原。默认 wiki.mysqil.com→1.2.3.4
+    公网形态（六类受限段全不命中）。"""
+
+    def __init__(self, table=None):
+        self._table = table or {"wiki.mysqil.com": ["1.2.3.4"]}
+
+    def __enter__(self):
+        import socket as socket_mod
+        self._orig = socket_mod.getaddrinfo
+        socket_mod.getaddrinfo = _xmod01_gai(self._table)
+        return self
+
+    def __exit__(self, *exc):
+        import socket as socket_mod
+        socket_mod.getaddrinfo = self._orig
+        return False
+
+
+def _fetch06_open_pinned(opener, url="https://wiki.mysqil.com/probe/fetch06",
+                         allowed_hosts=("wiki.mysqil.com",)):
+    """FETCH-06 公用 open_pinned 调用（公网 DNS 上下文 + 单域白名单）。"""
+    from app import url_guard as ug
+    with _Fetch06Dns():
+        return ug.open_pinned(url, timeout=10, opener=opener,
+                              allowed_hosts=allowed_hosts,
+                              allow_subdomains=False)
+
+
+@case
+def test_fetch06a_below_limit_passes():
+    """FETCH-06 ①：1KB 桩响应体 → bytes 原样返回（正常量级不受上限影响——
+    登记行量级 shared.js ~239KB、头像 ~0.3-1MB，全部远低于上限）。"""
+    from app import url_guard as ug
+    body = (bytes(range(256)) * 5)[:1024]
+    resp = _Fetch06Resp(body)
+    out = _fetch06_open_pinned(_Fetch06Opener(lambda: resp))
+    assert out == body, len(out)
+    assert resp.read_calls == [(ug.MAX_RESPONSE_BYTES + 1, 1024)], resp.read_calls
+
+
+@case
+def test_fetch06b_exact_limit_passes():
+    """FETCH-06 ②：恰 MAX_RESPONSE_BYTES 桩 → 通过，锁死 off-by-one 上沿
+    （上限值本身合法，MAX+1 才拒绝）。"""
+    from app import url_guard as ug
+    limit = ug.MAX_RESPONSE_BYTES
+    body = (bytes(range(256)) * (limit // 256 + 1))[:limit]
+    resp = _Fetch06Resp(body, declared_len=len(body))
+    out = _fetch06_open_pinned(_Fetch06Opener(lambda: resp))
+    assert out == body and len(out) == limit, len(out)
+    assert resp.read_calls == [(limit + 1, limit)], resp.read_calls
+
+
+@case
+def test_fetch06c_limit_plus_one_rejected():
+    """FETCH-06 ③：MAX+1 → ERR_RESPONSE_TOO_LARGE（B2.6B 基线 defectConfirmed
+    判据反转）；断言 code、消息含上限与实际长度两个数值、脱敏 URL（
+    _safe_urlrepr 形态）、绝不返回截断内容。另沿登记验证法（
+    audit/2026-11-12/BUG-REGISTER.md:67「mock 超限响应体调 _http_get/
+    _http_get_bytes 应抛 ValueError」）走 sites_fetch._http_get_bytes 模块
+    薄委托复测同一拒绝。"""
+    from app import sites_fetch as sf
+    from app import url_guard as ug
+    limit = ug.MAX_RESPONSE_BYTES
+    body = (bytes(range(256)) * (limit // 256 + 2))[:limit + 1]
+    resp = _Fetch06Resp(body, declared_len=len(body))
+    opener = _Fetch06Opener(lambda: resp)
+    out = None
+    with _Fetch06Dns():
+        try:
+            out = ug.open_pinned("https://wiki.mysqil.com/probe/fetch06",
+                                 timeout=10, opener=opener,
+                                 allowed_hosts=("wiki.mysqil.com",),
+                                 allow_subdomains=False)
+            raise AssertionError("MAX+1 必须拒绝而非静默全量返回")
+        except ug.URLGuardError as e:
+            assert e.code == "ERR_RESPONSE_TOO_LARGE", e.code
+            msg = str(e)
+            assert str(limit) in msg and str(limit + 1) in msg, msg  # 上限+实际长度
+            assert "拒绝" in msg, msg                                # 防线文案口径
+            assert "https://wiki.mysqil.com/probe/fetch06" in msg, msg  # 脱敏 URL
+        assert out is None, "绝不能返回截断内容冒充成功"
+        assert resp.read_calls == [(limit + 1, limit + 1)], resp.read_calls
+        assert ug._PINS.get("wiki.mysqil.com") is None, dict(ug._PINS)  # 注销无残留
+        # 登记验证法：mock 超限响应体经模块薄委托（_http_get_bytes）应抛 ValueError
+        orig_opener = sf._OPENER
+        sf._OPENER = _Fetch06Opener(lambda: _Fetch06Resp(body, declared_len=len(body)))
+        try:
+            try:
+                sf._http_get_bytes("https://wiki.mysqil.com/probe/fetch06", 10)
+                raise AssertionError("模块薄委托路径 MAX+1 必须拒绝")
+            except ValueError as e:  # 登记口径：调用方 except (OSError, ValueError) 承接
+                assert getattr(e, "code", "") == "ERR_RESPONSE_TOO_LARGE", e
+        finally:
+            sf._OPENER = orig_opener
+
+
+@case
+def test_fetch06d_very_large_rejected():
+    """FETCH-06 ④：64MB 远超上限 → 同类拒绝且读数止步于 MAX+1——桩记录
+    read(n) 调用与返回量，断言未全量消费（单次封顶探测，绝不整份消费）。"""
+    from app import url_guard as ug
+    mb = 1024 * 1024
+    limit = ug.MAX_RESPONSE_BYTES
+    body = (bytes(range(256)) * (64 * mb // 256 + 1))[:64 * mb]
+    resp = _Fetch06Resp(body, declared_len=len(body))
+    try:
+        _fetch06_open_pinned(_Fetch06Opener(lambda: resp))
+        raise AssertionError("64MB 必须拒绝")
+    except ug.URLGuardError as e:
+        assert e.code == "ERR_RESPONSE_TOO_LARGE", e.code
+    assert resp.read_calls == [(limit + 1, limit + 1)], resp.read_calls
+    assert resp.pos == limit + 1, resp.pos          # 读取止步于 MAX+1
+    assert resp.pos < len(body), "必须未全量消费"     # 64MB 供给未被整份读走
+
+
+@case
+def test_fetch06e_unknown_length_oversize_rejected():
+    """FETCH-06 ⑤：未知长度流（无 Content-Length——旧实现 read(-1) 会读到 EOF
+    聚合超限的形态）→ 封顶探测照拒；读取止步 MAX+1、流尾仍有余量（未全量消费）。"""
+    from app import url_guard as ug
+    limit = ug.MAX_RESPONSE_BYTES
+    body = (bytes(range(256)) * ((limit + 4096) // 256 + 1))[:limit + 4096]
+    resp = _Fetch06Resp(body)  # 未知长度形态（declared_len=None）
+    try:
+        _fetch06_open_pinned(_Fetch06Opener(lambda: resp))
+        raise AssertionError("未知长度超限流必须拒绝")
+    except ug.URLGuardError as e:
+        assert e.code == "ERR_RESPONSE_TOO_LARGE", e.code
+    assert resp.read_calls == [(limit + 1, limit + 1)], resp.read_calls
+    assert resp.pos == limit + 1, resp.pos
+    assert resp.pos < len(body), "流尾余量不得被消费"
+
+
+@case
+def test_fetch06f_chunked_oversize_rejected():
+    """FETCH-06 ⑥：8KB 分块供给聚合超限（真实 chunked 编码消费形态：read(n)
+    跨块聚合至 n 或块流末尾）→ 拒绝。"""
+    from app import url_guard as ug
+    limit = ug.MAX_RESPONSE_BYTES
+    body = b"chunk-" * (limit // 6 + 1)  # 6 字节块 × N ≈ MAX+3B，聚合后超限
+    resp = _Fetch06Resp(body, chunk_size=8192)  # 分块供给形态
+    try:
+        _fetch06_open_pinned(_Fetch06Opener(lambda: resp))
+        raise AssertionError("分块聚合超限必须拒绝")
+    except ug.URLGuardError as e:
+        assert e.code == "ERR_RESPONSE_TOO_LARGE", e.code
+    assert resp.read_calls == [(limit + 1, limit + 1)], resp.read_calls
+    assert resp.pos == limit + 1, resp.pos
+
+
+@case
+def test_fetch06g_premature_close_not_misclassified():
+    """FETCH-06 ⑦：Content-Length 声明 2MB、底层只送 1MB（premature-close
+    形态，read 按 stdlib _safe_read 口径抛 http.client.IncompleteRead）→
+    异常原样穿透：非 URLGuardError（非超限误判）、不返回任何截断内容
+    （非截断成功）。"""
+    from app import url_guard as ug
+    import http.client
+    mb = 1024 * 1024
+    supplied = bytes(range(256)) * (mb // 256)  # 恰 1MB
+    resp = _Fetch06Resp(supplied, declared_len=2 * mb)  # 声明 2MB 只送 1MB
+    try:
+        _fetch06_open_pinned(_Fetch06Opener(lambda: resp))
+        raise AssertionError("premature close 必须穿透而非截断成功")
+    except http.client.IncompleteRead as e:
+        assert not isinstance(e, ug.URLGuardError), "不得误判为超限"
+        assert len(e.partial) == mb and e.expected == mb, (len(e.partial), e.expected)
+        assert e.args == (e.partial,), e.args  # stdlib 形态：args 仅含 partial
+
+
+@case
+def test_fetch06h_empty_and_binary_roundtrip():
+    """FETCH-06 ⑧：空字节串 → 成功返回 b''（0 字节合法响应）；二进制含
+    0x00/0xFF 字节原样往返（bytes 通道不解码不筛选）。"""
+    body = b""
+    out = _fetch06_open_pinned(_Fetch06Opener(lambda: _Fetch06Resp(body)))
+    assert out == b"", out
+    body2 = bytes([0x00, 0xFF, 0x10, 0x81]) * 64 + "中文往返".encode("utf-8")
+    out2 = _fetch06_open_pinned(_Fetch06Opener(lambda: _Fetch06Resp(body2)))
+    assert out2 == body2, (len(out2), len(body2))
+    assert b"\x00" in out2 and b"\xff" in out2
+
+
+@case
+def test_fetch06i_redirect_rejected_before_body():
+    """FETCH-06 ⑨：redirect 响应 + 超大 body 桩 → 「拒绝跟随重定向」先发生
+    （桩 opener 复刻真实 OPENER 收到 302 的行为：委托共享层 _NoRedirect
+    redirect_request 契约）且未读到 body——桩记录读取计数断言为空。"""
+    from app import url_guard as ug
+    mb = 1024 * 1024
+    resp = _Fetch06Resp(b"x" * (ug.MAX_RESPONSE_BYTES + mb))
+    captured = []
+
+    class _RedirectingOpener:
+        """桩 opener：open 时按真实 OPENER 的重定向口径（_NoRedirect 一律拒）
+        先走 redirect_request——重定向被拒则读体根本不可达。"""
+
+        def open(self, req, timeout=None):
+            captured.append(req.get_full_url())
+            ug._NoRedirect().redirect_request(req, None, 302, "Found", None,
+                                              "https://evil.test/redirected")
+            resp.read()  # 不可达哨兵：若重定向未被拒，读取计数必非空
+            return resp
+
+    try:
+        _fetch06_open_pinned(_RedirectingOpener())
+        raise AssertionError("重定向必须拒绝跟随")
+    except ValueError as e:
+        assert "拒绝跟随重定向" in str(e) and "evil.test" in str(e), str(e)
+        assert not isinstance(e, ug.URLGuardError), "重定向拒绝不是 URLGuardError 形态"
+    assert resp.read_calls == [], "重定向拒绝先于读体：响应桩零读取"
+    assert captured == ["https://wiki.mysqil.com/probe/fetch06"], captured
+    assert ug._PINS.get("wiki.mysqil.com") is None, dict(ug._PINS)
+
+
+@case
+def test_fetch06j_ssrf_rejected_before_body():
+    """FETCH-06 ⑩：SSRF 校验先于任何响应体读取——白名单外主机（公网 IP 也拒）
+    ERR_HOST / 白名单域解析私网 ERR_PRIVATE_IP 都在 validate_url 阶段先胜，
+    opener.open 根本不被调用、超大 body 桩零读取。"""
+    from app import url_guard as ug
+    mb = 1024 * 1024
+    opener = _Fetch06Opener(lambda: _Fetch06Resp(b"x" * (ug.MAX_RESPONSE_BYTES + mb)))
+    with _Fetch06Dns({"evil.test": ["1.2.3.4"]}):  # 外域：公网 IP 也一律拒
+        try:
+            ug.open_pinned("https://evil.test/x", timeout=10, opener=opener,
+                           allowed_hosts=("wiki.mysqil.com",),
+                           allow_subdomains=False)
+            raise AssertionError("外域必须拒绝")
+        except ug.URLGuardError as e:
+            assert e.code == "ERR_HOST", e.code
+    with _Fetch06Dns({"wiki.mysqil.com": ["10.0.0.5"]}):  # 白名单域解析私网
+        try:
+            ug.open_pinned("https://wiki.mysqil.com/x", timeout=10, opener=opener,
+                           allowed_hosts=("wiki.mysqil.com",),
+                           allow_subdomains=False)
+            raise AssertionError("私网解析必须拒绝")
+        except ug.URLGuardError as e:
+            assert e.code == "ERR_PRIVATE_IP", e.code
+    assert opener.open_calls == 0, "SSRF 拒绝必须先于 opener.open"
+    assert opener.resp is None, "响应桩根本不应被构造"
+
+
+@case
+def test_fetch06k_response_closed_on_oversize():
+    """FETCH-06 ⑪：超限异常在 with 块内抛出 → response.close 被调/上下文退出
+    （无残留句柄生命周期语义）；异常先于 finally 注销，钉扎无残留。"""
+    from app import url_guard as ug
+    limit = ug.MAX_RESPONSE_BYTES
+    body = (bytes(range(256)) * (limit // 256 + 2))[:limit + 1]
+    resp = _Fetch06Resp(body, declared_len=len(body))
+    try:
+        _fetch06_open_pinned(_Fetch06Opener(lambda: resp))
+        raise AssertionError("超限必须拒绝")
+    except ug.URLGuardError as e:
+        assert e.code == "ERR_RESPONSE_TOO_LARGE", e.code
+    assert resp.exited, "with 上下文必须退出（close 必经语义）"
+    assert resp.close_calls >= 1, "response.close 必须被调"
+    assert ug._PINS.get("wiki.mysqil.com") is None, dict(ug._PINS)
 
 
 def main():

@@ -32,8 +32,9 @@ NOT_ASSERTABLE，probe_toctou_binding.py 结构性实证）。
   并发同主机时后到者沿用先到者已过六类段检查的公网集，攻击面不大于无钉扎状态，
   详见 policy §5.2/5.4）。钉扎不动 TLS：SNI/证书校验主机名仍是 URL 主机名。
 
-六类错误形态（policy §1.4）：ERR_SCHEME / ERR_HOST / ERR_PORT / ERR_CREDENTIALS /
-ERR_DNS / ERR_PRIVATE_IP——每类一个 URLGuardError 子类，code 属性机器可读，
+七类错误形态（policy §1.4 六类校验错误 + FETCH-06 响应体大小边界第七类）：
+ERR_SCHEME / ERR_HOST / ERR_PORT / ERR_CREDENTIALS / ERR_DNS / ERR_PRIVATE_IP /
+ERR_RESPONSE_TOO_LARGE——每类一个 URLGuardError 子类，code 属性机器可读，
 消息含「拒绝/仅允许」（探针/selftest 显式防线判定兼容）。URLGuardError 继承
 ValueError——三模块调用方既有 except (OSError, ValueError) 零改动兼容。
 """
@@ -46,11 +47,12 @@ import urllib.request
 from typing import NamedTuple
 
 __all__ = ["URLGuardError", "ERR_SCHEME", "ERR_HOST", "ERR_PORT",
-           "ERR_CREDENTIALS", "ERR_DNS", "ERR_PRIVATE_IP", "PinnedURL",
+           "ERR_CREDENTIALS", "ERR_DNS", "ERR_PRIVATE_IP",
+           "ERR_RESPONSE_TOO_LARGE", "PinnedURL",
            "validate_url", "host_allowed", "open_pinned", "OPENER", "_NoRedirect"]
 
 
-# ---------- 六类错误形态（code 机器可读；消息含「拒绝/仅允许」防线文案） ----------
+# ---------- 七类错误形态（code 机器可读；消息含「拒绝/仅允许」防线文案） ----------
 
 class URLGuardError(ValueError):
     """共享 URL 防线错误基类（ValueError 子类：调用方既有 except 兼容）。"""
@@ -93,6 +95,12 @@ class ERR_PRIVATE_IP(URLGuardError):
     """任一解析记录命中受限段（含 v4-mapped v6）。"""
 
     code = "ERR_PRIVATE_IP"
+
+
+class ERR_RESPONSE_TOO_LARGE(URLGuardError):
+    """响应体超出 MAX_RESPONSE_BYTES 上限（FETCH-06；截断内容绝不返回）。"""
+
+    code = "ERR_RESPONSE_TOO_LARGE"
 
 
 class PinnedURL(NamedTuple):
@@ -255,14 +263,25 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 OPENER = urllib.request.build_opener(_NoRedirect())
 
+# FETCH-06 响应体大小边界（出处=audit/2026-11-12/BUG-REGISTER.md:67 登记行 +
+# REMEDIATION-PLAN.md 批次 2 抓取组蓝本「resp.read(MAX_BYTES)」，建议值 32MB）：
+# 响应体 wire 字节上限。语义=wire 字节——当前三模块与本层均无压缩协商
+# （grep Accept-Encoding|gzip|Content-Encoding|decompress 零命中；B2.6B 基线
+# 矩阵 ⑩ 样例实证 read 返回原样 wire 字节不解压），wire==decoded；未来引入
+# 压缩响应头需另行评估上限语义。
+MAX_RESPONSE_BYTES = 32 * 1024 * 1024
+
 
 def open_pinned(url, *, timeout, opener, allowed_hosts, allow_subdomains=True,
                 action="抓取", method="GET", headers=None, data=None):
     """唯一传输入口：完整校验（validate_url）→ 登记 IP 钉扎 → opener.open →
-    读全量 bytes 返回。HTTPError 不就地吞（tajiduo 在调用侧包装为 TajiduoError，
-    sites/wiki 维持 OSError 语义上抛）；解码/UA/错误包装差异留在各模块薄委托层。
-    opener 由调用方传入模块级 _OPENER 别名（调用期晚绑定，兼容 selftest 以
-    tc._OPENER = … 替换桩 opener 的既有口径）。"""
+    读响应体 bytes 返回（FETCH-06 大小边界：单次 read(MAX+1) 封顶探测，实际
+    长度超出 MAX_RESPONSE_BYTES 即抛 ERR_RESPONSE_TOO_LARGE——异常在 with 块内
+    抛出，response 必经上下文关闭；截断内容绝不返回冒充成功）。HTTPError 不
+    就地吞（tajiduo 在调用侧包装为 TajiduoError，sites/wiki 维持 OSError 语义
+    上抛）；解码/UA/错误包装差异留在各模块薄委托层。opener 由调用方传入模块级
+    _OPENER 别名（调用期晚绑定，兼容 selftest 以 tc._OPENER = … 替换桩 opener
+    的既有口径）。"""
     pinned = validate_url(url, allowed_hosts=allowed_hosts,
                           allow_subdomains=allow_subdomains, action=action)
     _install_dispatcher()
@@ -271,6 +290,12 @@ def open_pinned(url, *, timeout, opener, allowed_hosts, allow_subdomains=True,
     _register_pin(pinned.host, pinned.ips)
     try:
         with opener.open(req, timeout=timeout) as resp:
-            return resp.read()
+            data = resp.read(MAX_RESPONSE_BYTES + 1)
+            if len(data) > MAX_RESPONSE_BYTES:
+                raise ERR_RESPONSE_TOO_LARGE(
+                    f"响应体 {len(data)} 字节超出上限 {MAX_RESPONSE_BYTES} 字节，"
+                    f"拒绝{action}（截断内容不返回）："
+                    f"{_safe_urlrepr(urllib.parse.urlsplit(url), url)}")
+            return data
     finally:
         _unregister_pin(pinned.host)
