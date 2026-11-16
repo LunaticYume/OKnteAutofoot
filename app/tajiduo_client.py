@@ -41,13 +41,18 @@ import json
 import os
 import re
 import secrets
+import shutil
+import threading
 import time
 import urllib.error
 import urllib.parse
 import uuid
 
+from pathlib import Path
+
 from . import url_guard
-from .state import DATA_DIR, _path_lock, load_json, save_json_atomic
+from .state import (_replace_bounded_retry, DATA_DIR, _path_lock, load_json,
+                    save_json_atomic)
 
 # ---------- 常量白名单（URL 唯一来源；前端/请求体传入的 URL 一律不采信） ----------
 
@@ -85,6 +90,18 @@ GACHA_SUMMARY_PATH = "/apihub/awapi/yh/gacha"
 
 TOKEN_FILE = os.path.join(DATA_DIR, "tajiduo_token.json")
 GACHA_HISTORY_FILE = os.path.join(DATA_DIR, "gacha_history.json")
+
+# B2.8-A（TJD-01/CONC-05）恢复链互斥锁：/api/tajiduo/sync 与 /api/tajiduo/
+# sync-gacha 两路由均不持 main._TJD_LOCK（B2.8-A 用户裁定不在路由层补整段锁），
+# 并发双 sync 同时进入 _recover_auth 时 refreshToken 一次性轮换互踩——两线程各
+# 持同一旧 refreshToken 并发续期、后到者被服务端拒绝，且失败方升级 laohu 重登
+# 会顶掉先到者会话（_relogin_via_laohu 语义），persist 写回交错可把输掉会话
+# 落盘。模块级互斥锁把恢复链全程（refresh/relogin/persist/数据重试）串行化。
+# 锁内网络请求有界：续期恰一次＋失败后 laohu 重登恰一次＝≤2 请求×20 秒
+# （_http timeout=20），不长时间霸锁。锁序单向无环：main._TJD_LOCK（bind/
+# logout/sync-gacha 路由）→ 本锁 _AUTH_LOCK（_recover_auth）→ state._path_lock
+# （persist_session/clear_token_store 的 per-path 叶锁）；本锁内绝不回调 main 层。
+_AUTH_LOCK = threading.Lock()
 
 PHONE_RE = re.compile(r"^1\d{10}$")  # 大陆手机号（areaCodeId=1）
 CAPTCHA_RE = re.compile(r"^\d{4,8}$")
@@ -868,18 +885,75 @@ def build_client():
                          center_uid=str(store.get("center_uid") or ""))
 
 
+def _write_token_store_locked(store):
+    """（persist_session 临界区专用）持锁版原子发布：调用方必须已持
+    state._path_lock(TOKEN_FILE)——threading.Lock 不可重入，持锁序列内不能再经
+    save_token_store→save_json_atomic 落盘（同线程二次取锁即死锁），故内联同一
+    发布链、仅省去其自取的 per-path 锁。其余逐行复刻 save_json_atomic
+    （state.py:177-208）：tmp 写全 → 复制当前主文件为 .bak → replace 发布；
+    发布步沿用 state._replace_bounded_retry（BIZ-03 白名单 WinError 5/32 有界
+    重试，耗尽原样外抛）；.bak 复制/发布失败吞掉（备份落后一版可接受）；
+    finally 只清本次写者自己的 tmp。tmp/bak tmp 命名与 save_json_atomic 同形
+    （<name>.<uuid4.hex>.tmp / <name>.bak.<uuid4.hex>.tmp）——崩溃/硬杀残留仍落
+    clear_token_store 的 _TOKEN_UUID_TMP_RE（TJD-09）精确清理口径内。"""
+    tmp = Path(str(TOKEN_FILE) + f".{uuid.uuid4().hex}.tmp")
+    bak_tmp = None
+    try:
+        tmp.write_text(json.dumps(store, ensure_ascii=False, indent=2),
+                       encoding="utf-8")
+        if os.path.exists(TOKEN_FILE):
+            bak_tmp = Path(str(TOKEN_FILE) + f".bak.{uuid.uuid4().hex}.tmp")
+            try:
+                shutil.copyfile(TOKEN_FILE, bak_tmp)
+                _replace_bounded_retry(bak_tmp, TOKEN_FILE + ".bak")
+                bak_tmp = None  # 已被 replace 消费
+            except OSError:
+                pass  # .bak 落后一版可接受；绝不因备份失败丢掉本次写入
+        _replace_bounded_retry(tmp, TOKEN_FILE)
+        tmp = None  # 已被 replace 消费
+    finally:
+        if tmp is not None:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+        if bak_tmp is not None:
+            try:
+                bak_tmp.unlink()
+            except OSError:
+                pass
+
+
 def persist_session(session, device_id, bound_at=None):
-    """把（登录或续期后的）会话写回本机凭证文件。"""
-    store = load_token_store() or {}
-    store.update({
-        "device_id": str(device_id),
-        "access_token": str(session["access_token"]),
-        "refresh_token": str(session["refresh_token"]),
-        "center_uid": str(session.get("center_uid") or store.get("center_uid") or ""),
-        "bound_at": bound_at or store.get("bound_at") or "",
-        "refreshed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-    })
-    save_token_store(store)
+    """把（登录或续期后的）会话写回本机凭证文件（写回边界守卫，B2.8-A/TJD-01）。
+
+    B2.8-A（TJD-01，2026-11-17 用户裁定方案）：全程持 state._path_lock(TOKEN_FILE)
+    ——load→update→save 全序列与并发 clear_token_store（logout 路由同 per-path 锁）
+    互斥；临界区入口（＝写回前检查：删除者需同锁，临界区内文件不可能消失）检查
+    TOKEN_FILE 是否仍存在——不存在＝并发 logout 已删（或从未绑定），跳过落盘并
+    抛 auth 类 TajiduoError（「凭据已删除」口径），sync 链据此得到 needs_rebind
+    重绑引导；绝不新建文件（修复前 load→save 窄窗与文件缺失双形态会把已删除的
+    旧凭据整体复活，登记 audit/2026-11-12/BUG-REGISTER.md:43 TJD-01）。
+    实现注记：save_json_atomic 自取 per-path 锁（state.py:179-180）而
+    threading.Lock 不可重入，持锁序列内不能再走 save_token_store→save_json_atomic
+    （同线程二次取锁死锁）——临界区内改经 _write_token_store_locked 内联同一
+    tmp→bak→replace 发布链（仅省去重复取锁，BIZ-03/TJD-09 语义不变）。bind 首绑
+    创建文件走 save_token_store（无 gate，main.py:2511），不受本守卫影响。
+    """
+    with _path_lock(TOKEN_FILE):
+        if not os.path.exists(TOKEN_FILE):
+            raise TajiduoError("塔吉多本机凭据已删除，请重新绑定", auth=True)
+        store = load_token_store() or {}
+        store.update({
+            "device_id": str(device_id),
+            "access_token": str(session["access_token"]),
+            "refresh_token": str(session["refresh_token"]),
+            "center_uid": str(session.get("center_uid") or store.get("center_uid") or ""),
+            "bound_at": bound_at or store.get("bound_at") or "",
+            "refreshed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        })
+        store["schema"] = 1
+        _write_token_store_locked(store)
 
 
 def _relogin_via_laohu():
@@ -911,31 +985,40 @@ def _recover_auth(client, first_error, retry):
     ① refreshToken 续期恰一次，成功即落盘并重试（重试仍失败按现状原样上抛）；
     ② 续期失败且有落盘 laohu 根凭据 → 同 device_id 重走 user_center_login 重建
       会话并落盘（见 _relogin_via_laohu）后重试恰一次；
-    ③ 仍失败抛现有友好重绑错误——官方原文进 raw 供诊断，绝不透传给用户。"""
-    try:
-        session = client.refresh_session()
-    except TajiduoError as e2:
-        origin = str(e2)
-        session = None
+    ③ 仍失败抛现有友好重绑错误——官方原文进 raw 供诊断，绝不透传给用户。
+
+    B2.8-A（TJD-01/CONC-05 恢复链互斥）：全程持模块级 _AUTH_LOCK——并发双 sync
+    （sync/sync-gacha 路由均不持 main._TJD_LOCK，用户裁定不在路由层补整段锁）
+    同时进入恢复链时，refreshToken 一次性轮换互踩与 persist 写回交错由此串行化
+    消除；后到者看到的是先到者已落盘的最新会话状态，输掉一次性轮换即走②级
+    laohu 重登重试，不误报重绑。锁序单向无环：main._TJD_LOCK → _AUTH_LOCK →
+    state._path_lock；锁内网络请求有界（续期恰一次＋失败后 laohu 重登恰一次
+    ＝≤2 请求×20 秒 _http 超时），不长时间霸锁。"""
+    with _AUTH_LOCK:
         try:
-            session = _relogin_via_laohu()
-        except TajiduoError as e3:
-            origin = f"{origin}；laohu重登：{e3}"
-        if session is not None:
-            # 新会话换进调用方 client（retry 闭包持有它）后重试恰一次
-            client.access_token = session["access_token"]
-            client.refresh_token = session["refresh_token"]
-            client.center_uid = session["center_uid"]
+            session = client.refresh_session()
+        except TajiduoError as e2:
+            origin = str(e2)
+            session = None
             try:
-                return retry()
+                session = _relogin_via_laohu()
             except TajiduoError as e3:
-                origin = f"{origin}；laohu重登后仍失败：{e3}"
-        raise TajiduoError(
-            "登录已过期，请重新绑定（在塔吉多卡片输入手机号获取验证码）",
-            raw={"origin": origin, "origin_error": str(first_error)},
-            auth=True) from e2
-    persist_session(session, client.device_id)
-    return retry()
+                origin = f"{origin}；laohu重登：{e3}"
+            if session is not None:
+                # 新会话换进调用方 client（retry 闭包持有它）后重试恰一次
+                client.access_token = session["access_token"]
+                client.refresh_token = session["refresh_token"]
+                client.center_uid = session["center_uid"]
+                try:
+                    return retry()
+                except TajiduoError as e3:
+                    origin = f"{origin}；laohu重登后仍失败：{e3}"
+            raise TajiduoError(
+                "登录已过期，请重新绑定（在塔吉多卡片输入手机号获取验证码）",
+                raw={"origin": origin, "origin_error": str(first_error)},
+                auth=True) from e2
+        persist_session(session, client.device_id)
+        return retry()
 
 
 # ---------- 手动同步编排（main.py /api/tajiduo/sync 唯一调用方） ----------

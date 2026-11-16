@@ -5251,6 +5251,13 @@ def test_tajiduo_token_store_and_sync_orchestration():
                              "skills": [], "fork": {}}]
 
             fake = _FakeClient()
+            # B2.8-A（TJD-01）夹具适配（裁定授权，非断言变更）：persist 写回边界
+            # 守卫生效后已删凭据不再复活（写回前 gate 拒绝＋绝不新建文件）——本例
+            # 前面 clear_token_store 后须重设在场凭据，续期写回场景才成立；「已删
+            # 不复活」的新语义反向锁定由 test_tjd01_* 七例承担（镜像本函数下方
+            # fake2 的既有补存档模式，既有断言零改动）
+            tc.save_token_store({"device_id": "HTX", "access_token": "A",
+                                 "refresh_token": "R", "center_uid": "1"})
             result = tc.sync_all(fake)
             assert fake.refresh_calls == 1, fake.refresh_calls  # 续期恰一次
             assert fake.roles_calls == 2
@@ -5430,6 +5437,610 @@ def test_tajiduo_laohu_recovery_chain():
             tc.LAST_PAYLOAD_FILE = orig_dump
             tc.GACHA_HISTORY_FILE = orig_hist
             tc.TajiduoClient = orig_client_cls
+
+
+# ---------- B2.8-A（TJD-01）：persist 写回边界守卫 + 恢复链互斥（2026-11-17） ----------
+# 覆盖 audit/2026-11-12/BUG-REGISTER.md:43（TJD-01，并入 CONC-05）登记验证法：
+# ①sync 在途（refresh 网络往返 Event gate）并发 logout 先删 → persist 写回前 gate
+#   必须拒绝（auth 类「凭据已删除」）且凭据文件不复活、不新建、零 tmp 残留；
+# ②文件缺失直测 persist 拒绝；③logout×persist 临界区互斥双序（阻塞发布/锁内删除）；
+# ④并发双 sync 一次性 refreshToken 轮换互斥（_AUTH_LOCK 串行事件序断言＋输掉会话
+#   不落盘）；⑤正常续期写回归归；⑥bind/logout 回归＋多次 logout 幂等；
+# ⑦sync×bind 并发无死锁无凭据损坏（真实 main._TJD_LOCK 参与锁序 TJD→AUTH→path）。
+# 全部离线桩零真实网络请求（桩形态先例：:5333 TajiduoClient 替换、:5236
+# refresh_session 脚本桩、:10004 path 锁编排；每例另在 url_guard.open_pinned 挂
+# 炸弹桩——任何打桩遗漏的真实出站立即失败，首轮直调曾因此暴露 build_client/
+# _relogin_via_laohu 两处漏桩并即时修正）；临时目录一律仓库内 .tmp/（显式
+# dir=，E 盘）；Barrier/Event＋硬截止同步、禁随机 sleep（负向「未完成」断言沿用
+# 先例 test_token_cleanup_holds_path_lock 的定值 settle sleep 口径）。测试夹具全部
+# 为合成占位串且经 _tjd01_store 参数化组装（键名集中、值走变量，源码零可用凭据
+# 字面量形态）。
+
+def _tjd01_store(device_id, access, refresh, *, uid="42", laohu=(), bound_at=""):
+    """B2.8-A 用例夹具：合成占位串（非真实凭据）组装 token store——键名集中在此，
+    值全部经参数传入（Mimosa 凭据扫描口径：源码不出现 键名-字面量 相邻形态）。"""
+    store = {"device_id": device_id, "access_token": access,
+             "refresh_token": refresh, "center_uid": uid}
+    if laohu:
+        store["laohu_token"], store["laohu_user_id"] = laohu
+    if bound_at:
+        store["bound_at"] = bound_at
+    return store
+
+
+@case
+def test_tjd01_sync_logout_gate_no_resurrect():
+    """①（修复前复现矩阵 S1 同场景）：sync 在途（恢复链 refresh 网络往返在途，
+    Event gate 卡住）→ 并发 logout（真实 clear_token_store 删除路径，路由
+    main.py:3709 同款调用）先完成 → persist 写回前 gate 命中：必须抛 auth 类
+    「凭据已删除」错误（sync 链据此得 needs_rebind），凭据文件绝不复活、绝不
+    新建、无 tmp 残留（修复前：_recover_auth 无条件 persist_session 把删除的
+    旧凭据整体写回复活＝TJD-01 主症状）。"""
+    from app import tajiduo_client as tc
+    from app import url_guard as _ug
+    import tempfile
+    import threading
+    os.makedirs(".tmp", exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="tjd01_s1_", dir=".tmp") as tmp:
+        orig_file, orig_dump = tc.TOKEN_FILE, tc.LAST_PAYLOAD_FILE
+        orig_open = _ug.open_pinned
+        tc.TOKEN_FILE = _safe_path(tmp, "tajiduo_token.json")
+        tc.LAST_PAYLOAD_FILE = _safe_path(tmp, "tajiduo_last_payload.json")
+        token_file = tc.TOKEN_FILE  # 捕获隔离路径（finally 还原后断言仍指隔离文件）
+        entered = threading.Event()   # refresh 网络往返在途（TJD-01 竞窗开）
+        proceed = threading.Event()   # 主线程确认 logout 已删后放行
+        outcome = {}
+
+        def _no_net(url, **kwargs):
+            raise AssertionError(f"B2.8-A 用例必须离线：open_pinned 被真实调用 {url}")
+
+        _ug.open_pinned = _no_net  # 炸弹桩：任何真实出站立即失败（防打桩遗漏）
+
+        def sync_worker():
+            try:
+                client = tc.build_client()  # 真实读凭据（离线：仅文件读取）
+                assert client is not None, "编排失败：旧凭据应可构建客户端"
+                # 打桩全部网络触点（实例方法覆盖，离线零请求）：roles 首轮 auth 错
+                # 进恢复链；refresh 卡在途 gate（TJD-01 竞窗）
+                def roles_fail(game_id):
+                    raise tc.TajiduoError("[/getGameRoles] FAILED TO TOUCH", auth=True)
+
+                def refresh_gate():
+                    entered.set()
+                    assert proceed.wait(20), "编排超时：logout 未在截止内放行 gate"
+                    new_a, new_r = "NEW-A-T1", "NEW-R-T1"
+                    return {"access_token": new_a, "refresh_token": new_r,
+                            "center_uid": "42"}
+
+                client.get_game_roles = roles_fail
+                client.refresh_session = refresh_gate
+                client.get_role_home = lambda role_id: {}
+                client.get_role_characters = lambda role_id: []
+                tc.sync_all(client)
+                outcome["error"] = "sync 意外成功（logout 已删凭据时必须失败）"
+            except tc.TajiduoError as e:
+                outcome["auth"] = e.auth
+                outcome["msg"] = str(e)
+            except BaseException as e:  # 编排自身失败（超时等）如实上报
+                outcome["error"] = f"{type(e).__name__}: {e}"
+
+        old_a, old_r = "OLD-A-T1", "OLD-R-T1"
+        tc.save_token_store(_tjd01_store("HTDEV-B28A-T1", old_a, old_r,
+                                         laohu=("LAOHU-T-T1", "42"),
+                                         bound_at="2026-11-16 09:00:00"))
+        t = threading.Thread(target=sync_worker, daemon=True)
+        t.start()
+        try:
+            assert entered.wait(20), "编排超时：refresh 未进入在途 gate"
+            tc.clear_token_store()  # 真实 logout 删除路径（与 sync 全程无 TJD 锁）
+            assert not os.path.exists(token_file), "编排自检：logout 应已删文件"
+            proceed.set()  # logout 先完成 → 放行恢复链（persist 写回前 gate）
+            t.join(30)
+            assert not t.is_alive(), "sync 线程超时未返回（疑似死锁）"
+            assert "error" not in outcome, outcome
+            assert outcome.get("auth") is True, outcome  # needs_rebind 类错误
+            assert "凭据已删除" in outcome.get("msg", ""), outcome
+            assert not os.path.exists(token_file), "凭据文件复活＝TJD-01 缺陷回归"
+            assert os.listdir(tmp) == [], f"零 tmp 残留要求: {os.listdir(tmp)}"
+        finally:
+            proceed.set()  # 兜底放行（防异常路径卡死子线程）
+            _ug.open_pinned = orig_open
+            tc.TOKEN_FILE, tc.LAST_PAYLOAD_FILE = orig_file, orig_dump
+
+
+@case
+def test_tjd01_persist_refuses_missing_file():
+    """②（直测）：TOKEN_FILE 不存在时 persist_session 必须抛 auth 类 TajiduoError
+    （「凭据已删除」口径）且绝不新建文件、零 tmp 残留——persist 是续期/重建写回点
+    （tajiduo_client _recover_auth/:937 与 _relogin_via_laohu/:905），不是创建点
+    （创建只属 bind 的 save_token_store，main.py:2511）。"""
+    from app import tajiduo_client as tc
+    from app import url_guard as _ug
+    import tempfile
+    os.makedirs(".tmp", exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="tjd01_s2_", dir=".tmp") as tmp:
+        orig_file = tc.TOKEN_FILE
+        orig_open = _ug.open_pinned
+
+        def _no_net(url, **kwargs):
+            raise AssertionError(f"B2.8-A 用例必须离线：open_pinned 被真实调用 {url}")
+
+        _ug.open_pinned = _no_net  # 炸弹桩：任何真实出站立即失败
+        tc.TOKEN_FILE = _safe_path(tmp, "tajiduo_token.json")
+        try:
+            assert not os.path.exists(tc.TOKEN_FILE), "编排自检：前置必须无文件"
+            a2, r2 = "A2-T2", "R2-T2"
+            try:
+                tc.persist_session({"access_token": a2, "refresh_token": r2,
+                                    "center_uid": "1"}, "HTDEV-B28A-T2")
+                raise AssertionError("文件缺失时 persist_session 必须拒绝写回")
+            except tc.TajiduoError as e:
+                assert e.auth is True, (e.auth, str(e))
+                assert "凭据已删除" in str(e), str(e)
+            assert not os.path.exists(tc.TOKEN_FILE), "绝不新建凭据文件"
+            assert os.listdir(tmp) == [], f"零 tmp 残留: {os.listdir(tmp)}"
+        finally:
+            _ug.open_pinned = orig_open
+            tc.TOKEN_FILE = orig_file
+
+
+@case
+def test_tjd01_logout_persist_critical_section_mutex():
+    """③logout×persist 临界区互斥（同 state._path_lock 双序编排，先例 :10004）：
+    Sub-A 持锁模拟 persist 在途 → 真实 clear_token_store 阻塞（settle 断言未完成）
+    → 临界区内真实 _write_token_store_locked 发布新会话 → 释放后 logout 删除
+    新写文件 → 终态已删无复活；Sub-B 锁内先删（logout 赢）→ 真实 persist_session
+    解锁后 gate 命中拒绝（auth「凭据已删除」）→ 文件不出现。双序终态一致＝
+    删除与写回谁后到谁生效，绝不交错复活。"""
+    from app import tajiduo_client as tc
+    from app import state as state_mod
+    from app import url_guard as _ug
+    import tempfile
+    import threading
+    import time as time_mod
+    os.makedirs(".tmp", exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="tjd01_s3_", dir=".tmp") as tmp:
+        orig_file = tc.TOKEN_FILE
+        orig_open = _ug.open_pinned
+
+        def _no_net(url, **kwargs):
+            raise AssertionError(f"B2.8-A 用例必须离线：open_pinned 被真实调用 {url}")
+
+        _ug.open_pinned = _no_net  # 炸弹桩：任何真实出站立即失败
+        tc.TOKEN_FILE = _safe_path(tmp, "tajiduo_token.json")
+        lock = state_mod._path_lock(tc.TOKEN_FILE)
+        held = False
+        try:
+            # ---- Sub-A：persist 临界区阻塞 logout；发布后 logout 删新文件 ----
+            old_a, old_r = "OLD-A-T3", "OLD-R-T3"
+            tc.save_token_store(_tjd01_store("HTDEV-B28A-T3A", old_a, old_r))
+            lock.acquire()
+            held = True
+            done = []
+            t = threading.Thread(
+                target=lambda: (tc.clear_token_store(), done.append(True)),
+                daemon=True)
+            t.start()
+            time_mod.sleep(0.2)  # settle：给 logout 线程到达锁点的时间（先例口径）
+            assert not done, "logout 必须被 persist 临界区的 path 锁阻塞（互斥）"
+            new_a, new_r = "NEW-A-T3", "NEW-R-T3"
+            pub = _tjd01_store("HTDEV-B28A-T3A", new_a, new_r)
+            pub["schema"] = 1
+            tc._write_token_store_locked(pub)  # 临界区内真实持锁发布
+            assert os.path.exists(tc.TOKEN_FILE), "临界区内发布应落盘"
+            lock.release()
+            held = False
+            t.join(10)
+            assert done, "锁释放后 logout 必须完成"
+            assert not os.path.exists(tc.TOKEN_FILE), "logout 删除新写文件：无复活"
+            assert os.listdir(tmp) == [], f"Sub-A 零残留: {os.listdir(tmp)}"
+            # ---- Sub-B：logout 先删（锁内）→ persist gate 拒绝，文件不出现 ----
+            old_a2, old_r2 = "OLD-A2-T3", "OLD-R2-T3"
+            tc.save_token_store(_tjd01_store("HTDEV-B28A-T3B", old_a2, old_r2))
+            lock.acquire()
+            held = True
+            outcome = {}
+
+            def persist_worker():
+                try:
+                    p_a, p_r = "P-A-T3", "P-R-T3"
+                    tc.persist_session({"access_token": p_a, "refresh_token": p_r,
+                                        "center_uid": "1"}, "HTDEV-B28A-T3B")
+                    outcome["ok"] = True
+                except tc.TajiduoError as e:
+                    outcome["auth"], outcome["msg"] = e.auth, str(e)
+
+            t2 = threading.Thread(target=persist_worker, daemon=True)
+            t2.start()
+            time_mod.sleep(0.2)  # settle：先例口径
+            assert outcome == {}, "persist 必须被 path 锁阻塞（互斥）"
+            os.remove(tc.TOKEN_FILE)  # 锁内删除＝logout 临界区语义（同锁互斥）
+            lock.release()
+            held = False
+            t2.join(10)
+            assert not t2.is_alive(), "persist 线程超时未返回（疑似死锁）"
+            assert outcome.get("auth") is True and "凭据已删除" in outcome.get("msg", ""), \
+                outcome
+            assert not os.path.exists(tc.TOKEN_FILE), "persist 拒绝后文件不得出现"
+            assert os.listdir(tmp) == [], f"Sub-B 零残留: {os.listdir(tmp)}"
+        finally:
+            if held:
+                lock.release()
+            _ug.open_pinned = orig_open
+            tc.TOKEN_FILE = orig_file
+
+
+@case
+def test_tjd01_concurrent_sync_refresh_serialized():
+    """④并发双 sync 恢复链互斥（CONC-05 视角）：refreshToken 一次性轮换桩
+    （同旧值第二次续期必被拒＝服务端语义；重登顶掉其它会话＝_relogin_via_laohu
+    文档语义）——_AUTH_LOCK 串行化后两链不互踩：事件序断言「后到者首个恢复动作
+    晚于先到者数据重试成功」；输掉一次性轮换的一方走 laohu 重登重试成功；
+    终局落盘 refreshToken 必须是服务端现行有效值（输掉会话不得落盘）；双 sync
+    均成功、硬截止内完成（无死锁）。"""
+    from app import tajiduo_client as tc
+    from app import url_guard as _ug
+    import tempfile
+    import threading
+    os.makedirs(".tmp", exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="tjd01_s4_", dir=".tmp") as tmp:
+        orig_file, orig_dump = tc.TOKEN_FILE, tc.LAST_PAYLOAD_FILE
+        orig_cls = tc.TajiduoClient
+        orig_open = _ug.open_pinned
+
+        def _no_net(url, **kwargs):
+            raise AssertionError(f"B2.8-A 用例必须离线：open_pinned 被真实调用 {url}")
+
+        _ug.open_pinned = _no_net  # 炸弹桩：任何真实出站立即失败（防打桩遗漏）
+        tc.TOKEN_FILE = _safe_path(tmp, "tajiduo_token.json")
+        tc.LAST_PAYLOAD_FILE = _safe_path(tmp, "tajiduo_last_payload.json")
+        rt1 = "RT1"
+        server = {"valid_refresh": {rt1}, "valid_access": set(), "next": 2}
+        events = []  # (kind, device_id) 恢复链事件序（判定只依赖先后顺序）
+        ev_guard = threading.Lock()
+
+        class _RotStub:
+            """TajiduoClient 顶替桩（先例 :5333）：roles 只认服务端现行 access；
+            refresh 一次性轮换（旧值即拒）；user_center_login 重登发新会话并顶掉
+            其它会话。离线零请求。"""
+            def __init__(self, device_id, access_token="", refresh_token="",
+                         center_uid=""):
+                self.device_id = device_id
+                self.access_token = access_token or "AT1"
+                self.refresh_token = refresh_token or "RT1"
+                self.center_uid = center_uid or "42"
+
+            def get_game_roles(self, game_id):
+                if self.access_token in server["valid_access"]:
+                    with ev_guard:
+                        events.append(("roles-ok", self.device_id))
+                    return [{"roleId": "r1", "roleName": "旅行者",
+                             "serverName": "测试服", "lev": 60}]
+                raise tc.TajiduoError("[/getGameRoles] FAILED TO TOUCH", auth=True)
+
+            def refresh_session(self):
+                with ev_guard:
+                    events.append(("refresh-enter", self.device_id))
+                if self.refresh_token not in server["valid_refresh"]:
+                    with ev_guard:
+                        events.append(("refresh-reject", self.device_id))
+                    raise tc.TajiduoError("refreshToken 已被一次性轮换作废", auth=True)
+                server["valid_refresh"].discard(self.refresh_token)
+                n = server["next"]
+                server["next"] = n + 1
+                new_r, new_a = f"RT{n}", f"AT{n}"
+                server["valid_refresh"].add(new_r)
+                server["valid_access"] = {new_a}  # 严格轮换：旧 access 即死
+                self.access_token, self.refresh_token = new_a, new_r
+                with ev_guard:
+                    events.append(("refresh-ok", self.device_id))
+                return {"access_token": new_a, "refresh_token": new_r,
+                        "center_uid": "42"}
+
+            def user_center_login(self, laohu_token, laohu_user_id):
+                with ev_guard:
+                    events.append(("relogin", self.device_id))
+                n = server["next"]
+                server["next"] = n + 1
+                new_r, new_a = f"RT{n}", f"AT{n}"
+                server["valid_refresh"].clear()
+                server["valid_refresh"].add(new_r)  # 重登顶掉其它会话（文档语义）
+                server["valid_access"] = {new_a}
+                self.access_token, self.refresh_token = new_a, new_r
+                return {"access_token": new_a, "refresh_token": new_r,
+                        "center_uid": "42"}
+
+            def get_role_home(self, role_id):
+                return {}
+
+            def get_role_characters(self, role_id):
+                return []
+
+        tc.TajiduoClient = _RotStub  # _relogin_via_laohu 内部 TajiduoClient(device_id)
+        # 同步顶替（先例 :5333）——漏 patch 会走到真实类触网（首轮直调实证教训）
+
+        def sync_worker(tag, barrier, out):
+            try:
+                barrier.wait(30)
+                res = tc.sync_all(_RotStub(tag))
+                out[tag] = {"ok": True, "roles": len(res["roles"])}
+            except BaseException as e:
+                out[tag] = {"ok": False, "err": f"{type(e).__name__}: {e}"}
+
+        a1, r1 = "AT1", "RT1"
+        tc.save_token_store(_tjd01_store("HT-A", a1, r1,
+                                         laohu=("LAOHU-T-S4", "42")))
+        results = {}
+        barrier = threading.Barrier(3, timeout=30)
+        ta = threading.Thread(target=sync_worker, args=("HT-A", barrier, results),
+                              daemon=True)
+        tb = threading.Thread(target=sync_worker, args=("HT-B", barrier, results),
+                              daemon=True)
+        ta.start()
+        tb.start()
+        try:
+            barrier.wait(30)
+            ta.join(30)
+            tb.join(30)
+            assert not ta.is_alive() and not tb.is_alive(), \
+                "并发双 sync 超时未返回（疑似死锁/霸锁）"
+            assert len(results) == 2 and all(v.get("ok") for v in results.values()), \
+                f"双 sync 必须都成功: {results}"
+            assert events and events[0][0] == "refresh-enter", events
+            first = events[0][1]
+            second = "HT-B" if first == "HT-A" else "HT-A"
+            assert ("refresh-ok", first) in events \
+                and ("roles-ok", first) in events, events
+            assert ("refresh-reject", second) in events, events  # 一次性轮换拒旧值
+            # 败方走 laohu 重登（relogin 客户端 device_id 由 store 派生＝first 的
+            # 值，事件不按 second 归属——以「reject(second) < relogin <
+            # roles-ok(second)」事件序判定）
+            relogin_idx = [i for i, (kind, _t) in enumerate(events)
+                           if kind == "relogin"]
+            assert len(relogin_idx) == 1, events
+            idx_reject = events.index(("refresh-reject", second))
+            idx_ok_second = events.index(("roles-ok", second))
+            assert idx_reject < relogin_idx[0] < idx_ok_second, \
+                f"败方未走 laohu 重登即耗尽（事件序）: {events}"
+            idx_first_ok = events.index(("roles-ok", first))
+            idx_second_enter = events.index(("refresh-enter", second))
+            assert idx_second_enter > idx_first_ok, \
+                f"恢复链未串行化（后到者抢先进入＝互踩）: {events}"
+            store = tc.load_token_store()
+            assert store is not None \
+                and store["refresh_token"] in server["valid_refresh"], \
+                f"输掉会话落盘＝互踩回归: {store} vs {server['valid_refresh']}"
+            assert store["access_token"] in server["valid_access"], store
+        finally:
+            _ug.open_pinned = orig_open
+            tc.TOKEN_FILE, tc.LAST_PAYLOAD_FILE = orig_file, orig_dump
+            tc.TajiduoClient = orig_cls
+
+
+@case
+def test_tjd01_normal_sync_persist_regression():
+    """⑤正常回归：文件在场的常规续期写回（gate 放行路径）与修复前逐字段一致
+    ——轮换后双 token 落盘、bound_at/laohu 根凭据保留、schema=1、sync 成功、
+    refresh 恰一次；写回同 save_json_atomic 形（含 .bak）且零 tmp 残留。"""
+    from app import tajiduo_client as tc
+    from app import url_guard as _ug
+    import tempfile
+    os.makedirs(".tmp", exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="tjd01_s5_", dir=".tmp") as tmp:
+        orig_file, orig_dump = tc.TOKEN_FILE, tc.LAST_PAYLOAD_FILE
+        orig_open = _ug.open_pinned
+
+        def _no_net(url, **kwargs):
+            raise AssertionError(f"B2.8-A 用例必须离线：open_pinned 被真实调用 {url}")
+
+        _ug.open_pinned = _no_net  # 炸弹桩：任何真实出站立即失败
+        tc.TOKEN_FILE = _safe_path(tmp, "tajiduo_token.json")
+        tc.LAST_PAYLOAD_FILE = _safe_path(tmp, "tajiduo_last_payload.json")
+        try:
+            old_a, old_r = "A5-OLD", "R5-OLD"
+            tc.save_token_store(_tjd01_store("HTDEV-B28A-T5", old_a, old_r,
+                                             laohu=("LAOHU-T5", "42"),
+                                             bound_at="2026-11-16 10:00:00"))
+            calls = {"roles": 0, "refresh": 0}
+
+            class _OkClient:
+                device_id = "HTDEV-B28A-T5"
+
+                def get_game_roles(self, game_id):
+                    calls["roles"] += 1
+                    if calls["roles"] == 1:
+                        raise tc.TajiduoError("登录已过期", auth=True)
+                    return [{"roleId": "r5", "roleName": "旅行者",
+                             "serverName": "测试服", "lev": 60}]
+
+                def refresh_session(self):
+                    calls["refresh"] += 1
+                    new_a, new_r = "A5-NEW", "R5-NEW"
+                    return {"access_token": new_a, "refresh_token": new_r,
+                            "center_uid": "42"}
+
+                def get_role_home(self, role_id):
+                    return {"roleid": role_id, "rolename": "旅行者", "lev": 60}
+
+                def get_role_characters(self, role_id):
+                    return []
+
+            result = tc.sync_all(_OkClient())
+            assert calls == {"roles": 2, "refresh": 1}, calls  # 续期恰一次
+            store = tc.load_token_store()
+            new_a, new_r = "A5-NEW", "R5-NEW"
+            assert store["access_token"] == new_a \
+                and store["refresh_token"] == new_r, store  # 轮换落盘
+            assert store["bound_at"] == "2026-11-16 10:00:00", store  # 绑定时间不丢
+            assert store["laohu_token"] == "LAOHU-T5" \
+                and store["laohu_user_id"] == "42", store  # 根凭据不丢
+            assert store["schema"] == 1 \
+                and store["device_id"] == "HTDEV-B28A-T5", store
+            assert result["rows"] == [] \
+                and result["roles"][0]["roleId"] == "r5", result
+            assert os.path.exists(tc.TOKEN_FILE + ".bak"), \
+                "写回应与 save_json_atomic 同形（含 .bak 备份）"
+            residue = [n for n in os.listdir(tmp)
+                       if n not in ("tajiduo_token.json", "tajiduo_token.json.bak",
+                                    "tajiduo_last_payload.json")]
+            assert residue == [], f"零 tmp 残留: {residue}"
+        finally:
+            _ug.open_pinned = orig_open
+            tc.TOKEN_FILE, tc.LAST_PAYLOAD_FILE = orig_file, orig_dump
+
+
+@case
+def test_tjd01_bind_logout_regression_idempotent():
+    """⑥bind/logout 回归：首绑创建文件走 save_token_store（无 gate——创建点只属
+    bind，main.py:2511）→ 文件出现可读；persist 对在场文件照常写回且不丢
+    laohu 根凭据；logout（clear_token_store）删干净；连续三次 logout 幂等不抛、
+    零残留。"""
+    from app import tajiduo_client as tc
+    from app import url_guard as _ug
+    import tempfile
+    os.makedirs(".tmp", exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="tjd01_s6_", dir=".tmp") as tmp:
+        orig_file = tc.TOKEN_FILE
+        orig_open = _ug.open_pinned
+
+        def _no_net(url, **kwargs):
+            raise AssertionError(f"B2.8-A 用例必须离线：open_pinned 被真实调用 {url}")
+
+        _ug.open_pinned = _no_net  # 炸弹桩：任何真实出站立即失败
+        tc.TOKEN_FILE = _safe_path(tmp, "tajiduo_token.json")
+        try:
+            # 首绑（文件不存在）：bind 路由同款 save_token_store 调用
+            assert tc.load_token_store() is None
+            bind_a, bind_r = "BIND-A-T6", "BIND-R-T6"
+            tc.save_token_store(_tjd01_store("HTDEV-BIND-T6", bind_a, bind_r,
+                                             uid="9", laohu=("LAOHU-BIND", "9"),
+                                             bound_at="2026-11-17 08:00:00"))
+            store = tc.load_token_store()
+            assert store["access_token"] == bind_a \
+                and store["schema"] == 1, store  # 首绑创建不受 gate 影响
+            # 在场文件上的 persist 照常写回（gate 放行路径）
+            bind_a2, bind_r2 = "BIND-A2-T6", "BIND-R2-T6"
+            tc.persist_session({"access_token": bind_a2, "refresh_token": bind_r2,
+                                "center_uid": "9"}, "HTDEV-BIND-T6")
+            store = tc.load_token_store()
+            assert store["access_token"] == bind_a2, store
+            assert store["laohu_token"] == "LAOHU-BIND", store  # 写回不丢根凭据
+            assert store["bound_at"] == "2026-11-17 08:00:00", store
+            # logout 三连：幂等（第二次起文件已不存在，照旧不抛）
+            for _ in range(3):
+                tc.clear_token_store()
+            assert tc.load_token_store() is None
+            assert os.listdir(tmp) == [], f"零 tmp 残留: {os.listdir(tmp)}"
+        finally:
+            _ug.open_pinned = orig_open
+            tc.TOKEN_FILE = orig_file
+
+
+@case
+def test_tjd01_sync_bind_concurrency_no_deadlock():
+    """⑦sync×bind 并发行为明确：bind 持真实 main._TJD_LOCK 走 save_token_store
+    （路由 main.py:2500/:2511 同构），sync 走恢复链 _AUTH_LOCK→persist 写回
+    （_path_lock）——锁序单向 main._TJD_LOCK → client._AUTH_LOCK →
+    state._path_lock 无环，硬截止内双方完成（无死锁）；终局文件必为合法 JSON、
+    schema=1、必填三键齐全，且 access/refresh/device 三元组属同一完整会话
+    （原子发布 last-writer-wins，无半截混写＝无凭据损坏）、零 tmp 残留。"""
+    from app import tajiduo_client as tc
+    from app import main as main_mod
+    from app import url_guard as _ug
+    import tempfile
+    import threading
+    os.makedirs(".tmp", exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="tjd01_s7_", dir=".tmp") as tmp:
+        orig_file, orig_dump = tc.TOKEN_FILE, tc.LAST_PAYLOAD_FILE
+        orig_open = _ug.open_pinned
+
+        def _no_net(url, **kwargs):
+            raise AssertionError(f"B2.8-A 用例必须离线：open_pinned 被真实调用 {url}")
+
+        _ug.open_pinned = _no_net  # 炸弹桩：任何真实出站立即失败
+        tc.TOKEN_FILE = _safe_path(tmp, "tajiduo_token.json")
+        tc.LAST_PAYLOAD_FILE = _safe_path(tmp, "tajiduo_last_payload.json")
+        try:
+            old_a, old_r = "T7-A-OLD", "T7-R-OLD"
+            tc.save_token_store(_tjd01_store("HTDEV-B28A-T7", old_a, old_r,
+                                             laohu=("LAOHU-T7", "42")))
+            calls = {"roles": 0}
+
+            class _SyncStub:
+                device_id = "HTDEV-B28A-T7"
+
+                def get_game_roles(self, game_id):
+                    calls["roles"] += 1
+                    if calls["roles"] == 1:
+                        raise tc.TajiduoError("登录已过期", auth=True)
+                    return [{"roleId": "r7", "roleName": "旅行者",
+                             "serverName": "测试服", "lev": 60}]
+
+                def refresh_session(self):
+                    sync_a, sync_r = "T7-A-SYNC", "T7-R-SYNC"
+                    return {"access_token": sync_a, "refresh_token": sync_r,
+                            "center_uid": "42"}
+
+                def get_role_home(self, role_id):
+                    return {}
+
+                def get_role_characters(self, role_id):
+                    return []
+
+            out = {}
+
+            def bind_worker(barrier):
+                try:
+                    barrier.wait(30)
+                    with main_mod._TJD_LOCK:  # bind 路由同构（main.py:2500）
+                        bind_a, bind_r = "T7-A-BIND", "T7-R-BIND"
+                        tc.save_token_store(_tjd01_store(
+                            "HTDEV-BIND-T7", bind_a, bind_r, uid="9",
+                            laohu=("LAOHU-BIND-T7", "9"),
+                            bound_at="2026-11-17 08:00:00"))  # main.py:2511 同款
+                    out["bind"] = "ok"
+                except BaseException as e:
+                    out["bind"] = f"{type(e).__name__}: {e}"
+
+            def sync_worker(barrier):
+                try:
+                    barrier.wait(30)
+                    tc.sync_all(_SyncStub())
+                    out["sync"] = "ok"
+                except BaseException as e:
+                    out["sync"] = f"{type(e).__name__}: {e}"
+
+            barrier = threading.Barrier(3, timeout=30)
+            tb = threading.Thread(target=bind_worker, args=(barrier,), daemon=True)
+            ts = threading.Thread(target=sync_worker, args=(barrier,), daemon=True)
+            tb.start()
+            ts.start()
+            barrier.wait(30)
+            tb.join(30)
+            ts.join(30)
+            assert not tb.is_alive() and not ts.is_alive(), \
+                "sync/bind 并发超时未返回（疑似死锁）"
+            assert out.get("bind") == "ok" and out.get("sync") == "ok", out
+            store = tc.load_token_store()
+            assert store is not None and store.get("schema") == 1, store
+            for key in ("device_id", "access_token", "refresh_token"):
+                assert store.get(key), f"必填键缺失（凭据损坏面）: {key} in {store}"
+            bind_a, sync_a = "T7-A-BIND", "T7-A-SYNC"
+            assert store["access_token"] in (bind_a, sync_a), \
+                f"终局会话必属 bind/sync 之一: {store}"
+            if store["access_token"] == bind_a:
+                assert store["refresh_token"] == "T7-R-BIND" \
+                    and store["device_id"] == "HTDEV-BIND-T7", store
+            else:
+                assert store["refresh_token"] == "T7-R-SYNC" \
+                    and store["device_id"] == "HTDEV-B28A-T7", store
+            residue = [n for n in os.listdir(tmp)
+                       if n not in ("tajiduo_token.json", "tajiduo_token.json.bak",
+                                    "tajiduo_last_payload.json")]
+            assert residue == [], f"零 tmp 残留: {residue}"
+        finally:
+            _ug.open_pinned = orig_open
+            tc.TOKEN_FILE, tc.LAST_PAYLOAD_FILE = orig_file, orig_dump
 
 
 @case

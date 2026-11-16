@@ -2445,9 +2445,17 @@ if ($target -ne [IntPtr]::Zero) {
 _TJD_PENDING = {"phone": "", "device": None, "at": 0.0}  # 发码→绑定间的设备连续性
 _TJD_PENDING_TTL = 600  # 10 分钟内未绑定即作废（需重新发码）
 _TJD_LOCK = threading.Lock()  # send-captcha(:2482)/bind(:2497)/logout(:3705)/sync-gacha(:2904) 串行
-# （防并发绑定与抽卡存档竞态）；注意 sync(:3649)/apply(:3693) 两路由现未持此锁
-# （TJD-01 披露的文档漂移）——若补锁必须 TJD 外层、STATE.lock 内层（apply 链路
-# 现写法先取 STATE.lock，main.py:2582），防锁序反向死锁
+# （防并发绑定与抽卡存档竞态）；sync(:3652)/apply(:3696) 两路由不持此锁——
+# TJD-01 已按 B2.8-A 用户裁定方案（2026-11-17）在 client 层收口，不在路由层补
+# 整段 _TJD_LOCK：「登出后凭据复活」由 tajiduo_client.persist_session 写回边界
+# 守卫消除（全程持 state._path_lock，写回前查文件在否——已删即抛 auth 类
+# 「凭据已删除」错误让 sync 得 needs_rebind，绝不新建文件）；「并发双 sync
+# 恢复链互踩」由 tajiduo_client._AUTH_LOCK 消除（_recover_auth 全程串行，锁内
+# 网络请求有界 ≤2 请求×20 秒）。锁序单向无环：main._TJD_LOCK（bind/logout/
+# sync-gacha）→ client._AUTH_LOCK → state._path_lock（per-path 叶锁）；本层
+# 同步/apply 不持 _TJD_LOCK 不会与之成环。apply 链路现写法先取 STATE.lock
+# （weapon 登记 main.py:2585、行写入 :2712）——未来若给 apply 补 TJD 锁仍必须
+# TJD 外层、STATE.lock 内层，防锁序反向死锁。
 
 
 def _tajiduo_mask_uid(uid):
