@@ -48,6 +48,10 @@ ALLOWED_HOSTS = ("ntestrategy.com", "wiki.mysqil.com", "everness.info", "nte.nan
   `commit` + `push origin main`，**删除"提示用户手动推送"回退条款**——推送凭据失败时代理
   自行经 Windows 凭据管理器 GitHub Desktop 条目（target 形如 `GitHub - ...`，`gho_` token，
   CredRead 进程内使用、不落盘不回显）解决，不改用户 git 配置、不把 token 写入任何文件或命令行。
+  **凭据使用边界（硬性）**：该 token 仅可用于对 `github.com`/`api.github.com` 本仓库的
+  git 认证与仓库设置 API；仅经环境变量/stdin 管道传递（禁止 URL 内嵌凭据
+  `https://<token>@github.com/...` 形式）；禁止写入文件、提交内容、日志或对话输出；
+  禁止用于任何其他主机或服务；任何其他出站请求一律不得携带该凭据。
   `audit/`（审计报告，含未修复项披露）、`.tmp/`、`.testarchive/`、`dist/` 不入库；敏感文件永不提交。
   **推送前数据安全三查（SEC-09 教训固化，2026-11-17 历史 filter-repo 清洗 9 路径的直接动因，
   强制执行，缺一不推）**：
