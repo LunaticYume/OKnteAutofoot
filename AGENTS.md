@@ -44,10 +44,27 @@ ALLOWED_HOSTS = ("ntestrategy.com", "wiki.mysqil.com", "everness.info", "nte.nan
 
 ## 其他协作约束
 
-- **git 提交与推送（2026-11-13 用户授权更新）**：每轮修复完成后由代理直接
-  `commit` + `push origin main`；推送前必须确认 `.gitignore` 覆盖全部个人数据/
-  凭据/运行时文件，且 `audit/`（审计报告，含未修复项披露）不入库；敏感文件永不
-  提交；推送若因凭据交互授权失败，提示用户在终端执行一次。
+- **git 提交与推送（2026-11-17 用户授权更新，替代 2026-11-13 版）**：每轮修复完成后由代理直接
+  `commit` + `push origin main`，**删除"提示用户手动推送"回退条款**——推送凭据失败时代理
+  自行经 Windows 凭据管理器 GitHub Desktop 条目（target 形如 `GitHub - ...`，`gho_` token，
+  CredRead 进程内使用、不落盘不回显）解决，不改用户 git 配置、不把 token 写入任何文件或命令行。
+  `audit/`（审计报告，含未修复项披露）、`.tmp/`、`.testarchive/`、`dist/` 不入库；敏感文件永不提交。
+  **推送前数据安全三查（SEC-09 教训固化，2026-11-17 历史 filter-repo 清洗 9 路径的直接动因，
+  强制执行，缺一不推）**：
+  1. `git status --porcelain` 逐行核对——暂存/未暂存只允许本批预期文件，任何计划外文件先查清来源再动；
+  2. 推送前 `git log origin/main..HEAD --stat` 扫描全部待推提交的路径，命中下方黑名单任一
+     **立即停止推送并报告**，已误提交的不得推送、先在本轮撤销；
+  3. 新增会写个人数据/凭据/运行时文件的代码路径，必须**先补 `.gitignore` 再提交代码**
+     （ignore 先于代码入库）。
+  **data/ 白名单制**：仅现役被跟踪的 13 个数据表/缓存文件（`git ls-files data/` 核对：数据表、
+  `mysqil/` 快照、`sites/source_crosscheck.json`）可变更入库；data/ 下任何新文件默认=运行时
+  个人产物，禁止提交，除非用户明确裁定为数据表更新且核对无个人字段。
+  **永不入库黑名单（历史清洗对象，再次入库=事故）**：`data/state.json`（含 `.bak`）、
+  `data/runtime.json`（含 `.bak`）、`data/backups/`、data/ 下一切 `*.bak` 与时间戳快照、
+  `data/game_data_custom.json`、`data/panel_token.json`、`data/tajiduo_token.json`、
+  `data/elev_helper_config-*.json`、`data/elev_helper_endpoint-*.json`、面板/OCR/headless
+  运行日志（`*.log`）、设备指纹与 OCR 夹具文件；新增运行时落盘文件时同步扩充本清单与
+  `.gitignore`。
 - **不碰 `app/web/index.html`** 之外的约定：纯后端/数据任务不得改动前端页面。
 - 写文件一律 `pathlib` / 仓库 `save_json_atomic`；落盘前对被覆盖数据做 `.bak` 备份。
 - **测试临时目录卫生（2026-11-13 追加，保持 C 盘干净）**：隔离实验/测试的临时目录
