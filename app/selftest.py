@@ -3248,6 +3248,142 @@ def test_planner_upstream_cap_and_cumulative_target():
             assert [e["id"] for e in items if e.get("enabled")] == ["daily_anomaly"], items
 
 
+# ---------- B2.8-C（BIZ-01）：单一权威额度——preview 与 make_plan 共享 cap ----------
+
+@case
+def test_biz01_effective_limit_matrix():
+    """①矩阵：limit∈{80,180,360,0,99999} → _effective_daily_limit 逐一命中
+    max(0, min(limit, 180))，且 make_plan budget_total 与 preview 逐日 budget
+    两侧同步取同一有效额度（单一权威取值，无第二套额度规则）。"""
+    with _StateGuard():
+        STATE.data["today"] = _day_today()
+        STATE.data["inventory"] = {}
+        STATE.data["characters"] = [_char("c1", "矩阵角色", {"coin": 21})]
+        want = {80: 80, 180: 180, 360: 180, 0: 0, 99999: 180}
+        for limit, eff in want.items():
+            assert planner._effective_daily_limit(limit) == eff, (limit, eff)
+            STATE.data["settings"] = dict(DEFAULT_SETTINGS, daily_stamina_limit=limit)
+            plan = planner.make_plan(now=NOW)
+            pv = planner.preview_days(2, now=NOW)
+            assert plan["detail"]["budget_total"] == eff, (limit, plan["detail"])
+            assert [d["budget"] for d in pv["days"]] == [eff, eff], (limit, pv["days"])
+
+
+@case
+def test_biz01_preview_make_plan_reconcile():
+    """②同输入对账：preview 每日 budget ≤ make_plan budget_total 且 ≤ 上游上限；
+    cap 被改时两侧同步取值（共享权威常量，非各自硬编码）；cap monkeypatch 全程
+    try/finally（B2.8-C 修复 :2290 内联恢复泄漏形态，既有用例本身不动）。"""
+    with _StateGuard():
+        STATE.data["today"] = _day_today()
+        STATE.data["inventory"] = {}
+        STATE.data["characters"] = [_char("c1", "对账角色", {"coin": 21})]
+        for limit in (80, 360):
+            STATE.data["settings"] = dict(DEFAULT_SETTINGS, daily_stamina_limit=limit)
+            plan = planner.make_plan(now=NOW)
+            pv = planner.preview_days(3, now=NOW)
+            assert plan["detail"]["budget_total"] == planner._effective_daily_limit(limit), \
+                (limit, plan["detail"])
+            for d in pv["days"]:
+                assert d["budget"] <= plan["detail"]["budget_total"], (limit, d)
+                assert d["budget"] <= planner.UPSTREAM_DAILY_CAP, (limit, d)
+        # cap 改 100：两侧同取 100（排程与预演都经 _effective_daily_limit），
+        # 证明规则只挂在权威常量上，任何一侧都没有第二套硬编码封顶
+        saved_cap = planner.UPSTREAM_DAILY_CAP
+        try:
+            planner.UPSTREAM_DAILY_CAP = 100
+            STATE.data["settings"] = dict(DEFAULT_SETTINGS, daily_stamina_limit=360)
+            plan = planner.make_plan(now=NOW)
+            pv = planner.preview_days(3, now=NOW)
+            assert plan["detail"]["budget_total"] == 100, plan["detail"]
+            assert [d["budget"] for d in pv["days"]] == [100, 100, 100], pv["days"]
+        finally:
+            planner.UPSTREAM_DAILY_CAP = saved_cap
+
+
+@case
+def test_biz01_preview_multiday_capped():
+    """③多日预演：limit=360 → 逐日 budget=[180×N]（修复前 [360×N]），day0 仍扣
+    今日已耗、day1+ 为有效限额；steps/remaining 与 budget 守恒。"""
+    with _StateGuard():
+        STATE.data["settings"] = dict(DEFAULT_SETTINGS, daily_stamina_limit=360)
+        STATE.data["today"] = _day_today()
+        STATE.data["inventory"] = {}
+        STATE.data["characters"] = [_char("c1", "多日角色", {"coin": 21})]
+        pv = planner.preview_days(4, now=NOW)
+        assert [d["budget"] for d in pv["days"]] == [180, 180, 180, 180], pv["days"]
+        d0 = pv["days"][0]
+        assert [(s["mat_id"], s["runs"], s["stamina"]) for s in d0["steps"]] == \
+            [("coin", 3, 120)], d0
+        assert d0["remaining"] == 60 and d0["budget"] - d0["remaining"] == 120, d0
+        d1 = pv["days"][1]
+        assert d1["steps"] == [] and d1["remaining"] == 180, d1
+        assert pv["complete_on"] == DAY, pv["complete_on"]
+        # day0 扣今日已耗：used=100 → day0=80（2轮补不齐）次日续 1 轮收尾
+        STATE.data["today"] = _day_today(used=100)
+        pv2 = planner.preview_days(3, now=NOW)
+        assert [d["budget"] for d in pv2["days"]] == [80, 180, 180], pv2["days"]
+        assert pv2["complete_on"] == "2026-10-25", pv2["complete_on"]
+        # used 超过有效额度 → day0 钳 0、day1+ 满额（max(0, …) 边界）
+        STATE.data["today"] = _day_today(used=300)
+        pv3 = planner.preview_days(3, now=NOW)
+        assert [d["budget"] for d in pv3["days"]] == [0, 180, 180], pv3["days"]
+
+
+@case
+def test_biz01_preview_cap_warning():
+    """④limit=360 → preview 上限警告与 make_plan 同款措辞逐字在册；limit≤180
+    无此警告；恢复速率警告仍按原始限额 360 评估（审计处方，不随封顶变化）。"""
+    with _StateGuard():
+        STATE.data["settings"] = dict(DEFAULT_SETTINGS, daily_stamina_limit=360,
+                                      stamina_regen_per_hour=2)
+        STATE.data["today"] = _day_today()
+        STATE.data["inventory"] = {}
+        STATE.data["characters"] = [_char("c1", "警告角色", {"coin": 21})]
+        mk = planner.make_plan(now=NOW)
+        cap_ws = [w for w in mk["warnings"] if "超出上游每日上限" in w]
+        assert len(cap_ws) == 1, mk["warnings"]
+        pv = planner.preview_days(2, now=NOW)
+        assert cap_ws[0] in pv["warnings"], pv["warnings"]
+        regen = [w for w in pv["warnings"] if "恢复速率" in w]
+        assert len(regen) == 1 and "低于每日限额 360" in regen[0], pv["warnings"]
+        STATE.data["settings"] = dict(DEFAULT_SETTINGS, daily_stamina_limit=180,
+                                      stamina_regen_per_hour=2)
+        pv180 = planner.preview_days(2, now=NOW)
+        assert not any("超出上游每日上限" in w for w in pv180["warnings"]), \
+            pv180["warnings"]
+
+
+@case
+def test_biz01_preview_make_plan_purity():
+    """⑤纯度不破坏（照用例 4d 口径）：同输入两次完全一致、不改 STATE、不写
+    state.json；修复后的封顶对账点在纯度路径内同样成立。"""
+    with _StateGuard():
+        STATE.data["settings"] = dict(DEFAULT_SETTINGS, daily_stamina_limit=360)
+        STATE.data["today"] = _day_today()
+        STATE.data["inventory"] = {}
+        STATE.data["characters"] = [_char("c1", "纯度角色", {"coin": 21})]
+        before = copy.deepcopy(STATE.data)
+        state_existed = os.path.isfile(STATE_FILE)
+        raw = None
+        if state_existed:
+            with open(STATE_FILE, "rb") as f:
+                raw = f.read()
+        p1 = planner.make_plan(now=NOW)
+        v1 = planner.preview_days(4, now=NOW)
+        p2 = planner.make_plan(now=NOW)
+        v2 = planner.preview_days(4, now=NOW)
+        assert p1 == p2 and v1 == v2, "同输入两次必须完全一致"
+        assert copy.deepcopy(STATE.data) == before, "make_plan/preview_days 不得修改 STATE"
+        if state_existed:
+            with open(STATE_FILE, "rb") as f:
+                assert f.read() == raw, "make_plan/preview_days 不得写 state.json"
+        else:
+            assert not os.path.isfile(STATE_FILE), "不得新建 state.json"
+        assert p1["detail"]["budget_total"] == 180, p1["detail"]
+        assert all(d["budget"] <= 180 for d in v1["days"]), v1["days"]
+
+
 # ---------- 回归：v3 迁移 / sanitize 修复 / 重排 / 重名互斥 / 体力同池（本轮修复） ----------
 
 @case

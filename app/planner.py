@@ -12,6 +12,13 @@ from .state import DATA_DIR, STATE
 # 活跃度满即跳过——每日限额超出 180 的部分上游永远不可达（真机实证）。
 UPSTREAM_DAILY_CAP = 180
 
+
+def _effective_daily_limit(limit):
+    """单一权威额度规则（BIZ-01/B2.8-C 用户裁定）：preview 与 make_plan 共享 cap，
+    不得引入第二套额度规则——每日有效额度一律取 max(0, min(limit, UPSTREAM_DAILY_CAP))，
+    排程与预演两侧都经本函数取值，禁止任何一侧绕过另行封顶。"""
+    return max(0, min(limit, UPSTREAM_DAILY_CAP))
+
 GENERIC_TO_ID = {
     "exp_char": "exp_char",
     "exp_arc": "exp_arc",
@@ -504,7 +511,7 @@ def make_plan(oknte=None, now=None, plan_targets=None):
     # 上游硬上限（BaseStaminaTask.DAILY_STAMINA_REQUIREMENT=180 + 活跃度满即跳过）：
     # 限额超出 180 的部分上游永远不可达——排程封顶并显式警告，而不是让面板数字与
     # 真实可刷量对不上（真机反馈：限额 360 只能刷到 180）。
-    upstream_cap = min(limit, UPSTREAM_DAILY_CAP)
+    upstream_cap = _effective_daily_limit(limit)
     if limit > 180:
         warnings.append(
             f"每日限额 {limit} 超出上游每日上限 180（体力/活跃度达标即跳过），"
@@ -680,9 +687,13 @@ def projected_stamina(now=None):
 def preview_days(days=3, now=None):
     """未来 N 天计划推演（纯读、确定性、注入时钟；不改 STATE）。
 
-    模型（诚实边界）：第 0 天额度 = 限额 − 今日已耗（与 make_plan 同口径；
-    追猎自阶段13 起独立记账独立额度，日常预演不再扣减预留）；第 1..N-1 天额度 = 限额
-    （假设体力自然恢复足以支撑每日限额；若 恢复速率×24 < 限额会给出警告）。
+    单一权威额度规则（BIZ-01/B2.8-C 用户裁定）：预演与 make_plan 共享同一上游封顶
+    （UPSTREAM_DAILY_CAP=180），逐日额度一律取 _effective_daily_limit(limit)，
+    不引入第二套额度规则——限额超出 180 的部分两侧同样按不可达处理并给出同款警告；
+    恢复速率警告仍按原始限额评估（审计处方，不随封顶变化）。
+    模型（诚实边界）：第 0 天额度 = 有效限额 − 今日已耗（与 make_plan 同口径；
+    追猎自阶段13 起独立记账独立额度，日常预演不再扣减预留）；第 1..N-1 天额度 =
+    有效限额（假设体力自然恢复足以支撑每日限额；若 恢复速率×24 < 限额会给出警告）。
     库存按预计产出虚拟累加，逐日按优先级顺序补齐，与 make_plan 同一贪心。
     返回 {days:[{date,budget,steps,remaining}], projected_stamina_now,
           complete_on(首个全部达标日或 None), warnings}。
@@ -692,6 +703,13 @@ def preview_days(days=3, now=None):
     warnings = []
     settings = STATE.settings
     limit = max(0, int(settings.get("daily_stamina_limit", 180) or 0))
+    # 单一权威额度规则（BIZ-01/B2.8-C）：预演逐日额度与 make_plan 共享同一封顶，
+    # 超限部分同样显式警告（与 make_plan 同款措辞），绝不静默放大可刷量。
+    eff = _effective_daily_limit(limit)
+    if limit > UPSTREAM_DAILY_CAP:
+        warnings.append(
+            f"每日限额 {limit} 超出上游每日上限 180（体力/活跃度达标即跳过），"
+            f"实际最多可刷 180 体力；多出的 {limit - 180} 体力上游不可达")
     rate = max(0.0, float(settings.get("stamina_regen_per_hour") or 0))
     cap = max(1.0, float(settings.get("stamina_cap") or 320))
     if rate > 0 and rate * 24 < limit:
@@ -713,7 +731,7 @@ def preview_days(days=3, now=None):
     complete_on = None
     for offset in range(days):
         date = (datetime.strptime(day0, "%Y-%m-%d") + timedelta(days=offset)).strftime("%Y-%m-%d")
-        budget = max(0, limit - used if offset == 0 else limit)
+        budget = max(0, eff - used if offset == 0 else eff)
         steps = []
         for item in _ordered_gaps(snapshot_from_inventory(virtual, snap)):
             mat_id = item["mat_id"]
@@ -740,7 +758,7 @@ def preview_days(days=3, now=None):
         if remaining_gaps == [] and complete_on is None:
             complete_on = date
         per_day.append({"date": date,
-                        "budget": max(0, limit - used if offset == 0 else limit),
+                        "budget": max(0, eff - used if offset == 0 else eff),
                         "steps": steps, "remaining": budget,
                         "open_gaps": len(remaining_gaps)})
     return {"days": per_day,
