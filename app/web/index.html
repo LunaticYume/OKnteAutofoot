@@ -3007,7 +3007,7 @@ async function renderUpgradeBlock(host){
     btn.onclick=async()=>{ btn.disabled=true; btn.textContent="拉取中…（27 个角色，约 1 分钟）";
       try{ const fr=await fetch("/api/wiki/fetch-upgrades",{method:"POST",headers:AUTH_HEADERS,signal:AbortSignal.timeout(180000)});
         const d=await fr.json();
-        toast(d.ok?`已抓取 ${d.count} 个角色`:(d.error||"拉取失败"), d.ok?"ok":"err");
+        toast(d.ok?((d.failed||[]).length?`已抓取 ${d.count} 个角色，${(d.failed||[]).length} 个失败沿用旧数据`:`已抓取 ${d.count} 个角色`):(d.error||"拉取失败"), d.ok?((d.failed||[]).length?"err":"ok"):"err");  // B2.8-B FETCH-01：partial（failed>0）提示沿用旧数据（err 样式），全成功保持原文案
         UPGRADES_CACHE = undefined; renderUpgradeBlock(host);
       }catch(e){alertErr(e); btn.disabled=false; btn.textContent="🌐 从 wiki 拉取全部角色数据（约 1 分钟）";}
     };

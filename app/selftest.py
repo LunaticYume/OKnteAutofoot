@@ -10914,6 +10914,355 @@ def test_elev_stale_sweep():
         assert not round_cfg.exists(), "无 keep 保护时旧孤儿照删"
 
 
+# ---------- B2.8-B（FETCH-01）：upgrades 有限合并——失败 slug 沿用旧条目 + failed 透出 + toast partial（2026-11-17） ----------
+# 桩形态（沿本文件既有先例：模块函数替换 + try/finally 还原 + 临时根一律仓库内
+# .tmp/ 显式 dir=）：逐例替换 wf.UPGRADES_JSON / wf.fetch_character_upgrade /
+# wf.save_json_atomic / wf._character_slugs_from_sitemap 并在 finally 还原；
+# 全程离线绝不触网，绝不触碰 data/mysqil/ 真实数据。语义裁定=用户方案 B：
+# 部分成功落盘「成功 ∪ 仅 attempted∧failed 沿用旧条目」（同仓先例
+# app/sites_fetch.py:616-620 _replace_source_entries 失败保旧）；全失败/空抓取
+# 不落盘（修复前 S2-C3 字节不变口径保持不变）；退役角色不并入落盘（无僵尸）。
+# 预置旧档/字节对照一律 pathlib 写读。
+
+def _fetch01_entry(slug, marker):
+    """构造 upgrades 条目（marker 供断言区分旧档/新抓）。"""
+    return {"slug": slug, "name": "名-" + slug, "marker": marker, "skills": [],
+            "ascension": [], "materials": {}, "city_talents": []}
+
+
+def _fetch01_preset(upg, chars):
+    """预置旧档 upgrades.json（pathlib 写入，格式对齐 save_json_atomic）。"""
+    upg.write_text(json.dumps({"fetched_at": "2026-01-01 00:00:00",
+                               "characters": chars},
+                              ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _fetch01_redirect(wf, upg):
+    """把 wf.UPGRADES_JSON 重定向到临时目录；返回原值供 finally 还原。"""
+    orig = wf.UPGRADES_JSON
+    wf.UPGRADES_JSON = str(upg)
+    return orig
+
+
+@case
+def test_fetch01_all_success():
+    """FETCH-01 ①全成功：落盘=本轮成功条目、merged_from_failed=0、failed 空、
+    返回 payload 与落盘一致（修复前口径不变）。"""
+    from app import wiki_fetch as wf
+    os.makedirs(".tmp", exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="fetch01_t01_", dir=".tmp") as tmp:
+        upg = Path(tmp, "upgrades.json")
+        orig_json = _fetch01_redirect(wf, upg)
+        orig_fetch = wf.fetch_character_upgrade
+        try:
+            wf.fetch_character_upgrade = lambda slug, timeout=15: \
+                _fetch01_entry(slug, "FRESH")
+            payload, failed = wf.fetch_all_upgrades(slugs=["alpha", "beta"])
+            assert failed == [], failed
+            assert payload["merged_from_failed"] == 0, payload
+            assert set(payload["characters"]) == {"alpha", "beta"}
+            assert all(payload["characters"][s]["marker"] == "FRESH"
+                       for s in ("alpha", "beta"))
+            disk = json.loads(upg.read_text(encoding="utf-8"))
+            assert set(disk["characters"]) == {"alpha", "beta"}
+            assert disk["characters"] == payload["characters"], "落盘与返回一致"
+            assert disk["fetched_at"] == payload["fetched_at"]
+        finally:
+            wf.UPGRADES_JSON = orig_json
+            wf.fetch_character_upgrade = orig_fetch
+
+
+@case
+def test_fetch01_all_fail_no_write():
+    """FETCH-01 ②全失败：不落盘行为不变（修复前复现 S2-C3 对照口径）——主文件
+    字节级保持预置旧档、无 .bak/临时写盘副产物、failed 三条照常透出、返回
+    characters={}（修复前口径）；merged_from_failed=3（旧档在手、盘上自然保留）。"""
+    from app import wiki_fetch as wf
+    os.makedirs(".tmp", exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="fetch01_t02_", dir=".tmp") as tmp:
+        upg = Path(tmp, "upgrades.json")
+        _fetch01_preset(upg, {s: _fetch01_entry(s, "OLD-" + s)
+                              for s in ("alpha", "beta", "gamma")})
+        before = upg.read_bytes()
+        orig_json = _fetch01_redirect(wf, upg)
+        orig_fetch = wf.fetch_character_upgrade
+        try:
+            def _boom(slug, timeout=15):
+                raise ValueError("桩注入失败")
+            wf.fetch_character_upgrade = _boom
+            payload, failed = wf.fetch_all_upgrades(
+                slugs=["alpha", "beta", "gamma"])
+            assert payload["characters"] == {}, payload["characters"]
+            assert payload["merged_from_failed"] == 3, payload
+            assert [f["slug"] for f in failed] == ["alpha", "beta", "gamma"], \
+                failed
+            assert all(f["error"] == "桩注入失败" for f in failed), failed
+            assert upg.read_bytes() == before, "全失败必须字节级不落盘"
+            assert not Path(tmp, "upgrades.json.bak").exists(), "不得产生 .bak"
+            assert not list(Path(tmp).glob("*.tmp")), "不得残留写盘临时副产物"
+        finally:
+            wf.UPGRADES_JSON = orig_json
+            wf.fetch_character_upgrade = orig_fetch
+
+
+@case
+def test_fetch01_partial_merge():
+    """FETCH-01 ③一成一败（修复前复现 S1-A3 核心）：failed slug 旧条目沿用落盘、
+    成功覆盖旧条目；旧档中本轮未触碰的 slug 随落盘掉出（僵尸规避设计）；返回
+    payload 保持仅本轮成功条目（端点 count=本轮新抓数，toast N/M 不相交）。"""
+    from app import wiki_fetch as wf
+    os.makedirs(".tmp", exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="fetch01_t03_", dir=".tmp") as tmp:
+        upg = Path(tmp, "upgrades.json")
+        _fetch01_preset(upg, {s: _fetch01_entry(s, "OLD-" + s)
+                              for s in ("alpha", "beta", "gamma")})
+        orig_json = _fetch01_redirect(wf, upg)
+        orig_fetch = wf.fetch_character_upgrade
+        try:
+            def _stub(slug, timeout=15):
+                if slug == "beta":
+                    raise ValueError("桩注入失败")
+                return _fetch01_entry(slug, "FRESH")
+            wf.fetch_character_upgrade = _stub
+            payload, failed = wf.fetch_all_upgrades(slugs=["alpha", "beta"])
+            assert [f["slug"] for f in failed] == ["beta"], failed
+            assert failed[0]["error"] == "桩注入失败", failed
+            assert set(payload["characters"]) == {"alpha"}, \
+                "返回保持仅本轮成功条目"
+            assert payload["characters"]["alpha"]["marker"] == "FRESH"
+            assert payload["merged_from_failed"] == 1, payload
+            disk = json.loads(upg.read_text(encoding="utf-8"))
+            assert set(disk["characters"]) == {"alpha", "beta"}, \
+                list(disk["characters"])
+            assert disk["characters"]["alpha"]["marker"] == "FRESH", \
+                "成功覆盖旧条目"
+            assert disk["characters"]["beta"]["marker"] == "OLD-beta", \
+                "failed slug 旧条目必须沿用落盘（FETCH-01 核心）"
+            assert "gamma" not in disk["characters"], \
+                "本轮未触碰的 slug 不并入落盘（无僵尸条目）"
+        finally:
+            wf.UPGRADES_JSON = orig_json
+            wf.fetch_character_upgrade = orig_fetch
+
+
+@case
+def test_fetch01_newchar_success_oldchar_fail():
+    """FETCH-01 ④新角色成功+旧角色失败：旧角色条目沿用、新角色入库——沿用与
+    增量双向齐备。"""
+    from app import wiki_fetch as wf
+    os.makedirs(".tmp", exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="fetch01_t04_", dir=".tmp") as tmp:
+        upg = Path(tmp, "upgrades.json")
+        _fetch01_preset(upg,
+                        {"veteran": _fetch01_entry("veteran", "OLD-veteran")})
+        orig_json = _fetch01_redirect(wf, upg)
+        orig_fetch = wf.fetch_character_upgrade
+        try:
+            def _stub(slug, timeout=15):
+                if slug == "veteran":
+                    raise ValueError("桩注入失败")
+                return _fetch01_entry(slug, "FRESH")
+            wf.fetch_character_upgrade = _stub
+            payload, failed = wf.fetch_all_upgrades(
+                slugs=["veteran", "newcomer"])
+            assert [f["slug"] for f in failed] == ["veteran"], failed
+            assert set(payload["characters"]) == {"newcomer"}
+            assert payload["merged_from_failed"] == 1, payload
+            disk = json.loads(upg.read_text(encoding="utf-8"))
+            assert set(disk["characters"]) == {"veteran", "newcomer"}, \
+                list(disk["characters"])
+            assert disk["characters"]["veteran"]["marker"] == "OLD-veteran", \
+                "旧角色失败条目必须沿用"
+            assert disk["characters"]["newcomer"]["marker"] == "FRESH", \
+                "新角色必须入库"
+        finally:
+            wf.UPGRADES_JSON = orig_json
+            wf.fetch_character_upgrade = orig_fetch
+
+
+@case
+def test_fetch01_retired_drops_out():
+    """FETCH-01 ⑤退役角色语义：本轮无此 slug（不在 attempted）→ 不沿用、不并入
+    落盘 → 随落盘自然掉出（无僵尸条目）。"""
+    from app import wiki_fetch as wf
+    os.makedirs(".tmp", exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="fetch01_t05_", dir=".tmp") as tmp:
+        upg = Path(tmp, "upgrades.json")
+        _fetch01_preset(upg, {"alpha": _fetch01_entry("alpha", "OLD-alpha"),
+                              "ghost": _fetch01_entry("ghost", "OLD-ghost")})
+        orig_json = _fetch01_redirect(wf, upg)
+        orig_fetch = wf.fetch_character_upgrade
+        try:
+            wf.fetch_character_upgrade = lambda slug, timeout=15: \
+                _fetch01_entry(slug, "FRESH")
+            payload, failed = wf.fetch_all_upgrades(slugs=["alpha"])
+            assert failed == [] and payload["merged_from_failed"] == 0
+            disk = json.loads(upg.read_text(encoding="utf-8"))
+            assert set(disk["characters"]) == {"alpha"}, \
+                "退役角色（本轮未触碰）必须随落盘掉出"
+            assert disk["characters"]["alpha"]["marker"] == "FRESH"
+        finally:
+            wf.UPGRADES_JSON = orig_json
+            wf.fetch_character_upgrade = orig_fetch
+
+
+@case
+def test_fetch01_empty_fetch_keeps_old():
+    """FETCH-01 ⑥空抓取（sitemap 空清单→零尝试）：不落盘、旧档字节级保留、
+    failed 空且无沿用计数。"""
+    from app import wiki_fetch as wf
+    os.makedirs(".tmp", exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="fetch01_t06_", dir=".tmp") as tmp:
+        upg = Path(tmp, "upgrades.json")
+        _fetch01_preset(upg, {s: _fetch01_entry(s, "OLD-" + s)
+                              for s in ("alpha", "ghost")})
+        before = upg.read_bytes()
+        orig_json = _fetch01_redirect(wf, upg)
+        orig_sitemap = wf._character_slugs_from_sitemap
+        try:
+            wf._character_slugs_from_sitemap = lambda timeout: []
+            payload, failed = wf.fetch_all_upgrades()
+            assert failed == [] and payload["characters"] == {}
+            assert payload["merged_from_failed"] == 0
+            assert upg.read_bytes() == before, "空抓取必须字节级不落盘"
+            assert not Path(tmp, "upgrades.json.bak").exists(), "不得产生 .bak"
+        finally:
+            wf.UPGRADES_JSON = orig_json
+            wf._character_slugs_from_sitemap = orig_sitemap
+
+
+@case
+def test_fetch01_parse_fail_into_failed():
+    """FETCH-01 ⑦解析失败入 failed：ValueError（真实解析器错误形态，对齐
+    _extract_data_attr 的「页面缺少 data-upgrade 数据」）slug+error 原文透出，
+    且其旧条目照常沿用落盘。"""
+    from app import wiki_fetch as wf
+    os.makedirs(".tmp", exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="fetch01_t07_", dir=".tmp") as tmp:
+        upg = Path(tmp, "upgrades.json")
+        _fetch01_preset(upg, {"bad": _fetch01_entry("bad", "OLD-bad")})
+        orig_json = _fetch01_redirect(wf, upg)
+        orig_fetch = wf.fetch_character_upgrade
+        try:
+            def _stub(slug, timeout=15):
+                if slug == "bad":
+                    raise ValueError("页面缺少 data-upgrade 数据（结构可能已改版）")
+                return _fetch01_entry(slug, "FRESH")
+            wf.fetch_character_upgrade = _stub
+            payload, failed = wf.fetch_all_upgrades(slugs=["good", "bad"])
+            assert failed == [{"slug": "bad",
+                               "error": "页面缺少 data-upgrade 数据（结构可能已改版）"}], \
+                failed
+            assert payload["merged_from_failed"] == 1
+            disk = json.loads(upg.read_text(encoding="utf-8"))
+            assert disk["characters"]["bad"]["marker"] == "OLD-bad", \
+                "解析失败 slug 的旧条目照常沿用"
+            assert disk["characters"]["good"]["marker"] == "FRESH"
+        finally:
+            wf.UPGRADES_JSON = orig_json
+            wf.fetch_character_upgrade = orig_fetch
+
+
+@case
+def test_fetch01_save_oserror_propagates():
+    """FETCH-01 ⑧写盘失败 OSError：save_json_atomic 抛 OSError → 原样外抛
+    （main.py fetch-upgrades 端点捕 OSError→502 的前提），不吞不降级；目标文件
+    字节保持预置旧档（故障发生在发布步之前）。"""
+    from app import wiki_fetch as wf
+    os.makedirs(".tmp", exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="fetch01_t08_", dir=".tmp") as tmp:
+        upg = Path(tmp, "upgrades.json")
+        _fetch01_preset(upg, {"beta": _fetch01_entry("beta", "OLD-beta")})
+        before = upg.read_bytes()
+        orig_json = _fetch01_redirect(wf, upg)
+        orig_fetch = wf.fetch_character_upgrade
+        orig_save = wf.save_json_atomic
+        try:
+            def _stub(slug, timeout=15):
+                if slug == "beta":
+                    raise ValueError("桩注入失败")
+                return _fetch01_entry(slug, "FRESH")
+            def _boom_save(path, data):
+                raise OSError("磁盘故障注入")
+            wf.fetch_character_upgrade = _stub
+            wf.save_json_atomic = _boom_save
+            raised = None
+            try:
+                wf.fetch_all_upgrades(slugs=["alpha", "beta"])
+            except OSError as e:
+                raised = e
+            assert raised is not None, "OSError 必须原样外抛（不得吞掉）"
+            assert "磁盘故障注入" in str(raised), str(raised)
+            assert upg.read_bytes() == before, "写盘失败不得触碰目标文件"
+        finally:
+            wf.UPGRADES_JSON = orig_json
+            wf.fetch_character_upgrade = orig_fetch
+            wf.save_json_atomic = orig_save
+
+
+@case
+def test_fetch01_corrupted_archive_degrade():
+    """FETCH-01 ⑨损坏旧档退化起步：JSON 损坏（load_upgrades→None）与结构损坏
+    （characters 非 dict）均以空对象起步并记 warning（stderr），不抛不中断；
+    部分成功照常落盘（损坏旧档无可沿用条目）。"""
+    import contextlib
+    import io
+    from app import wiki_fetch as wf
+    os.makedirs(".tmp", exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="fetch01_t09_", dir=".tmp") as tmp:
+        upg = Path(tmp, "upgrades.json")
+        orig_json = _fetch01_redirect(wf, upg)
+        orig_fetch = wf.fetch_character_upgrade
+        try:
+            def _stub(slug, timeout=15):
+                if slug == "bad":
+                    raise ValueError("桩注入失败")
+                return _fetch01_entry(slug, "FRESH")
+            wf.fetch_character_upgrade = _stub
+            # 形态 A：JSON 解析损坏 → load_upgrades 返回 None
+            upg.write_text("{not-json", encoding="utf-8")
+            buf = io.StringIO()
+            with contextlib.redirect_stderr(buf):
+                payload, failed = wf.fetch_all_upgrades(slugs=["alpha", "bad"])
+            err = buf.getvalue()
+            assert "旧档预载失败" in err and "空旧档起步" in err, err
+            assert [f["slug"] for f in failed] == ["bad"], failed
+            assert payload["merged_from_failed"] == 0, "损坏旧档无可沿用条目"
+            disk = json.loads(upg.read_text(encoding="utf-8"))
+            assert set(disk["characters"]) == {"alpha"}, list(disk["characters"])
+            # 形态 B：JSON 合法但 characters 非 dict → 结构损坏
+            upg.write_text(json.dumps({"characters": 42}), encoding="utf-8")
+            buf2 = io.StringIO()
+            with contextlib.redirect_stderr(buf2):
+                payload2, failed2 = wf.fetch_all_upgrades(slugs=["alpha"])
+            assert "结构损坏" in buf2.getvalue(), buf2.getvalue()
+            assert failed2 == [] and payload2["merged_from_failed"] == 0
+            disk2 = json.loads(upg.read_text(encoding="utf-8"))
+            assert set(disk2["characters"]) == {"alpha"}
+        finally:
+            wf.UPGRADES_JSON = orig_json
+            wf.fetch_character_upgrade = orig_fetch
+
+
+@case
+def test_fetch01_endpoint_failed_field():
+    """FETCH-01 ⑩端点返回体 failed 字段回归（main.py 不在本 slice 授权改动内，
+    沿本文件 inspect.getsource 布线先例源级锁定）：/api/wiki/fetch-upgrades 的
+    200 返回体必须原样携带 failed（前端 toast partial 感知的根基）且 count 取自
+    本轮成功条目数；抓取异常仍有 502 错误包。"""
+    import inspect
+    from app import main as main_mod
+    post_src = inspect.getsource(main_mod.Handler.do_POST)
+    assert "/api/wiki/fetch-upgrades" in post_src, "端点路由必须存在"
+    assert "wiki_fetch.fetch_all_upgrades(timeout=15)" in post_src, \
+        "端点必须调用 fetch_all_upgrades"
+    assert '"count": len(payload.get("characters", {}))' in post_src, \
+        "count 必须取自本轮成功条目数（返回 payload 口径）"
+    assert '"failed": failed' in post_src, \
+        "200 返回体必须原样透出 failed（toast partial 感知根基）"
+    assert "wiki 拉取失败" in post_src, "抓取异常必须有 502 错误包"
+
+
 def main():
     stress = "--stress" in sys.argv[1:]
     cases = CASES + STRESS_CASES if stress else CASES

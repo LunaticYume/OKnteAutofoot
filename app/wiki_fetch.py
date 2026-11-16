@@ -23,6 +23,7 @@ data/mysqil/DetailedCalc.fresh.js 夹具自测（selftest）。
 import json
 import os
 import re
+import sys
 import urllib.parse
 from datetime import datetime
 from pathlib import Path
@@ -316,9 +317,38 @@ def fetch_character_upgrade(slug, timeout=15):
 
 
 def fetch_all_upgrades(timeout=15, slugs=None):
-    """批量抓取全部角色逐技能/突破数据，落盘 upgrades.json。返回 (结果, 失败清单)。"""
+    """批量抓取全部角色逐技能/突破数据，落盘 upgrades.json。返回 (结果, 失败清单)。
+
+    B2.8-B FETCH-01 有限合并（用户裁定方案 B：失败 slug 沿用旧条目 + failed 照常
+    透出 + 前端 toast 识别 partial；同仓失败保旧先例 app/sites_fetch.py:616-620
+    _replace_source_entries——本源抓取失败原样保留上一次完好条目）：
+    - 循环前 load_upgrades() 预载旧档；文件缺失(None)/损坏 → 以空对象起步并记
+      warning（stderr，panel.log 可见），绝不中断本轮抓取；
+    - 落盘仅在「有成功」时进行（全失败/空抓取不落盘、行为与修复前一致：旧档
+      原样留在盘上，failed slug 的旧条目天然保留，也避免仅刷新 fetched_at 的
+      误导性重写）；落盘 characters = 本轮成功条目 ∪ 仅「本轮 attempted 且
+      failed」slug 的旧条目（attempted 集=本轮实际尝试的 slug 集，failed 必然
+      ⊆ attempted）；旧档中本轮未触碰的 slug（含退役角色）不并入 → 随落盘
+      自然掉出，不产生僵尸条目；
+    - 返回值 payload.characters 保持本轮成功条目（修复前口径，端点 count=本轮
+      新抓数，前端 toast「已抓取 N 个角色，M 个失败沿用旧数据」据此把 N 与 M
+      区分为不相交集合）；落盘文件才是合并结果；merged_from_failed=本轮沿用
+      旧档条目数（0=无沿用）。
+    """
     if not slugs:
         slugs = _character_slugs_from_sitemap(timeout)
+    old = load_upgrades()
+    if isinstance(old, dict) and isinstance(old.get("characters"), dict):
+        old_chars = old["characters"]
+    else:
+        if old is None:
+            reason = ("文件缺失或损坏" if os.path.exists(UPGRADES_JSON)
+                      else "文件缺失（首次抓取正常起步）")
+        else:
+            reason = "结构损坏（characters 非 dict）"
+        print(f"[wiki_fetch] upgrades.json 旧档预载失败，按空旧档起步"
+              f"（{reason}；不中断本轮抓取）", file=sys.stderr)
+        old_chars = {}
     characters, failed = {}, []
     for i, slug in enumerate(slugs):
         try:
@@ -326,10 +356,19 @@ def fetch_all_upgrades(timeout=15, slugs=None):
             characters[slug] = d
         except (OSError, ValueError) as e:
             failed.append({"slug": slug, "error": str(e)})
+    # FETCH-01：仅对「本轮 attempted 且 failed」的 slug 沿用旧条目；退役角色不在
+    # 本轮 attempted → 不沿用、不并入落盘 → 自然掉出（无僵尸条目）
+    carried = {f["slug"]: old_chars[f["slug"]] for f in failed
+               if f["slug"] in old_chars}
     payload = {"fetched_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-               "characters": characters}
-    if characters:
-        save_json_atomic(UPGRADES_JSON, payload)
+               "characters": characters, "merged_from_failed": len(carried)}
+    if characters:  # 有成功才落盘；全失败/空抓取 → 旧档原样保留（沿用天然成立）
+        if carried:
+            written = dict(payload)
+            written["characters"] = {**carried, **characters}
+            save_json_atomic(UPGRADES_JSON, written)
+        else:
+            save_json_atomic(UPGRADES_JSON, payload)
     return payload, failed
 
 
