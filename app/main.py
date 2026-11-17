@@ -900,7 +900,9 @@ def build_export():
 
 def apply_import(payload):
     """导入配置：全部段落先校验/脱敏，任何不合法整体拒绝（绝不留半套数据）；
-    导入前自动备份当前用户数据；状态与数据表统一原子落盘。"""
+    导入前自动备份当前用户数据；状态与数据表统一原子落盘——SRV-02/B3
+    （2026-11-18）：yields/requirements 两表与 state 同锁内「先两表后 state」
+    顺序落盘，任一 OSError 即整体中断（state.json 未写、rev 不自增）。"""
     if not isinstance(payload, dict) or payload.get("schema") != STATE_SCHEMA:
         raise ValueError(f"导入文件缺少 schema 或版本不符（需要 {STATE_SCHEMA}）")
     settings = payload.get("settings")
@@ -950,9 +952,15 @@ def apply_import(payload):
         if "teams" in payload:  # 配队随导入迁移（v3 起导出包含；旧文件无此段不动）
             STATE.data["teams"] = _sanitize_teams(payload)
         STATE.data["schema"] = STATE_SCHEMA
+        # SRV-02/B3（2026-11-18）：两表落盘移入锁内、置于 STATE.save() 之前——
+        # OSError 即中断→state.json 未写、rev 不自增，三文件原子性由
+        # 「先两表后 state」顺序保证（原先两表在锁外，requirements 写盘失败会留
+        # 「state 新、两表旧」半套态）。os.makedirs(backup_dir)（上方）保持锁外。
+        _save_json_atomic(os.path.join(DATA_DIR, "yields.json"), clean_yields)
+        _save_json_atomic(os.path.join(DATA_DIR, "requirements.json"), requirements)
         STATE.save()
-    _save_json_atomic(os.path.join(DATA_DIR, "yields.json"), clean_yields)
-    _save_json_atomic(os.path.join(DATA_DIR, "requirements.json"), requirements)
+    # reload 整体重建三表（planner.reload_tables 全量 _load），两表写盘成功才会
+    # 执行到此处——失败中断时 planner 保持旧表，与磁盘一致，无半截。
     planner.reload_tables()
     return {"characters": len(clean_chars), "inventory_items": len(clean_inv),
             "backup": backup_path}
@@ -4010,6 +4018,13 @@ class Handler(BaseHTTPRequestHandler):
                 summary = apply_import(body)
             except ValueError as e:
                 self._send(400, {"error": f"导入失败：{e}"})
+                return
+            except OSError as e:
+                # SRV-02/B3（2026-11-18）：落盘 OSError（磁盘满/权限等）不再逃逸
+                # _guarded_dispatch 回笼统 500（客户端只见「服务器内部错误」无
+                # 原因）——照 /api/ocr/layout（:3746-3748）/ocr/map-unknown
+                # （:3790-3791）先例回 500 与含原因错误体。
+                self._send(500, {"error": f"导入失败：{e}"})
                 return
             self._send(200, {"ok": True, "rev": STATE.rev,  # rev 回传（复审阻断 #1）
                              **summary})

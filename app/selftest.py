@@ -7422,6 +7422,322 @@ def test_rev_returned_by_write_endpoints():
             planner.reload_tables()  # 内存表回到盘上真实内容
 
 
+# ---------- B3-A Slice A（SRV-02，2026-11-18）：/api/import 两表落盘入锁 + OSError→500 专项 ----------
+
+class _Srv02Env:
+    """B3-A SRV-02 夹具：临时数据目录重定向（仓库 .tmp/，E 盘，finally 还原清理）。
+
+    口径：DATA_DIR 重定向同 test_ocr_map_unknown（:4370-4377 先例），HTTP 层同
+    test_rev_returned_by_write_endpoints（:7349-7352 先例）。与先例的差异：基线
+    三表不复制生产文件，而以内存现值经同一序列化器（state.save_json_atomic：
+    json.dumps ensure_ascii=False indent=2、dict 保序，state.py:182）落进临时
+    目录——磁盘注入用例断言「yields 重写字节不变」需要同序列化器基线才成立
+    （生产文件最后一次写入者不确定，字节比对无根基）。生产 data/ 全程零写入；
+    __exit__ 还原四重定向 → planner.reload_tables()（内存表回到盘上真实内容，
+    :7422 先例口径）→ rmtree 清理。"""
+
+    def __init__(self, name):
+        self.name = name
+        self.tmp = None
+        self.state_json = None
+        self.yields_json = None
+        self.req_json = None
+        self._orig = {}
+
+    def __enter__(self):
+        from app import main as main_mod
+        tmp_root = Path(_ROOT) / ".tmp"  # 仓库 .tmp/（已 gitignore，E 盘）
+        tmp_root.mkdir(parents=True, exist_ok=True)
+        self.tmp = tmp_root / f"oknte_srv02_{self.name}_{os.getpid()}"
+        self.tmp.mkdir(exist_ok=True)
+        self.state_json = str(self.tmp / "state.json")
+        self.yields_json = str(self.tmp / "yields.json")
+        self.req_json = str(self.tmp / "requirements.json")
+        # 基线一律 str 路径：save_json_atomic 内部 path+".bak" 拼接要求 str（state.py:189）
+        state_mod.save_json_atomic(self.state_json, copy.deepcopy(STATE.data))
+        state_mod.save_json_atomic(self.yields_json, copy.deepcopy(planner.YIELDS))
+        state_mod.save_json_atomic(self.req_json, copy.deepcopy(planner.REQUIREMENTS))
+        state_mod.save_json_atomic(str(self.tmp / "materials.json"),
+                                   copy.deepcopy(planner.MATERIALS))
+        self._orig = {"state_file": state_mod.STATE_FILE,
+                      "state_datadir": state_mod.DATA_DIR,
+                      "main_datadir": main_mod.DATA_DIR,
+                      "planner_datadir": planner.DATA_DIR}
+        # 四绑定重定向：STATE.save() 引用模块全局 STATE_FILE（state.py:533，
+        # 运行时重定向有效）；main.DATA_DIR 为值拷贝（main.py:31-32）须单独改
+        state_mod.STATE_FILE = self.state_json
+        state_mod.DATA_DIR = str(self.tmp)
+        main_mod.DATA_DIR = str(self.tmp)
+        planner.DATA_DIR = str(self.tmp)
+        return self
+
+    def __exit__(self, *exc):
+        from app import main as main_mod
+        try:
+            state_mod.STATE_FILE = self._orig["state_file"]
+            state_mod.DATA_DIR = self._orig["state_datadir"]
+            main_mod.DATA_DIR = self._orig["main_datadir"]
+            planner.DATA_DIR = self._orig["planner_datadir"]
+            planner.reload_tables()  # 内存表回到盘上真实内容
+        finally:
+            try:
+                shutil.rmtree(str(self.tmp))
+            except OSError:
+                time.sleep(0.3)  # Windows 句柄释放宽限（服务线程刚 shutdown）
+                shutil.rmtree(str(self.tmp), ignore_errors=True)
+        return False
+
+
+def _srv02_call(port, method, path, body=None):
+    """B3-A HTTP 客户端（照 test_rev_returned_by_write_endpoints call() 口径：
+    回环 Origin 过防线 + X-Panel-Token 过 SEC-05 闸，timeout=10 硬截止）。"""
+    import http.client
+    from app import main as main_mod
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    headers = {"Origin": "http://127.0.0.1:%d" % port,
+               "X-Panel-Token": main_mod._PANEL_TOKEN}
+    payload = json.dumps(body).encode("utf-8") if body is not None else None
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+    conn.request(method, path, payload, headers)
+    resp = conn.getresponse()
+    data = json.loads(resp.read().decode("utf-8"))
+    conn.close()
+    return resp.status, data
+
+
+def _srv02_wait_runner_idle():
+    """规划器必须空闲：运行中写端点被统一 409（main.py:3445-3449），用例失去
+    意义（同 test_rev_returned_by_write_endpoints :7336-7341 口径）。"""
+    deadline = time.time() + 10
+    while time.time() < deadline and runner_mod.RUNNER.snapshot()["state"] \
+            in ("running", "waiting", "stopping"):
+        runner_mod.RUNNER.stop()
+        time.sleep(0.2)
+
+
+def _srv02_noop_payload():
+    """no-op 导入载荷：build_export()（内存现值）。前提校验——产量键全在
+    TARGETS 且值全在 clamp 区间（main.py:927-929 过滤/钳制不改键值），
+    clean_yields 与内存表内容完全等价 → yields.json 重写字节不变——磁盘注入
+    用例「yields/requirements 两文件不变」断言的根基。"""
+    from app import main as main_mod
+    payload = main_mod.build_export()
+    assert payload.get("schema") == 3, payload.get("schema")
+    assert payload["yields"]["per_run"] == dict(planner.YIELDS["per_run"]), \
+        "夹具前提：导出产量必须等于内存表（no-op 导入）"
+    assert set(planner.YIELDS["per_run"]) <= set(planner.TARGETS) and all(
+        isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 10 ** 6
+        for v in planner.YIELDS["per_run"].values()), \
+        "夹具前提：产量键须全在 TARGETS 且值在 clamp 区间（否则重写不再字节等价）"
+    return payload
+
+
+@case
+def test_srv02_import_oserror_500_no_halfset():
+    """B3-A SRV-02 ①磁盘注入：requirements.json 落盘注入 OSError → HTTP 500 且
+    错误体含「导入失败：」+异常原因（修复前逃逸 _guarded_dispatch 回笼统
+    「服务器内部错误」无原因，归档 run2.stdout.log）；STATE.rev 前后不变；
+    state.json/yields.json/requirements.json 字节全不变（「先两表后 state」：
+    yields 重写字节等价、requirements 抛错未写、state 未到写盘步）——无半套。
+    注入口径同 test_ocr_map_unknown _boom（:4402-4417）。"""
+    import threading
+    from app import main as main_mod
+    from app.main import create_server
+
+    _srv02_wait_runner_idle()
+    with _StateGuard(), _Srv02Env("inj") as env:
+        payload = _srv02_noop_payload()
+        # SEC-05：直设全局令牌（现生成，零凭据字面量）→ _ensure_panel_token 空转
+        main_mod._PANEL_TOKEN = main_mod._new_panel_token()
+        server, _port = create_server(0, auto_range=1)
+        port = server.server_address[1]  # 实际端口（:6560 口径）
+        threading.Thread(target=server.serve_forever, daemon=True,
+                         name="selftest-srv02-inj").start()
+        orig_save = main_mod._save_json_atomic
+        try:
+            rev0 = STATE.rev
+            base_state = Path(env.state_json).read_bytes()
+            base_yields = Path(env.yields_json).read_bytes()
+            base_req = Path(env.req_json).read_bytes()
+
+            def _boom(path, data, **kw):  # 仅 requirements.json 注入（:4405-4407 口径）
+                if str(path).endswith("requirements.json"):
+                    raise OSError("disk full (模拟)")
+                return orig_save(path, data, **kw)
+
+            main_mod._save_json_atomic = _boom
+            try:
+                code, r = _srv02_call(port, "POST", "/api/import", payload)
+            finally:
+                main_mod._save_json_atomic = orig_save
+            assert code == 500, (code, r)
+            err = str(r.get("error", ""))
+            assert "导入失败" in err and "disk full" in err, \
+                f"500 错误体必须含「导入失败：」与异常原因: {r}"
+            assert STATE.rev == rev0, (rev0, STATE.rev)  # rev 不自增
+            assert Path(env.state_json).read_bytes() == base_state, \
+                "state.json 必须未写（两表失败中断在 STATE.save() 之前）"
+            assert Path(env.yields_json).read_bytes() == base_yields, \
+                "yields.json 重写字节必须等价（no-op 载荷）"
+            assert Path(env.req_json).read_bytes() == base_req, \
+                "requirements.json 必须未写（注入点在写前抛出）"
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
+@case
+def test_srv02_import_normal_regression():
+    """B3-A SRV-02 ②正常导入回归：/api/import 成功路径——yields/requirements
+    两表与 state 全部落盘（bytes 变化 + 内容可证）、rev 恰 +1、
+    planner.reload_tables 已在 STATE.save() 后执行（新产量经 reload 进内存）。"""
+    import threading
+    from app import main as main_mod
+    from app.main import create_server
+
+    _srv02_wait_runner_idle()
+    with _StateGuard(), _Srv02Env("norm") as env:
+        payload = _srv02_noop_payload()  # 同款前提校验后改值：落盘差异可证
+        payload["yields"]["per_run"]["coin"] = 123456
+        payload["requirements"]["srv02_b3a_marker"] = "B3-A normal import"  # 原样落盘段（main.py:960）
+        payload["characters"].append(main_mod._sanitize_character(
+            {"id": "srv02b3a", "name": "B3A导入角色"}))
+        main_mod._PANEL_TOKEN = main_mod._new_panel_token()
+        server, _port = create_server(0, auto_range=1)
+        port = server.server_address[1]
+        threading.Thread(target=server.serve_forever, daemon=True,
+                         name="selftest-srv02-norm").start()
+        try:
+            rev0 = STATE.rev
+            base_state = Path(env.state_json).read_bytes()
+            base_yields = Path(env.yields_json).read_bytes()
+            base_req = Path(env.req_json).read_bytes()
+            code, r = _srv02_call(port, "POST", "/api/import", payload)
+            assert code == 200 and r.get("ok") is True, (code, r)
+            assert r.get("rev") == rev0 + 1, (rev0, r.get("rev"))  # 恰 +1
+            assert STATE.rev == rev0 + 1, (rev0, STATE.rev)
+            assert Path(env.yields_json).read_bytes() != base_yields, "yields 必须落盘"
+            assert Path(env.req_json).read_bytes() != base_req, "requirements 必须落盘"
+            assert Path(env.state_json).read_bytes() != base_state, "state 必须落盘"
+            yields_now = json.loads(Path(env.yields_json).read_text(encoding="utf-8"))
+            assert yields_now["per_run"]["coin"] == 123456, yields_now["per_run"].get("coin")
+            req_now = json.loads(Path(env.req_json).read_text(encoding="utf-8"))
+            assert req_now.get("srv02_b3a_marker") == "B3-A normal import", \
+                req_now.get("srv02_b3a_marker")
+            state_now = json.loads(Path(env.state_json).read_text(encoding="utf-8"))
+            assert any(c.get("id") == "srv02b3a"
+                       for c in state_now.get("characters", [])), \
+                "导入角色必须落盘 state.json"
+            assert planner.YIELDS["per_run"]["coin"] == 123456, \
+                "reload_tables 必须已在 STATE.save() 后执行（新产量进内存）"
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
+@case
+def test_srv02_import_lock_order():
+    """B3-A SRV-02 ③锁序回归：静态断言（apply_import 源码不含 _TJD_LOCK——导入
+    全程不可能与 _TJD_LOCK 交错；yields→requirements→STATE.save() 源码序）+
+    运行期探针（真实 HTTP 导入全程：落盘事件序 yields→requirements→state.json、
+    三次落盘全部发生在 STATE.lock 持有期间（深度≥1）、_TJD_LOCK 零 acquire、
+    探针锁 acquire/release 平衡归零）。"""
+    import inspect
+    import threading
+    from app import main as main_mod
+    from app.main import create_server
+
+    # ---- 静态断言：源码序即运行序（inspect 读原函数——_guarded_dispatch 保留 __wrapped__）----
+    src = inspect.getsource(main_mod.apply_import)
+    assert "_TJD_LOCK" not in src, "apply_import 不得触碰 _TJD_LOCK（锁序单向无环）"
+    assert "with STATE.lock:" in src, "两表+state 落盘必须全程在 STATE.lock 内"
+    i_yields = src.index('_save_json_atomic(os.path.join(DATA_DIR, "yields.json")')
+    i_req = src.index('_save_json_atomic(os.path.join(DATA_DIR, "requirements.json")')
+    i_save = src.rindex("STATE.save()")  # rindex：跳过注释字面量取真实调用点
+    assert i_yields < i_req < i_save, "源码序必须为 yields→requirements→STATE.save()"
+
+    class _LockProbe:
+        """锁探针：包一层 RLock 记录深度（仅本用例内替换，finally 还原原锁）。"""
+
+        def __init__(self, inner):
+            self.inner = inner
+            self.events = []
+            self.depth = 0
+
+        def acquire(self, *args, **kwargs):
+            got = self.inner.acquire(*args, **kwargs)
+            if got:
+                self.depth += 1
+            return got
+
+        def release(self):
+            self.depth -= 1
+            self.inner.release()
+
+        def __enter__(self):
+            self.acquire()
+            return self
+
+        def __exit__(self, *exc):
+            self.release()
+
+    _srv02_wait_runner_idle()
+    with _Srv02Env("lock") as env:  # 不叠 _StateGuard：探针期间避免额外锁事件
+        data_backup = copy.deepcopy(STATE.data)  # 成功导入改内存：finally 手工还原
+        payload = _srv02_noop_payload()
+        state_probe = _LockProbe(STATE.lock)
+        tjd_probe = _LockProbe(main_mod._TJD_LOCK)
+        STATE.lock = state_probe
+        main_mod._TJD_LOCK = tjd_probe
+        orig_main_save = main_mod._save_json_atomic
+        orig_state_save = state_mod.save_json_atomic
+        events = []  # (文件名, STATE.lock 深度)：按发生顺序；state.json 写经
+        # state_mod.save_json_atomic 探针（STATE.save 的模块全局查找，state.py:533），
+        # main._save_json_atomic 是值拷贝不受其影响——两探针正好分监两表与 state
+
+        def probe_main_save(path, data, **kw):
+            name = os.path.basename(str(path))
+            if name in ("yields.json", "requirements.json"):
+                events.append((name, state_probe.depth))
+            return orig_main_save(path, data, **kw)
+
+        def probe_state_save(path, data, **kw):
+            events.append((os.path.basename(str(path)), state_probe.depth))
+            return orig_state_save(path, data, **kw)
+
+        main_mod._save_json_atomic = probe_main_save
+        state_mod.save_json_atomic = probe_state_save
+        main_mod._PANEL_TOKEN = main_mod._new_panel_token()
+        server, _port = create_server(0, auto_range=1)
+        port = server.server_address[1]
+        threading.Thread(target=server.serve_forever, daemon=True,
+                         name="selftest-srv02-lock").start()
+        try:
+            rev0 = STATE.rev
+            code, r = _srv02_call(port, "POST", "/api/import", payload)
+            assert code == 200 and r.get("ok") is True, (code, r)
+            assert STATE.rev == rev0 + 1, (rev0, STATE.rev)
+            names = [name for name, _depth in events]
+            assert names == ["yields.json", "requirements.json", "state.json"], \
+                f"落盘事件序必须为「先两表后 state」: {names}"
+            depths = [depth for _name, depth in events]
+            assert all(d >= 1 for d in depths), \
+                f"三次落盘必须全部发生在 STATE.lock 持有期间: {events}"
+            assert tjd_probe.events == [], \
+                f"导入全程不得触碰 _TJD_LOCK（零交错）: {tjd_probe.events}"
+            assert state_probe.depth == 0, \
+                f"探针锁必须平衡（acquire/release 成对）: depth={state_probe.depth}"
+        finally:
+            STATE.lock = state_probe.inner
+            main_mod._TJD_LOCK = tjd_probe.inner
+            main_mod._save_json_atomic = orig_main_save
+            state_mod.save_json_atomic = orig_state_save
+            STATE.data = data_backup
+            server.shutdown()
+            server.server_close()
+
+
 # ---------- 2026-11-12：读取健壮化 + 执行计划覆盖（GET/POST /api/oknte/plan） + 数据订正 ----------
 
 @case
