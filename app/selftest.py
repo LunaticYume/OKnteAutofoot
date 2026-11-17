@@ -2862,6 +2862,370 @@ def test_sync_guide_sites_offline():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# ---- B3-A（CONC-04 修复专项，插在 sites 既有段之后）：sync-guide 抓取移出
+# STATE.lock + 锁内重读合并；用例命名一律 test_conc04_*；慢源桩=确定性 sleep 注入
+# + perf_counter 计时（禁随机 sleep）；state/快照/头像全部重定向仓库 .tmp/（E 盘），
+# 全程打桩绝不触网。 ----
+
+def _conc04_call(port, method, path, body=None):
+    """B3-A HTTP 直调（学 test_tajiduo_endpoints_http.call：回环 Origin 过防线、
+    面板令牌过 SEC-05 闸；每笔独立连接）。"""
+    import http.client
+    from app import main as main_mod
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+    headers = {"Origin": "http://127.0.0.1:%d" % port,
+               "X-Panel-Token": main_mod._PANEL_TOKEN}
+    payload = json.dumps(body).encode("utf-8") if body is not None else None
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+    conn.request(method, path, payload, headers)
+    resp = conn.getresponse()
+    data = json.loads(resp.read().decode("utf-8"))
+    conn.close()
+    return resp.status, data
+
+
+def _conc04_lock_free_for_others():
+    """B3-A 锁外观测：调用线程此刻不持有 STATE.lock。download_avatars 由 HTTP
+    handler 线程调用，_is_owned()==False 即该调用发生在锁外（修复前该调用本就
+    锁外——此观测即专项③「头像下载锁外不破坏」的运行时证明）。_thread.RLock
+    C 实现无 owner 身份暴露，_is_owned 为 Python 3.13 实测可得口径；方法缺失
+    时返回 None=观测不可用（不误伤非 CPython 环境）。"""
+    is_owned = getattr(STATE.lock, "_is_owned", None)
+    if is_owned is None:
+        return None
+    return not is_owned()
+
+
+def _conc04_sha(path):
+    """文件 sha256（pathlib 读）；不存在返回 None。"""
+    if not os.path.isfile(path):
+        return None
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def _conc04_http_env(tmp, nte_stub, mysqil_stub, avatar_stub):
+    """B3-A CONC-04 隔离 HTTP 夹具（学 test_tajiduo_endpoints_http 形态）：
+    create_server(0, auto_range=1) + daemon serve_forever；STATE_FILE/sites 快照/
+    头像目录重定向至 tmp（仓库 .tmp/，E 盘）；面板令牌直设全局（现生成，零凭据
+    字面量；同既有 HTTP 用例口径不回滚——后续用例各自直设）。三桩均注入
+    sites_fetch 模块属性（main.py 经模块属性访问，patch 必然生效）。"""
+    from app import main as main_mod
+    from app import sites_fetch as sf
+    from app.main import create_server
+    main_mod._PANEL_TOKEN = main_mod._new_panel_token()  # SEC-05：直设全局令牌
+    orig = (sf.SITES_DIR, sf.SNAPSHOT_JSON, sf.AVATARS_DIR,
+            sf.fetch_ntestrategy, sf.fetch_mysqil_names, sf.download_avatars,
+            state_mod.STATE_FILE)
+    sf.SITES_DIR = tmp
+    sf.SNAPSHOT_JSON = os.path.join(tmp, "guide_sites.json")
+    av_dir = os.path.join(tmp, "avatars")
+    os.makedirs(av_dir, exist_ok=True)  # 空目录：avatar_files 磁盘枚举 → {}
+    sf.AVATARS_DIR = av_dir
+    state_mod.STATE_FILE = os.path.join(tmp, "state.json")
+    sf.fetch_ntestrategy, sf.fetch_mysqil_names = nte_stub, mysqil_stub
+    sf.download_avatars = avatar_stub
+    server, _candidate = create_server(0, auto_range=1)
+    port = server.server_address[1]  # 绑 0 时 OS 分配临时端口（同 :6560 口径）
+    threading.Thread(target=server.serve_forever, daemon=True,
+                     name="selftest-conc04-http").start()
+
+    def restore():
+        server.shutdown()
+        server.server_close()
+        (sf.SITES_DIR, sf.SNAPSHOT_JSON, sf.AVATARS_DIR,
+         sf.fetch_ntestrategy, sf.fetch_mysqil_names, sf.download_avatars,
+         state_mod.STATE_FILE) = orig
+
+    return port, restore
+
+
+@case
+def test_conc04_fix_slow_fetch_concurrent_settings():
+    """B3-A CONC-04 修复专项①：慢源并发不再阻塞写路径（HTTP 层端到端）。
+
+    修复前（conc04-repro-1 三轮复现）：sync-guide 整段持 STATE.lock，慢源窗口
+    ≈6s 期间 6 笔 POST /api/settings 单笔 5990.6~6027.8ms。修复后：抓取+解析+
+    合并+快照落盘整段锁外，同窗口内 6 笔 /api/settings（写路径）每笔 <1s；
+    抓取末态两库与串行基线（同桩数据直接调 sync_guide_sites）逐键一致。"""
+    from app import sites_fetch as sf
+    tmp = _conc_tmp("conc04_fix_slow")
+    orig_state_file, orig_snap = state_mod.STATE_FILE, sf.SNAPSHOT_JSON
+    h0 = (_conc04_sha(orig_state_file), _conc04_sha(orig_snap))
+    NT = {"characters": [{"name": "浔", "name_en": "Hotori", "slug": "hotori",
+                          "source": "ntestrategy"}],
+          "arcs": [{"name": "现实庇护", "source": "ntestrategy"}],
+          "materials": ["失落絮语"],
+          "builds": {"trains": [], "console_builds": [], "char_arcs": []}}
+    MQ = {"characters": [{"name": "安魂曲", "name_en": "", "slug": "anhunqu",
+                          "source": "mysqil"}],
+          "names_source": "page", "unmapped_slugs": []}
+    ev1, ev2 = threading.Event(), threading.Event()
+
+    def quick_nte(timeout=15):
+        return dict(NT)
+
+    def quick_mysqil(timeout=15):
+        return dict(MQ)
+
+    def slow_nte(timeout=15):  # 确定性慢源桩：先 set 事件（=窗口开启）再 sleep
+        ev1.set()
+        time.sleep(3)
+        return dict(NT)
+
+    def slow_mysqil(timeout=15):
+        ev2.set()
+        time.sleep(3)
+        return dict(MQ)
+
+    def avatar_stub(chars):
+        return 0, 0, []
+
+    with _StateGuard():
+        port, restore = _conc04_http_env(tmp, quick_nte, quick_mysqil, avatar_stub)
+        try:
+            with STATE.lock:  # 预置基线库（STATE_FILE 已重定向 .tmp）
+                STATE.data["char_library"] = ["浔"]
+                STATE.data["weapon_library"] = []
+                STATE.data["settings"] = dict(DEFAULT_SETTINGS)
+                STATE.save()
+            # 串行基线（快桩直接调用，不写 STATE——merge 基准）
+            merge_base, payload_base = sf.sync_guide_sites(["浔"], [])
+            assert payload_base["ok"] is True, payload_base["ok"]
+            assert merge_base["char_library"] == ["浔", "安魂曲"], \
+                merge_base["char_library"]
+            # 切慢桩 → 并发编排（确定性：事件对齐，禁随机 sleep）
+            sf.fetch_ntestrategy, sf.fetch_mysqil_names = slow_nte, slow_mysqil
+            result = {}
+
+            def sync_call():
+                result["t_send"] = time.perf_counter()
+                code, data = _conc04_call(port, "POST", "/api/sites/sync-guide", {})
+                result["code"], result["data"] = code, data
+                result["t_resp"] = time.perf_counter()
+
+            th = threading.Thread(target=sync_call, name="conc04-sync")
+            th.start()
+            assert ev1.wait(10), "nte 桩未入（慢源窗口未开启）"
+            # ev2（mysqil 桩入）不等：ev1 即窗口开启（距窗口结束还有两个 3s 桩），
+            # 等它反而把采样压进窗口后半段
+            # 竞速期采样 N=6 笔 POST /api/settings（perf_counter 逐笔计时）
+            probes = []
+            for i in range(6):
+                t_send = time.perf_counter()
+                code, data = _conc04_call(port, "POST", "/api/settings",
+                                          dict(DEFAULT_SETTINGS))
+                probes.append({"i": i, "done": time.perf_counter(),
+                               "dur": time.perf_counter() - t_send,
+                               "code": code, "ok": data.get("ok")})
+            th.join(30)
+            assert not th.is_alive(), "sync 线程硬超时未完成"
+            # 用例有效性：慢源确实慢——sync 总耗时 ≥ 2×3−0.5s
+            sync_dur = result["t_resp"] - result["t_send"]
+            assert sync_dur >= 5.5, f"sync 总耗时 {sync_dur:.3f}s < 5.5s（慢源未生效）"
+            assert result["code"] == 200 and result["data"]["ok"] is True, \
+                (result["code"], result["data"])
+            # 主断言：竞速期每笔 settings <1s（修复前实测 5990.6~6027.8ms）
+            worst = max(p["dur"] for p in probes)
+            assert worst < 1.0, f"竞速期 settings 最大耗时 {worst:.3f}s ≥ 1s"
+            assert all(p["code"] == 200 and p["ok"] is True for p in probes), \
+                [(p["i"], p["code"], p["ok"]) for p in probes]
+            # 编排自检：采样确实与慢源窗口重叠（首笔在 sync 响应前 ≥4s 完成）
+            assert probes[0]["done"] <= result["t_resp"] - 4.0, \
+                "settings 采样未落入慢源窗口（编排自检失败）"
+            # 抓取末态与串行基线逐键一致（两库合并结果）
+            with STATE.lock:
+                end_chars = list(STATE.data["char_library"])
+                end_weapons = list(STATE.data["weapon_library"])
+            assert end_chars == merge_base["char_library"][:200], \
+                (end_chars, merge_base["char_library"])
+            assert end_weapons == merge_base["weapon_library"][:200], \
+                (end_weapons, merge_base["weapon_library"])
+        finally:
+            restore()
+            shutil.rmtree(tmp, ignore_errors=True)  # 失败轮也不得残留 .tmp/
+    # 生产 data/ 零写入（哈希前后比对：state.json + guide_sites.json）
+    h1 = (_conc04_sha(orig_state_file), _conc04_sha(orig_snap))
+    assert h1 == h0, f"生产 data/ 文件哈希被改动: {h0} -> {h1}"
+
+
+@case
+def test_conc04_fix_reread_merge_no_lost_update():
+    """B3-A CONC-04 修复专项②：锁内重读防丢更新——抓取期间并发改库不被覆盖。
+
+    慢源窗口内（nte 桩已入=路由已过基线副本读取、正在锁外抓取）另一线程持
+    STATE.lock 给 char_library 整表追加「并发新增实名」（学 /api/game-data/
+    import libraries 写法，main.py:946 整表替换）；同步完成后断言：并发改动
+    保留在前段（合并以锁内重读库为基准）+ 抓取新增「安魂曲」补录其后 +
+    weapon_library 与串行语义一致。修复前该写会被 sync 末尾基于抓取前基准的
+    整表写回覆盖丢失。"""
+    from app import sites_fetch as sf
+    tmp = _conc_tmp("conc04_fix_reread")
+    NT = {"characters": [{"name": "浔", "name_en": "Hotori", "slug": "hotori",
+                          "source": "ntestrategy"}],
+          "arcs": [{"name": "现实庇护", "source": "ntestrategy"}],
+          "materials": ["失落絮语"],
+          "builds": {"trains": [], "console_builds": [], "char_arcs": []}}
+    MQ = {"characters": [{"name": "安魂曲", "name_en": "", "slug": "anhunqu",
+                          "source": "mysqil"}],
+          "names_source": "page", "unmapped_slugs": []}
+    ev1 = threading.Event()
+    writer_done = threading.Event()
+
+    def slow_nte(timeout=15):
+        ev1.set()
+        time.sleep(3)
+        return dict(NT)
+
+    def slow_mysqil(timeout=15):
+        time.sleep(3)  # 双源都慢：确保锁内重读发生在写者改动之后（无随机竞速）
+        return dict(MQ)
+
+    def avatar_stub(chars):
+        return 0, 0, []
+
+    def writer():
+        assert ev1.wait(10)
+        with STATE.lock:  # 并发写者：整表追加（学 main.py /api/game-data/import）
+            STATE.data["char_library"] = \
+                list(STATE.data["char_library"]) + ["并发新增实名"]
+            STATE.save()
+        writer_done.set()
+
+    with _StateGuard():
+        port, restore = _conc04_http_env(tmp, slow_nte, slow_mysqil, avatar_stub)
+        try:
+            with STATE.lock:
+                STATE.data["char_library"] = ["浔"]
+                STATE.data["weapon_library"] = []
+                STATE.data["settings"] = dict(DEFAULT_SETTINGS)
+                STATE.save()
+            result = {}
+
+            def sync_call():
+                code, data = _conc04_call(port, "POST", "/api/sites/sync-guide", {})
+                result["code"], result["data"] = code, data
+
+            th = threading.Thread(target=sync_call, name="conc04-sync")
+            wt = threading.Thread(target=writer, name="conc04-writer")
+            th.start()
+            wt.start()
+            assert writer_done.wait(10), "写者未完成（慢源窗口内改动未落地）"
+            th.join(30)
+            assert not th.is_alive(), "sync 线程硬超时未完成"
+            assert result["code"] == 200 and result["data"]["ok"] is True, \
+                (result["code"], result["data"])
+            with STATE.lock:
+                end_chars = list(STATE.data["char_library"])
+                end_weapons = list(STATE.data["weapon_library"])
+            # 改动力不被覆盖：并发新增保留在前段（合并以锁内重读库为基准）
+            assert "并发新增实名" in end_chars, end_chars
+            assert end_chars == ["浔", "并发新增实名", "安魂曲"], end_chars
+            assert end_weapons == ["现实庇护"], end_weapons
+        finally:
+            restore()
+            shutil.rmtree(tmp, ignore_errors=True)  # 失败轮也不得残留 .tmp/
+
+
+@case
+def test_conc04_fix_normal_sync_regression():
+    """B3-A CONC-04 修复专项③：正常同步回归——快照落盘/头像下载锁外不破坏。
+
+    快桩成功路径：POST sync-guide 200，响应字段形状逐键断言（14 键，与修复前
+    逐字等价的运行时自证）；download_avatars 桩恰一次、入参=payload characters
+    中 source=='mysqil' 条目、调用时 STATE.lock 无他线程持有（锁外观测）；快照
+    落盘重定向 .tmp 且 sources/characters 正确。失败路径回归：双源桩失败 →
+    502（body 三键与修复前同形）、快照不落盘、头像下载不触发。"""
+    from app import sites_fetch as sf
+    tmp = _conc_tmp("conc04_fix_regress")
+    NT = {"characters": [{"name": "浔", "name_en": "Hotori", "slug": "hotori",
+                          "source": "ntestrategy"}],
+          "arcs": [{"name": "现实庇护", "source": "ntestrategy"}],
+          "materials": ["失落絮语"],
+          "builds": {"trains": [], "console_builds": [], "char_arcs": []}}
+    MQ = {"characters": [{"name": "安魂曲", "name_en": "", "slug": "anhunqu",
+                          "source": "mysqil"}],
+          "names_source": "page", "unmapped_slugs": []}
+    MQ_ENTRY = {"name": "安魂曲", "name_en": "", "slug": "anhunqu",
+                "source": "mysqil"}
+
+    def quick_nte(timeout=15):
+        return dict(NT)
+
+    def quick_mysqil(timeout=15):
+        return dict(MQ)
+
+    def fail(name):
+        def f(timeout=15):
+            raise ValueError("stub fail " + name)
+        return f
+
+    av_calls = []
+
+    def avatar_probe(chars):
+        av_calls.append({"chars": [dict(c) for c in chars],
+                         "lock_free": _conc04_lock_free_for_others()})
+        return 0, 0, []
+
+    with _StateGuard():
+        port, restore = _conc04_http_env(tmp, quick_nte, quick_mysqil, avatar_probe)
+        try:
+            with STATE.lock:
+                STATE.data["char_library"] = ["浔"]
+                STATE.data["weapon_library"] = []
+                STATE.data["settings"] = dict(DEFAULT_SETTINGS)
+                STATE.save()
+            code, data = _conc04_call(port, "POST", "/api/sites/sync-guide", {})
+            assert code == 200 and data["ok"] is True, (code, data)
+            # 响应字段形状逐键不变（14 键：与修复前逐字等价的运行时自证）
+            assert set(data.keys()) == {
+                "ok", "rev", "fetched_at", "avatars", "avatars_dl",
+                "guide_slug_names", "sources", "chars", "weapons", "materials",
+                "alt_names_count", "builds", "char_library",
+                "weapon_library"}, sorted(data.keys())
+            assert data["chars"]["added"] == ["安魂曲"], data["chars"]
+            assert data["weapons"]["added"] == ["现实庇护"], data["weapons"]
+            assert data["char_library"] == ["浔", "安魂曲"], data["char_library"]
+            assert data["weapon_library"] == ["现实庇护"], data["weapon_library"]
+            assert data["avatars_dl"] == {"downloaded": 0, "skipped": 0,
+                                          "failed": []}, data["avatars_dl"]
+            assert data["avatars"] == {}, data["avatars"]  # 头像目录重定向空
+            assert set(data["guide_slug_names"]) == {"hotori", "anhunqu"}, \
+                data["guide_slug_names"]
+            assert isinstance(data["rev"], int) \
+                and not isinstance(data["rev"], bool), data["rev"]
+            assert isinstance(data["fetched_at"], str) and data["fetched_at"]
+            assert set(data["sources"]) == {"ntestrategy", "mysqil"} \
+                and data["sources"]["ntestrategy"]["ok"] \
+                and data["sources"]["mysqil"]["ok"], data["sources"]
+            assert isinstance(data["builds"], list), type(data["builds"])
+            # 头像下载：恰一次、入参=mysqil 源条目、调用时锁无他线程持有（锁外）
+            assert len(av_calls) == 1, av_calls
+            assert av_calls[0]["chars"] == [MQ_ENTRY], av_calls[0]
+            assert av_calls[0]["lock_free"] is True, av_calls[0]
+            # 快照落盘（sync_guide_sites 整体锁外，sites_fetch.py:709 门成功才落）
+            snap = json.loads(Path(sf.SNAPSHOT_JSON).read_text(encoding="utf-8"))
+            assert snap["ok"] is True \
+                and snap["fetched_at"] == data["fetched_at"], snap.get("ok")
+            srcs = {c.get("source") for c in snap["characters"]}
+            assert srcs == {"ntestrategy", "mysqil"}, srcs
+            # 失败路径回归：双源桩失败 → 502（body 三键与修复前同形）、
+            # 快照不落盘、头像下载不触发（502 判定与 _send 已挪锁外）
+            os.remove(sf.SNAPSHOT_JSON)
+            sf.fetch_ntestrategy, sf.fetch_mysqil_names = fail("nte"), fail("mysqil")
+            code, data = _conc04_call(port, "POST", "/api/sites/sync-guide", {})
+            assert code == 502 and data["ok"] is False, (code, data)
+            assert set(data.keys()) == {"ok", "error", "sources"}, \
+                sorted(data.keys())
+            assert "stub fail nte" in data["error"] \
+                and "stub fail mysqil" in data["error"], data["error"]
+            assert not os.path.exists(sf.SNAPSHOT_JSON), "两站全挂不得刷新快照"
+            assert len(av_calls) == 1, "502 路径不得触发头像下载"
+        finally:
+            restore()
+            shutil.rmtree(tmp, ignore_errors=True)  # 失败轮也不得残留 .tmp/
+
+
 @case
 def test_manual_only_inventory_exclusion():
     """手动项机制（2026-11-10）：materials.json 的 manual_only:true 材料

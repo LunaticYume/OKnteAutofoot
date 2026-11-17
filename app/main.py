@@ -3592,20 +3592,40 @@ class Handler(BaseHTTPRequestHandler):
             # 手动同步攻略站公共数据（ntestrategy + wiki.mysqil.com；仅本端点触发，
             # 无任何定时）。nteguide.com 自 2026-11-10 起全面禁用（见 AGENTS.md）。
             # URL 由 sites_fetch 常量白名单决定，不接受前端传参；body 只作占位不读取。
+            # CONC-04/B3 修复：两站网络抓取+解析+合并+快照落盘整段移出 STATE.lock——
+            # 原实现整段持锁，慢源窗口实测 ≈6s 期间 /api/settings 等全部写路径阻塞
+            # 至抓取结束；修复后锁内仅剩重读合并+写回+save（本地内存操作与单文件
+            # 原子写，无网络无长阻塞），锁序不变量不受影响。
+            with STATE.lock:  # 短持锁读基线副本：与并发写者互斥，保证基准一致
+                base_chars = [str(n) for n in (STATE.data.get("char_library") or [])]
+                base_weapons = [str(n) for n in (STATE.data.get("weapon_library") or [])]
+            merge, payload = sites_fetch.sync_guide_sites(
+                base_chars, base_weapons, timeout=15)
+            if not payload.get("ok"):
+                # 502 判定与应答挪锁外（CONC-04/B3）：_send 不再持锁执行
+                self._send(502, {"ok": False, "error": "两站均抓取失败："
+                                 + "；".join(f"{k}: {v['error']}"
+                                            for k, v in payload["sources"].items()
+                                            if v["error"]),
+                                 "sources": payload["sources"]})
+                return
             with STATE.lock:  # 目录读-改-写与并发请求互斥（同 /api/game-data/import）
-                merge, payload = sites_fetch.sync_guide_sites(
-                    STATE.data.get("char_library") or [],
-                    STATE.data.get("weapon_library") or [], timeout=15)
-                if not payload.get("ok"):
-                    self._send(502, {"ok": False, "error": "两站均抓取失败："
-                                     + "；".join(f"{k}: {v['error']}"
-                                                for k, v in payload["sources"].items()
-                                                if v["error"]),
-                                     "sources": payload["sources"]})
-                    return
+                # 锁内重读两库为合并基准（CONC-04/B3「锁内重读防丢更新」）：抓取
+                # 期间并发请求对库的改动以此刻读到的为准保留。sync_guide_sites 的
+                # 合并结果恒为 入参库(前段)+抓取新增(后段)（sites_fetch.merge_catalogs
+                # 「不覆盖已有实名，缺失补录」），故新增段按序补录到重读库尾、重读库
+                # 已有实名一律不重复不覆盖；无并发改动时与串行基线逐键一致。
+                cur_chars = [str(n) for n in (STATE.data.get("char_library") or [])]
+                cur_weapons = [str(n) for n in (STATE.data.get("weapon_library") or [])]
+                have = set(cur_chars)
+                add_chars = [n for n in merge["char_library"][len(base_chars):]
+                             if n not in have]
+                have = set(cur_weapons)
+                add_weapons = [n for n in merge["weapon_library"][len(base_weapons):]
+                               if n not in have]
                 # 合并策略：不覆盖已有实名，缺失补录（上限与 _sanitize_libraries 对齐）
-                STATE.data["char_library"] = merge["char_library"][:200]
-                STATE.data["weapon_library"] = merge["weapon_library"][:200]
+                STATE.data["char_library"] = (cur_chars + add_chars)[:200]
+                STATE.data["weapon_library"] = (cur_weapons + add_weapons)[:200]
                 STATE.save()
             # 角色头像下载（2026-11-09 工作包2；2026-11-10 起源站改 wiki.mysqil.com，
             # 锁外执行不拖慢其他请求）：只取 mysqil 源条目（拼音 slug，立绘优先/
