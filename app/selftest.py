@@ -4980,6 +4980,349 @@ def test_ocr_scroll_config():
     assert "-lt 8" in captured["ps"] and ", -240," in captured["ps"], captured["ps"]
 
 
+# ---------- B3-B OCR-01：PS 回退遍历取消支持（方案 b：Popen 句柄登记+terminate）专项 ----------
+
+@case
+def test_ocr01_ps_fallback_cancel_prompt():
+    """OCR-01/B3-B 方案 b ①（慢桩+中段取消）：PS 回退整页阻塞期间触发取消——
+    页 1 正常完成（已完成格入库），页 2 慢桩 Start-Sleep 阻塞、页 PS 句柄经生产
+    登记链进 _OCR_ACTIVE_PS 后，直调 /api/ocr/cancel 与 Ctrl+Alt+Q 共用的取消
+    原语 _ocr_cancel_active：遍历必须 promptly 结束（取消→返回 <1 秒级，perf_counter
+    断言——修复前=整页时长，慢桩 3.0s 实测 3.001s/比值 1.000，约 8.6 格基线）；
+    句柄级终止动作实际发生（第 2 页在册句柄 terminate 后 poll 非 None）；返回契约
+    与 elev 路径一致=取消后返回已完成格不抛错（页 1 的 3 格 matches 保留、
+    warning 含「用户取消」、无异常外抛）。
+    夹具照 test_ocr_traverse_overlap_regression 先例打桩（_bind_game_window/
+    _ocr_scroll/_ocr_layout/_ensure_helper_for_ocr + _OCR_PS_TRAVERSE 换慢桩脚本），
+    真 powershell 走真实 _ocr_run_ps_popen 登记/terminate 链；慢桩不点击、不识别、
+    无网络。"""
+    import app.main as main_mod
+    stub_ps = (
+        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n"
+        "Start-Sleep -Seconds 2\n"   # 慢桩：页 PS 长阻塞（可被句柄 terminate 截断）
+        "Write-Output '__OCR_CELL__:0:\"海之泪 ×16\"'\n"
+        "Write-Output '__OCR_CELL__:1:\"海之泪 ×16\"'\n"
+        "Write-Output '__OCR_CELL__:2:\"\"'\n"
+        "Write-Output \"__OCR_META__`tStubWindow`twindow\"\n"
+    )
+    with _StateGuard():
+        STATE.data["settings"] = dict(DEFAULT_SETTINGS)
+        STATE.settings["game_process_name"] = "HTGame.exe"
+        STATE.settings["game_window_keywords"] = "异环"
+        meta = {"hwnd": 1, "class": "UnrealWindow", "title": "异环  ", "pid": 1,
+                "process": "HTGame", "exe_path": "", "w": 1920, "h": 1080}
+        observed = {"epochs": 0, "proc2": None}
+
+        def watch_active_ps():
+            # 观察生产登记链：第 1 次登记=页 1（正常跑完清空），第 2 次登记=页 2
+            # （取消目标页）；按登记→清空的配对逐 epoch 计数
+            deadline = time.monotonic() + 90
+            while time.monotonic() < deadline and observed["epochs"] < 2:
+                p = main_mod._OCR_ACTIVE_PS
+                if p is None:
+                    time.sleep(0.005)
+                    continue
+                observed["epochs"] += 1
+                if observed["epochs"] == 2:
+                    observed["proc2"] = p
+                while time.monotonic() < deadline \
+                        and main_mod._OCR_ACTIVE_PS is p:  # 等本页登记结束（清空）
+                    time.sleep(0.005)
+
+        result = {}
+
+        def run_traverse():
+            try:
+                result["r"] = main_mod._run_backpack_ocr(mode="traverse")
+            except BaseException as e:  # noqa: BLE001 —— 线程内异常带回主线程断言
+                result["exc"] = e
+
+        orig = (main_mod._bind_game_window, main_mod._ocr_scroll,
+                main_mod._ocr_layout, main_mod._ensure_helper_for_ocr,
+                main_mod._OCR_PS_TRAVERSE)
+        main_mod._bind_game_window = lambda *a, **k: (1, meta, [meta])
+        main_mod._ocr_scroll = lambda *a, **k: None
+        main_mod._ocr_layout = lambda: main_mod._sanitize_ocr_layout(
+            dict(main_mod._OCR_LAYOUT_DEFAULT))
+        main_mod._ensure_helper_for_ocr = lambda *a, **k: False  # 强制走 PS 回退分支
+        main_mod._OCR_PS_TRAVERSE = stub_ps
+        watcher = threading.Thread(target=watch_active_ps, daemon=True,
+                                   name="selftest-ocr01-watch")
+        worker = threading.Thread(target=run_traverse,
+                                  name="selftest-ocr01-traverse")
+        try:
+            watcher.start()
+            worker.start()
+            deadline = time.monotonic() + 60
+            while time.monotonic() < deadline and observed["epochs"] < 2:
+                time.sleep(0.02)  # 等页 1（正常完成清空）→ 页 2（慢桩阻塞）两个登记 epoch
+            assert observed["epochs"] == 2, \
+                (f"页 2 句柄必须经生产登记链进 _OCR_ACTIVE_PS"
+                 f"（epochs={observed['epochs']}, exc={result.get('exc')}）")
+            time.sleep(0.1)  # 页 2 PS 已在慢桩阻塞窗口内（确定性：Start-Sleep 2s）
+            t0 = time.perf_counter()
+            gen = main_mod._ocr_cancel_active()  # 取消原语本体（路由/热键共用）
+            worker.join(timeout=90)
+            elapsed = time.perf_counter() - t0
+            assert not worker.is_alive(), "取消后遍历线程必须结束（90s 硬截止兜底）"
+            # ①核心断言：取消后 promptly 结束（<1 秒级；修复前=整页时长≈慢桩 2s+启动）
+            assert elapsed < 1.0, f"取消时延 {elapsed:.3f}s 应 <1s（方案 b 生效）"
+            # 句柄级终止动作：页 2 在册句柄已被 terminate（poll 非 None）
+            p2 = observed["proc2"]
+            assert p2 is not None and p2.poll() is not None, \
+                (p2, p2.poll() if p2 is not None else None)
+            # 返回契约（实现五）：取消后返回已完成格不抛错（线程内无异常）
+            assert "exc" not in result, result.get("exc")
+            r = result["r"]
+            assert any("用户取消" in w for w in r["warnings"]), r["warnings"]
+            assert r["pages"] == 2 and r["cells_scanned"] == 3, \
+                (r["pages"], r["cells_scanned"], r["warnings"])
+            # 页 1 已完成格原样保留（页 2 取消点之后的格不再解析）
+            assert r["matches"] == {"boss_sea_tear": 16}, r["matches"]
+            assert r["unmatched_lines"] == [] and r["unknown_items"] == [], \
+                (r["unmatched_lines"], r["unknown_items"])
+        finally:
+            # 卫生：仍存活的页 PS 补杀（不留孤儿 powershell），再收线程
+            p = main_mod._OCR_ACTIVE_PS
+            if p is not None and getattr(p, "poll", lambda: None)() is None:
+                try:
+                    p.kill()
+                except Exception:  # noqa: BLE001 —— 清理尽力而为
+                    pass
+            worker.join(timeout=90)
+            (main_mod._bind_game_window, main_mod._ocr_scroll, main_mod._ocr_layout,
+             main_mod._ensure_helper_for_ocr, main_mod._OCR_PS_TRAVERSE) = orig
+            main_mod._OCR_ACTIVE_PS = None
+            main_mod._OCR_CANCEL.clear()  # 用例收尾卫生复位，不影响其它用例
+
+
+@case
+def test_ocr01_cancel_primitive_gen_isolation():
+    """OCR-01/B3-B 方案 b ②（取消原语单测，句柄用替身、真原语）：未激活态
+    （_OCR_ACTIVE_PS 空）取消=纯令牌置位、不触碰任何句柄、返回登记时当前代；
+    在册存活句柄 → terminate 实际发生且令牌按代数命中；旧代取消绝不命中新一轮
+    （_ocr_gen_begin 后新代 _ocr_cancel_hit=False=gen 隔离，代数令牌既有语义
+    不回归）；已退出句柄（poll 非 None）不做任何终止动作（poll 守卫生效）；
+    terminate 抛 OSError 逐个吞掉且 kill 兜底仍执行、令牌置位不受影响；
+    KeyboardInterrupt 为 BaseException 不在 except Exception 吞列（必须外抛）。"""
+    import app.main as main_mod
+
+    class _FakeProc:
+        """句柄替身：记录 terminate/kill 调用与存活态（poll 契约同 Popen：None=存活）。"""
+
+        def __init__(self, alive=True, fail_terminate=False, exc=None):
+            self.alive = alive
+            self.terminated = False
+            self.killed = False
+            self._fail = fail_terminate
+            self._exc = exc
+
+        def poll(self):
+            return None if self.alive else 0
+
+        def terminate(self):
+            if self._exc is not None:
+                raise self._exc
+            if self._fail:
+                raise OSError("simulated terminate failure")
+            self.terminated = True
+            self.alive = False
+
+        def kill(self):
+            self.killed = True
+            self.alive = False
+
+    orig_slot = main_mod._OCR_ACTIVE_PS
+    orig_cancel_gen = main_mod._OCR_CANCEL_GEN
+    try:
+        # (a) 未激活态：槽位空 → 取消=纯令牌置位，无句柄动作，返回当前代
+        main_mod._OCR_ACTIVE_PS = None
+        g0 = main_mod._ocr_cancel_active()
+        assert g0 == main_mod._OCR_GEN, (g0, main_mod._OCR_GEN)
+        assert main_mod._ocr_cancel_hit(g0), "取消必须定向登记时的当前代"
+        # (b) 代数匹配+句柄终止：在册存活句柄 → terminate 实际发生
+        p1 = _FakeProc(alive=True)
+        main_mod._OCR_ACTIVE_PS = p1
+        g1 = main_mod._ocr_cancel_active()
+        assert g1 == main_mod._OCR_GEN, (g1, main_mod._OCR_GEN)
+        assert p1.terminated and not p1.alive, (p1.terminated, p1.alive)
+        assert not p1.killed, "terminate 已生效不再补杀"
+        assert main_mod._ocr_cancel_hit(g1)
+        # (c) gen 隔离：旧代取消后新一轮（代数+1）不命中——令牌既有语义不回归
+        g2 = main_mod._ocr_gen_begin()
+        assert g2 == g1 + 1, (g1, g2)
+        assert not main_mod._ocr_cancel_hit(g2), "旧代取消不得命中新代（gen 隔离）"
+        assert main_mod._ocr_cancel_hit(g1), "旧代取消仍对旧代可见"
+        # (d) 已退出句柄：poll 非 None → 不做任何终止动作（poll 守卫生效）
+        p2 = _FakeProc(alive=False)
+        main_mod._OCR_ACTIVE_PS = p2
+        main_mod._ocr_cancel_active()
+        assert not p2.terminated and not p2.killed, (p2.terminated, p2.killed)
+        # (e) terminate 抛 OSError：逐个吞掉、kill 兜底仍执行、令牌置位不受影响
+        p3 = _FakeProc(alive=True, fail_terminate=True)
+        main_mod._OCR_ACTIVE_PS = p3
+        g3 = main_mod._ocr_cancel_active()  # 不得外抛 OSError
+        assert p3.killed and not p3.alive, (p3.killed, p3.alive)
+        assert main_mod._ocr_cancel_hit(g3)
+        # (f) KeyboardInterrupt 不吞（BaseException 不在 except Exception 吞列），
+        #     且令牌在终止动作之前已置位
+        p4 = _FakeProc(alive=True, exc=KeyboardInterrupt())
+        main_mod._OCR_ACTIVE_PS = p4
+        ki_caught = False
+        try:
+            main_mod._ocr_cancel_active()
+        except KeyboardInterrupt:
+            ki_caught = True
+        assert ki_caught, "terminate 抛 KeyboardInterrupt 必须外抛（不吞）"
+        assert main_mod._OCR_CANCEL.is_set(), "令牌置位在句柄终止之前、不受其异常影响"
+    finally:
+        main_mod._OCR_ACTIVE_PS = orig_slot
+        main_mod._OCR_CANCEL_GEN = orig_cancel_gen
+        main_mod._OCR_CANCEL.clear()  # 用例收尾卫生复位，不影响其它用例
+
+
+@case
+def test_ocr01_popen_timeout_kill_cleanup():
+    """OCR-01/B3-B 方案 b ③（Popen 变体超时路径）：真 powershell 慢桩
+    Start-Sleep 30 + timeout=0.8 → 必抛 TimeoutExpired（与原 _ocr_run_ps 的
+    subprocess.run「超时即杀」契约一致）；运行中句柄确实登记过（watcher 观察到
+    _OCR_ACTIVE_PS）；超时 kill 后句柄已退出（poll 非 None）；_OCR_ACTIVE_PS
+    复位（超时分支 + finally 双保险）；异常附杀后收尸残余输出（stdout/stderr 非
+    None，与 subprocess.run Windows 分支同款）。"""
+    import app.main as main_mod
+    observed = {"proc": None}
+
+    def watch():
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            p = main_mod._OCR_ACTIVE_PS
+            if p is not None:
+                observed["proc"] = p
+                return
+            time.sleep(0.005)
+
+    assert main_mod._OCR_ACTIVE_PS is None, "测试前提：登记槽位空闲"
+    w = threading.Thread(target=watch, daemon=True, name="selftest-ocr01-timeout")
+    w.start()
+    raised = False
+    try:
+        main_mod._ocr_run_ps_popen("Start-Sleep -Seconds 30", {}, timeout=0.8)
+    except subprocess.TimeoutExpired as e:
+        raised = True
+        assert e.stdout is not None and e.stderr is not None, \
+            "超时异常必须附杀后收尸残余输出（原 run Windows 分支同款）"
+    assert raised, "超时必须抛 TimeoutExpired（与原 _ocr_run_ps 契约一致）"
+    w.join(timeout=2)
+    p = observed["proc"]
+    assert p is not None, "运行中句柄必须被登记（watcher 未观察到=登记缺失）"
+    assert p.poll() is not None, "超时 kill 后句柄必须已退出"
+    assert main_mod._OCR_ACTIVE_PS is None, "超时路径 _OCR_ACTIVE_PS 必须复位"
+
+
+@case
+def test_ocr01_ps_fallback_normal_regression():
+    """OCR-01/B3-B 方案 b ④（正常遍历回归，无取消）：真 powershell 桩脚本输出
+    （含中文/空格/×N 形态 + 尾部 3 连空）经新 Popen 变体整页返回，解析聚合结果
+    与既有断言口径一致（matches={boss_sea_tear:16}、cells_scanned=4、pages=1、
+    warning「连续 3 格空白」——对照 test_ocr_unknown_cells_keep_traversing 的
+    r2 形态），输出解析链（main.py PS 回退分支 :1671-1686 段）不破坏；同脚本同
+    注入直调新旧两函数，返回三元组 (stdout, stderr, returncode) 逐项相等（返回值
+    契约与原函数一致）；调用后登记槽位复位（成功路径登记/清空严格配对）。"""
+    import app.main as main_mod
+    stub_ps = (
+        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n"
+        "Write-Output '__OCR_CELL__:0:\"海之泪 ×16\"'\n"
+        "Write-Output '__OCR_CELL__:1:\"\"'\n"
+        "Write-Output '__OCR_CELL__:2:\"\"'\n"
+        "Write-Output '__OCR_CELL__:3:\"\"'\n"
+        "Write-Output \"__OCR_META__`tStubWindow`twindow\"\n"
+    )
+    with _StateGuard():
+        STATE.data["settings"] = dict(DEFAULT_SETTINGS)
+        STATE.settings["game_process_name"] = "HTGame.exe"
+        STATE.settings["game_window_keywords"] = "异环"
+        meta = {"hwnd": 1, "class": "UnrealWindow", "title": "异环  ", "pid": 1,
+                "process": "HTGame", "exe_path": "", "w": 1920, "h": 1080}
+        orig = (main_mod._bind_game_window, main_mod._ocr_scroll,
+                main_mod._ocr_layout, main_mod._ensure_helper_for_ocr,
+                main_mod._OCR_PS_TRAVERSE)
+        main_mod._bind_game_window = lambda *a, **k: (1, meta, [meta])
+        main_mod._ocr_scroll = lambda *a, **k: None
+        lay = main_mod._sanitize_ocr_layout(dict(main_mod._OCR_LAYOUT_DEFAULT))
+        main_mod._ocr_layout = lambda: lay
+        main_mod._ensure_helper_for_ocr = lambda *a, **k: False  # 强制走 PS 回退分支
+        main_mod._OCR_PS_TRAVERSE = stub_ps
+        try:
+            r = main_mod._run_backpack_ocr(mode="traverse")
+            # 正常遍历结果与旧路径（subprocess.run 形态）的既有断言口径一致
+            assert r["matches"] == {"boss_sea_tear": 16}, r["matches"]
+            assert r["pages"] == 1 and r["cells_scanned"] == 4, \
+                (r["pages"], r["cells_scanned"])
+            assert any("连续 3 格空白" in w for w in r["warnings"]), r["warnings"]
+            assert r["unmatched_lines"] == [] and r["unknown_items"] == [], \
+                (r["unmatched_lines"], r["unknown_items"])
+            assert main_mod._OCR_ACTIVE_PS is None, "遍历结束后登记槽位必须复位"
+            # 返回值契约：同脚本同注入，新旧两函数三元组逐项相等
+            script = (main_mod._OCR_PS_COMMON + "\n" + main_mod._OCR_PS_WINDOW
+                      + "\n" + main_mod._OCR_PS_TRAVERSE)
+            pts = main_mod._ocr_cell_points(lay, 1920, 1080)
+            repl = {"__HWND__": "1", "__ROI__": "",
+                    "__POINTS__": json.dumps([list(p) for p in pts])}
+            old_out = main_mod._ocr_run_ps(script, repl, timeout=60)
+            new_out = main_mod._ocr_run_ps_popen(script, repl, timeout=60)
+            assert old_out == new_out, \
+                "新旧函数返回三元组必须一致（stdout/stderr/returncode）"
+            assert "__OCR_CELL__:0:" in new_out[0] and new_out[2] == 0, new_out[2]
+            assert main_mod._OCR_ACTIVE_PS is None, "直调后登记槽位必须复位"
+        finally:
+            (main_mod._bind_game_window, main_mod._ocr_scroll, main_mod._ocr_layout,
+             main_mod._ensure_helper_for_ocr, main_mod._OCR_PS_TRAVERSE) = orig
+            main_mod._OCR_ACTIVE_PS = None
+            main_mod._OCR_CANCEL.clear()
+
+
+@case
+def test_ocr01_existing_ocr_cases_rerun():
+    """OCR-01/B3-B 方案 b ⑤（OCR 既有用例隔离直调复跑全绿）：本 slice 改动
+    （_ocr_run_ps_popen/_OCR_ACTIVE_PS/_ocr_cancel_active 句柄终止/PS 回退走新
+    变体）不得破坏任何既有 OCR 用例（含端点级 e2e：单飞锁 409 真服务用例）。
+    逐例隔离直调并记录 PASS/FAIL，任一失败即本用例失败并列出清单。复跑期间把
+    tempfile 默认根重定向到仓库 .tmp/（E 盘）——既有用例的 mkdtemp 不再滞留
+    C 盘，结束后清理并还原。"""
+    import app.main as main_mod
+    ocr_cases = [
+        test_ocr_match_inventory_text, test_ocr_item_names_dictionary,
+        test_ocr_candidates_single_owner, test_ocr_parse_count_cn,
+        test_ocr_cell_points_grid, test_ocr_windows_parse,
+        test_ocr_bind_priority, test_ocr_magnitude_in_inventory,
+        test_ocr_traverse_overlap_regression, test_ocr_unknown_cells_keep_traversing,
+        test_ocr_traverse_cancel, test_ocr_cell_cancel_and_token_isolation,
+        test_ocr_single_flight_409, test_ocr_badge_count_priority,
+        test_ocr_map_unknown, test_ocr_numeric_noise_traverse,
+        test_ocr_scroll_keyword_injection_safe, test_ocr_scroll_config,
+    ]
+    tmp_root = _safe_path(_ROOT, ".tmp", "selftest_ocr01_rerun")
+    Path(tmp_root).mkdir(parents=True, exist_ok=True)
+    orig_tempdir = tempfile.tempdir
+    tempfile.tempdir = str(tmp_root)  # 复跑期 mkdtemp（无 dir=）落在仓库 .tmp/
+    failed = []
+    try:
+        for fn in ocr_cases:
+            try:
+                fn()
+            except Exception as e:  # noqa: BLE001 —— 复跑记录后整体判失败
+                failed.append(f"{fn.__name__}: {type(e).__name__}: {e}")
+                print(f"OCR01-RERUN FAIL {fn.__name__}: {type(e).__name__}: {e}")
+            else:
+                print(f"OCR01-RERUN PASS {fn.__name__}")
+    finally:
+        tempfile.tempdir = orig_tempdir
+        shutil.rmtree(tmp_root, ignore_errors=True)  # 复跑夹具随测随清
+    assert not failed, "OCR 既有用例复跑存在失败：" + "; ".join(failed)
+    assert main_mod._OCR_ACTIVE_PS is None, "复跑后登记槽位必须复位"
+    assert not main_mod._OCR_CANCEL.is_set(), "复跑后取消令牌必须复位"
+
+
 # ---------- 塔吉多通道（协议纯函数 / 请求构造 / 解析 / 预览应用） ----------
 
 @case

@@ -1281,6 +1281,44 @@ def _ocr_run_ps(script, replacements, timeout=90):
     return out, err, r.returncode
 
 
+def _ocr_run_ps_popen(script, replacements, timeout=90):
+    """_ocr_run_ps 的 Popen 变体（OCR-01/B3-B 方案 b：Popen 句柄登记+terminate）。
+
+    语义与 _ocr_run_ps 完全一致（UTF-16LE base64 EncodedCommand、capture_output、
+    creationflags 0x08000000、timeout 超时处置），仅改造为 Popen+communicate(timeout)：
+    进程句柄登记进 _OCR_ACTIVE_PS——/api/ocr/cancel 与 Ctrl+Alt+Q 热键共用的取消
+    原语 _ocr_cancel_active 置位令牌后即可 terminate 在册句柄（OCR-01 缺陷本体：
+    PS 回退整页 subprocess.run 无取消检查点，取消时延=整页时长，慢桩实测 3.001s）。
+    finally 清空与登记严格配对（异常/取消/超时路径不泄漏句柄引用）；超时 kill 后
+    _OCR_ACTIVE_PS 复位再抛 TimeoutExpired（与 subprocess.run「超时即杀」契约一致，
+    杀后收尸排空管道残余输出并附到异常）。返回契约与原函数一致：
+    (stdout 解码, stderr 解码, returncode)——调用方输出解析不破坏。"""
+    global _OCR_ACTIVE_PS
+    for key, value in replacements.items():
+        script = script.replace(key, value)
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    proc = subprocess.Popen(["powershell", "-NoProfile", "-EncodedCommand", encoded],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            creationflags=0x08000000)
+    # 登记（OCR-01/B3-B 方案 b）：单飞 _OCR_RUN_LOCK 下同一时刻至多一个遍历的
+    # 页 PS 在册，引用赋值 GIL 原子、无需加锁
+    _OCR_ACTIVE_PS = proc
+    try:
+        try:
+            out_b, err_b = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            proc.kill()            # 与 subprocess.run 超时分支同款：超时即杀
+            _OCR_ACTIVE_PS = None  # OCR-01/B3-B 方案 b：超时路径句柄复位（遍历 finally 双保险）
+            exc.stdout, exc.stderr = proc.communicate()  # 收尸排空残余（run Windows 分支同款）
+            raise
+    finally:
+        if _OCR_ACTIVE_PS is proc:  # 配对清空；已被超时分支复位则免写
+            _OCR_ACTIVE_PS = None
+    out = (out_b or b"").decode("utf-8", errors="replace").replace("\r\n", "\n")
+    err = (err_b or b"").decode("utf-8", errors="replace").strip()
+    return out, err, proc.returncode
+
+
 def _run_ps_file(ps, timeout):
     """把 PS 脚本落临时文件用 -File 执行（返回 (stdout 字节, stderr 字节, returncode)）。
 
@@ -1657,8 +1695,12 @@ def _ocr_traverse_page(hwnd, layout, win_size, gen=None):
       判据一致）；gen 给定时格间检查取消代数（粒度比旧页级取消更细）。
     - 辅助进程不可用：回退旧的一次性 PS 遍历（点击在 PS 进程内发起——对提权
       游戏窗口该路径的输入会被 UIPI 丢弃，仅保留旧形态兼容：面板以管理员运行
-      或游戏未提权时仍可用）。
+      或游戏未提权时仍可用）。gen 给定时：页 PS 经 _ocr_run_ps_popen 走 Popen
+      变体并登记句柄（OCR-01/B3-B 方案 b：取消链整页阻塞期间即可 terminate），
+      取消命中时终止产生的非零返回码/截断输出不算脚本失败、已完成格原样返回
+      （与提权路径「格间取消已完成部分原样返回」契约一致）。
     其余判停由调用方按页处理。"""
+    global _OCR_ACTIVE_PS
     points = _ocr_cell_points(layout, win_size[0], win_size[1])
     if not points:
         return None
@@ -1672,13 +1714,28 @@ def _ocr_traverse_page(hwnd, layout, win_size, gen=None):
     if _ensure_helper_for_ocr():
         return _ocr_traverse_page_elev(hwnd, points, roi_text, gen)
     ps = _OCR_PS_COMMON + "\n" + _OCR_PS_WINDOW + "\n" + _OCR_PS_TRAVERSE
-    out, err, code = _ocr_run_ps(
-        ps, {"__HWND__": str(int(hwnd)), "__ROI__": roi_text,
-             "__POINTS__": json.dumps([list(p) for p in points])},
-        timeout=min(600, 30 + len(points) * 2))
-    if "__OCR_NOWIN__" in out:
+    # OCR-01/B3-B 方案 b：PS 回退改走 Popen 变体并把 gen 代数传入（此前仅提权
+    # 分支用 gen，PS 整页 subprocess.run 形态不可中断、取消时延=整页时长——
+    # 缺陷本体）；句柄由变体登记进 _OCR_ACTIVE_PS，取消链整页阻塞期间即可
+    # terminate。finally 复位与变体内部清理双保险（单飞锁下无并发遍历，
+    # 无条件复位安全），异常路径不泄漏句柄引用。
+    try:
+        out, err, code = _ocr_run_ps_popen(
+            ps, {"__HWND__": str(int(hwnd)), "__ROI__": roi_text,
+                 "__POINTS__": json.dumps([list(p) for p in points])},
+            timeout=min(600, 30 + len(points) * 2))
+    finally:
+        _OCR_ACTIVE_PS = None
+    # OCR-01/B3-B 方案 b：gen 代数传入 PS 回退路径——取消命中（页 PS 被
+    # terminate，非零返回码/截断输出是取消的必然产物）时不按脚本失败抛
+    # OSError，已完成格原样返回，上层格间检查点立即收尾；取消优先于窗口失效
+    # 判定（与提权路径逐格「先查取消再查窗口」顺序一致，终止后的 NOWIN 不再
+    # 触发重绑重跑一整页）
+    cancelled = gen is not None and _ocr_cancel_hit(gen)
+    if "__OCR_NOWIN__" in out and not cancelled:
         return None
-    _ocr_check_errors(out, err, code)
+    if not cancelled:
+        _ocr_check_errors(out, err, code)
     cells, title = {}, ""
     m = re.search(r"__OCR_META__\t([^\t\r\n]*)", out)
     if m:
@@ -1942,6 +1999,14 @@ _OCR_CANCEL_GEN = 0               # 取消针对的代数（无活跃遍历时�
 # 污染点击与识别结果）——遍历端点非阻塞抢占，抢不到即 409。
 # /api/ocr/capture 只截屏不点击，不占用该锁。
 _OCR_RUN_LOCK = threading.Lock()
+# OCR-01/B3-B 方案 b（Popen 句柄登记+terminate）：当前遍历的页 PS 进程句柄。
+# _ocr_run_ps_popen 创建句柄即登记、finally 清空（严格配对），_ocr_traverse_page
+# 的 PS 回退分支 finally 复位双保险；_ocr_cancel_active（/api/ocr/cancel 路由与
+# Ctrl+Alt+Q 热键共用）置位代数令牌后直接 terminate 在册句柄——PS 回退整页
+# 阻塞无取消检查点，仅置位令牌要等整页 PS 返回才生效（复现实测取消时延=整页
+# 时长，约 8.6 格基线）。单飞 _OCR_RUN_LOCK 下同一时刻至多一个页 PS 在册，
+# 引用读写 GIL 原子、无需加锁。
+_OCR_ACTIVE_PS = None
 
 
 def _ocr_gen_begin():
@@ -1958,13 +2023,33 @@ def _ocr_cancel_hit(gen):
 
 
 def _ocr_cancel_active():
-    """取消当前正在跑的那一代遍历（/api/ocr/cancel），返回其代数。无活跃遍历时
-    目标指向最近一代——再无人检查该代数，等价无操作，绝不影响下一轮。"""
+    """取消当前正在跑的那一代遍历（/api/ocr/cancel 路由与 Ctrl+Alt+Q 热键共用），
+    返回其代数。无活跃遍历时目标指向最近一代——再无人检查该代数，等价无操作，
+    绝不影响下一轮。
+    OCR-01/B3-B 方案 b：置位令牌后对在册页 PS 句柄（_OCR_ACTIVE_PS，由
+    _ocr_run_ps_popen 登记）terminate（再 kill 兜底）——PS 回退路径整页阻塞无
+    取消检查点，仅置位令牌要等整页 PS 返回才生效（复现实测取消时延=整页时长，
+    约 8.6 格基线）。terminate/kill 异常逐个捕获吞掉、不影响令牌置位（只吞
+    Exception，KeyboardInterrupt 为 BaseException 不在吞列）；句柄按引用快照
+    操作，与遍历端 finally 清空的竞态无害——对已退出进程 terminate 是 no-op
+    或报错，均在吞列。"""
     global _OCR_CANCEL_GEN
     with _OCR_GEN_LOCK:
         _OCR_CANCEL_GEN = _OCR_GEN
         gen = _OCR_GEN
     _OCR_CANCEL.set()
+    # OCR-01/B3-B 方案 b：句柄级终止——整页阻塞期间的取消不再等下一个检查点
+    proc = _OCR_ACTIVE_PS  # 引用快照：清空/换代的竞态下也至多 terminate 旧句柄
+    if proc is not None and proc.poll() is None:
+        try:
+            proc.terminate()
+        except Exception:  # noqa: BLE001 —— 逐个吞掉，不影响令牌置位（不吞 KeyboardInterrupt）
+            pass
+        try:
+            if proc.poll() is None:
+                proc.kill()  # terminate 失败仍存活 → 兜底补杀
+        except Exception:  # noqa: BLE001
+            pass
     return gen
 
 
