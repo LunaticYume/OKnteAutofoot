@@ -8966,6 +8966,321 @@ def test_sec10_deelevate_static():
     assert "-Verb RunAs" in client_src, "生产拉起必须经 UAC（Start-Process -Verb RunAs）"
 
 
+# ---------- B3-A Slice B（SRV-06，2026-11-18）：Ctrl+C 停执行器 + helper 退出收尸 children 专项 ----------
+
+
+@case
+def test_srv06_kb_branch_stops_runner():
+    """SRV-06 Ctrl+C 路径专项（直调层）：RUNNER 经真实 start 入口置 running
+    （_run_loop 打桩为停驻哨兵，不拉起任何真实子进程）→ 直调 main._run_panel
+    （OKNTE_PLANNER_NO_BROWSER=1 → ui=none；create_server 打桩为无套接字桩），
+    KeyboardInterrupt 从 server_thread.join() 同一调用点注入（真实 Ctrl+C 打断
+    阻塞主线程的抛出点，与 SRV-06 复现 run6 同口径）→ 断言分支内 RUNNER.stop()
+    恰被调用一次（计数）且 runtime.json 落 stopped（RUNTIME_FILE 重定向 .tmp）。"""
+    from app import elev_client
+    from app import main as main_mod
+    tmp = _sec10_tmp("srv06kb")
+    orig_runtime = runner_mod.RUNTIME_FILE
+    orig_run_loop = runner_mod.Runner._run_loop
+    orig_create_server = main_mod.create_server
+    orig_join = threading.Thread.join
+    runner_mod.RUNTIME_FILE = _safe_path(tmp, "runtime.json")
+
+    def _parked_run_loop(self, mode="daily"):
+        # 停在 running：直到 stop_event；被停则照真实 _run_loop 的 stop 分支口径
+        # 落 stopped 记账（runner.py: _finish("stopped", "已手动停止")）
+        self.stop_event.wait(timeout=30)
+        if self.stop_event.is_set():
+            self._finish("stopped", "已手动停止")
+
+    runner_mod.Runner._run_loop = _parked_run_loop
+
+    class _StubServer:
+        """无套接字桩：serve_forever 长驻等待（20s 自杀兜底），不占真实端口。"""
+
+        def __init__(self):
+            self._stop = threading.Event()
+
+        def serve_forever(self):
+            self._stop.wait(timeout=20)
+
+        def shutdown(self):
+            self._stop.set()
+
+    stub = _StubServer()
+    main_mod.create_server = lambda port, auto_range=20: (stub, port)
+    entered = threading.Event()
+    driver = {"entered": False, "started": None, "running": False, "error": None}
+
+    def _driver():
+        # 侧线程：主线程到达 join 注入点后，经真实 start 入口把 RUNNER 置 running
+        try:
+            entered.wait(timeout=15)
+            driver["entered"] = True
+            ok, msg = runner_mod.RUNNER.start()
+            driver["started"] = (ok, msg)
+            if not ok:
+                return
+            deadline = time.time() + 10
+            while time.time() < deadline and \
+                    runner_mod.RUNNER.snapshot()["state"] != "running":
+                time.sleep(0.05)
+            driver["running"] = \
+                runner_mod.RUNNER.snapshot()["state"] == "running"
+        except Exception as e:  # noqa: BLE001 —— 驱动线程错误回传主线程断言
+            driver["error"] = e
+
+    def _cond_join(self, timeout=None):
+        # 条件 join：KeyboardInterrupt 注入点 = server_thread.join() 同一调用点。
+        # 仅对桩 server 线程注入（按 target 归属判定）：其余线程（含 subprocess
+        # run 内部的 stdout 泵线程 join）一律走真实 join，绝不向旁系线程漏注入。
+        if getattr(self, "_target", None) is None or \
+                getattr(self._target, "__self__", None) is not stub:
+            return orig_join(self, timeout)
+        entered.set()
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            if runner_mod.RUNNER.snapshot()["state"] == "running":
+                time.sleep(0.3)  # 稳定期：确保 start 的 runtime 落盘
+                break
+            time.sleep(0.05)
+        raise KeyboardInterrupt("srv06-injected")
+
+    calls = {"stop": 0}
+    orig_stop = runner_mod.RUNNER.stop
+
+    def _counting_stop(*a, **k):
+        calls["stop"] += 1
+        return orig_stop(*a, **k)
+
+    driver_th = None
+    no_browser = os.environ.get("OKNTE_PLANNER_NO_BROWSER")
+    try:
+        with _StateGuard():
+            STATE.data["settings"] = dict(DEFAULT_SETTINGS,
+                                          oknte_root=_safe_path(tmp, "fake_root"))
+            STATE.data["inventory"] = {}
+            STATE.data["today"] = _empty_today()
+            STATE.data["characters"] = []  # 启动回填空转（不触目录/快照）
+            # 前置对齐：RUNNER 必须空闲（照 test_ocr_single_flight_409 的对账口径）
+            deadline = time.time() + 10
+            while time.time() < deadline and \
+                    runner_mod.RUNNER.snapshot()["state"] in \
+                    ("running", "waiting", "stopping"):
+                runner_mod.RUNNER.stop()
+                time.sleep(0.2)
+            assert runner_mod.RUNNER.snapshot()["state"] not in \
+                ("running", "waiting", "stopping"), "前置：RUNNER 必须空闲"
+            main_mod._HOTKEY_STOP.set()  # 热键线程即刻收尾（测试进程不需要）
+            driver_th = threading.Thread(target=_driver, daemon=True,
+                                         name="srv06-driver")
+            driver_th.start()
+            runner_mod.RUNNER.stop = _counting_stop
+            threading.Thread.join = _cond_join
+            os.environ["OKNTE_PLANNER_NO_BROWSER"] = "1"
+            try:
+                main_mod._run_panel()  # 直调：KeyboardInterrupt 在分支内消化
+            finally:
+                os.environ.pop("OKNTE_PLANNER_NO_BROWSER", None)
+                if no_browser is not None:
+                    os.environ["OKNTE_PLANNER_NO_BROWSER"] = no_browser
+                threading.Thread.join = orig_join
+                if "stop" in runner_mod.RUNNER.__dict__:
+                    del runner_mod.RUNNER.stop
+            orig_join(driver_th, timeout=10)
+            stub.shutdown()
+            # ---- 断言：分支内 stop 被真实执行 + runtime.json 落 stopped ----
+            assert driver["error"] is None, driver["error"]
+            assert driver["entered"], "主线程应已到达 join 注入点"
+            assert driver["started"] and driver["started"][0], \
+                f"驱动线程应成功 start: {driver['started']!r}"
+            assert driver["running"], "RUNNER 应已进入 running"
+            assert calls["stop"] == 1, \
+                f"KeyboardInterrupt 分支应恰好调用一次 RUNNER.stop()，" \
+                f"实际 {calls['stop']!r}"
+            deadline = time.time() + 5
+            rt = None
+            while time.time() < deadline:
+                try:
+                    rt = json.loads(Path(runner_mod.RUNTIME_FILE).read_text(
+                        encoding="utf-8"))
+                except (OSError, ValueError):
+                    rt = None
+                if isinstance(rt, dict) and rt.get("state") == "stopped":
+                    break
+                time.sleep(0.1)
+            assert isinstance(rt, dict) and rt.get("state") == "stopped", \
+                f"Ctrl+C 分支后 runtime.json 应落 stopped，实际 {rt!r}"
+            assert runner_mod.RUNNER.snapshot()["state"] == "stopped", \
+                runner_mod.RUNNER.snapshot()["state"]
+    finally:
+        main_mod.create_server = orig_create_server
+        runner_mod.Runner._run_loop = orig_run_loop
+        threading.Thread.join = orig_join  # 幂等兜底（中途失败也还原）
+        runner_mod.RUNTIME_FILE = orig_runtime
+        main_mod._HOTKEY_STOP.clear()
+        runner_mod.RUNNER.stop_event.set()
+        th = runner_mod.RUNNER.thread
+        if th is not None and th.is_alive():
+            orig_join(th, timeout=6)
+        if driver_th is not None and driver_th.is_alive():
+            orig_join(driver_th, timeout=5)
+        elev_client.ELEV.shutdown()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_srv06_helper_exit_kills_children():
+    """SRV-06 helper 退出收尸专项（真实 helper 子进程 + 真实长驻哨兵）：伪父 +
+    真实 helper 子进程（set_test_spawn 模式，test_elev_helper_e2e_auth_ops_audit
+    同款；任务书所指 :8429-8459 实为 DATA_DIR 用例，模式实读在 :8648-8741），
+    _sec10_materialize_python 物化内嵌解释器（launch_runner 白名单全参数）拉起
+    长驻哨兵（time.sleep 自杀兜底）→ E.shutdown() 正常退出 → 断言 helper 进程
+    退出后哨兵随之死亡（不留孤儿）+ 审计 exit 行 children=0 + child_kill 记录。"""
+    from app import elev_client
+    elev_client.set_test_spawn(True)
+    tmp = _sec10_tmp("srv06helper")
+    root = _sec10_materialize_python(tmp)
+    if root is None:
+        print("SKIP test_srv06_helper_exit_kills_children: 当前解释器无法物化到"
+              " .tmp 临时根（跨卷且缺运行 DLL）")
+        return
+    os.makedirs(_safe_path(root, "working"), exist_ok=True)
+    profile = _safe_path(root, "working", "configs_planner")
+    os.makedirs(profile, exist_ok=True)
+    launcher = _safe_path(profile, "run_planner_task.py")
+    Path(launcher).write_text(
+        "import time\n"
+        "print('srv06-sentinel-start', flush=True)\n"
+        "time.sleep(60)\n", encoding="utf-8")
+    log_dir = _safe_path(tmp, "log")
+    os.makedirs(log_dir, exist_ok=True)
+    child_pid = None
+    helper_pid = None
+    try:
+        E = elev_client.ELEV
+        assert E.ensure(root, log_dir=log_dir, game_process="HTGame.exe"), \
+            E.reason()
+        helper_pid = E._pid
+        port, token = E._port, E._token
+        resp = elev_client.request_once(port, token, "launch_runner", {
+            "launcher": launcher, "profile": profile, "task": "日常任务",
+            "stdout": "ok-nte-headless-srv06-exit.log"}, timeout=20)
+        assert resp.get("ok"), resp
+        child_pid = resp["pid"]
+        deadline = time.time() + 10
+        while time.time() < deadline and not elev_client._pid_alive(child_pid):
+            time.sleep(0.1)
+        assert elev_client._pid_alive(child_pid), "哨兵应已拉起并存活"
+        # helper 正常退出（shutdown op → run() finally 收尾链）
+        E.shutdown()
+        deadline = time.time() + 8
+        while time.time() < deadline and elev_client._pid_alive(helper_pid):
+            time.sleep(0.2)
+        assert not elev_client._pid_alive(helper_pid), "helper 应随 shutdown 退出"
+        # SRV-06 核心断言：helper 退出前收尸 children → 哨兵不成为孤儿
+        deadline = time.time() + 8
+        while time.time() < deadline and elev_client._pid_alive(child_pid):
+            time.sleep(0.2)
+        assert not elev_client._pid_alive(child_pid), \
+            "helper 退出应 taskkill 收尾存活 children（SRV-06 孤儿修复）"
+        audit = Path(_safe_path(log_dir, "elev_helper_audit.log")).read_text(
+            encoding="utf-8")
+        exit_lines = [ln for ln in audit.splitlines() if '"event": "exit"' in ln]
+        assert exit_lines, "审计应有 exit 行"
+        assert '"detail": "children=0"' in exit_lines[-1], \
+            f"exit 行应记 children=0（收尾已摘除）: {exit_lines[-1]!r}"
+        assert "child_kill" in audit and f"pid={child_pid}" in audit, \
+            "应有 child_kill 收尾审计且指向哨兵 pid"
+    finally:
+        elev_client.set_test_spawn(False)
+        elev_client.ELEV.shutdown()
+        if child_pid is not None and elev_client._pid_alive(child_pid):
+            subprocess.run(["taskkill", "/F", "/PID", str(child_pid)],
+                           capture_output=True, creationflags=0x08000000)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_srv06_stop_idle_safe():
+    """SRV-06 回归（runner.py stop 现状）：未运行态 stop 必须安全拒绝——
+    返回 (False, "当前没有在运行")、不改状态、不写任何 runtime；全局 RUNNER
+    同口径（修复依赖此不变量：Ctrl+C 分支补 stop() 后空闲态零副作用）。"""
+    tmp = _sec10_tmp("srv06stop")
+    orig_runtime = runner_mod.RUNTIME_FILE
+    runner_mod.RUNTIME_FILE = _safe_path(tmp, "runtime.json")
+    try:
+        r = runner_mod.Runner()  # 全新实例：state=idle，未挂线程
+        before = r.snapshot()["state"]
+        ok, msg = r.stop()
+        assert ok is False and msg == "当前没有在运行", (ok, msg)
+        assert r.snapshot()["state"] == before, "拒绝停止不得改状态"
+        assert not os.path.isfile(runner_mod.RUNTIME_FILE), \
+            "未运行态 stop 不得写 runtime"
+        # 全局 RUNNER 同口径（先照既有口径对齐空闲）
+        deadline = time.time() + 10
+        while time.time() < deadline and \
+                runner_mod.RUNNER.snapshot()["state"] in \
+                ("running", "waiting", "stopping"):
+            runner_mod.RUNNER.stop()
+            time.sleep(0.2)
+        g_state = runner_mod.RUNNER.snapshot()["state"]
+        ok2, msg2 = runner_mod.RUNNER.stop()
+        assert ok2 is False and msg2 == "当前没有在运行", (ok2, msg2)
+        assert runner_mod.RUNNER.snapshot()["state"] == g_state, \
+            "全局 RUNNER 拒绝停止不得改状态"
+    finally:
+        runner_mod.RUNTIME_FILE = orig_runtime
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_srv06_reap_children_regression():
+    """SRV-06 回归（elev_helper._reap_children 现状不破坏）：真实短命子进程进
+    children → 收尾线程摘除进 finished（exit code 0）+ child_exit 审计；
+    stop_event 置位后收尾线程及时退出（finally 收尸循环不得改变其语义）。"""
+    from app import elev_helper as eh
+    tmp = _sec10_tmp("srv06reap")
+    log_dir = _safe_path(tmp, "log")
+    os.makedirs(log_dir, exist_ok=True)
+    root = _sec10_root(tmp)
+    proc = None
+    helper = None
+    try:
+        helper = eh._Helper("c" * 64, os.getpid(), root, log_dir,
+                            "HTGame.exe", _safe_path(log_dir, "cfg.json"))
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(1.0)"],
+            cwd=_ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=0x08000000)
+        helper.children[proc.pid] = proc
+        reaper = threading.Thread(target=helper._reap_children, daemon=True,
+                                  name="srv06-reaper")
+        reaper.start()
+        deadline = time.time() + 15
+        while time.time() < deadline and proc.pid not in helper.finished:
+            time.sleep(0.2)
+        assert proc.pid in helper.finished, "已退出子进程应被收尾进 finished"
+        assert proc.pid not in helper.children, "收尾后应从 children 摘除"
+        assert helper.finished[proc.pid] == 0, \
+            f"干净退出码应为 0，实际 {helper.finished[proc.pid]!r}"
+        audit = Path(_safe_path(log_dir, "elev_helper_audit.log")).read_text(
+            encoding="utf-8")
+        assert "child_exit" in audit, "收尾应写 child_exit 审计"
+        # stop_event 置位 → 收尾线程及时退出（现状语义保持）
+        helper.stop_event.set()
+        reaper.join(timeout=6)
+        assert not reaper.is_alive(), "stop_event 置位后收尾线程应退出"
+    finally:
+        if helper is not None:
+            helper.stop_event.set()
+        if proc is not None:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait(timeout=5)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 # ---------- B2.4 CONC-01/02：save_json_atomic 并发口径与图鉴覆盖层锁 ----------
 
 # 临时根放仓库 .tmp/（AGENTS.md 卫生条款：不落 C 盘；先例 _SEC10_TMP_BASE）

@@ -58,6 +58,9 @@ MAX_REQUEST_BYTES = 64 * 1024
 MAX_RESPONSE_BYTES = 256 * 1024
 REQUEST_DEADLINE = 15.0   # 单请求读写总时限（秒）
 STOP_RUNNER_LIMIT = 30.0  # stop_runner 内部 taskkill 上限（秒）
+# 退出收尾逐个 taskkill 上限（秒；较 stop_runner 收窄）：退出路径不得被单个
+# taskkill 长阻塞（SRV-06/B3）
+EXIT_CHILD_KILL_LIMIT = 10.0
 
 KERNEL32 = ctypes.WinDLL("kernel32.dll", use_last_error=True)
 USER32 = ctypes.WinDLL("user32.dll", use_last_error=True)
@@ -385,6 +388,35 @@ class _Helper:
                     except OSError:
                         pass
         finally:
+            # SRV-06/B3（2026-11-18）：退出前收尾本会话 children——已知存活
+            # （poll() is None）的子进程逐个 taskkill /F /PID，不留孤儿提权进程
+            # （此前审计记 children=1 即直接退出）。照 _op_stop_runner 形态；
+            # 不加 /T（与 runner._kill_child 同口径：任务带起的游戏进程树保留）。
+            # taskkill 幂等，与在飞 stop_runner 并发重复杀无害；异常逐个捕获，
+            # 绝不阻断下方端点文件清理与 exit 审计。
+            for pid, proc in list(self.children.items()):
+                try:
+                    alive = proc is not None and proc.poll() is None
+                except OSError:
+                    alive = False
+                if not alive:
+                    continue
+                try:
+                    done = subprocess.run(
+                        ["taskkill", "/F", "/PID", str(pid)],
+                        capture_output=True, timeout=EXIT_CHILD_KILL_LIMIT,
+                        creationflags=CREATE_NO_WINDOW)
+                    rc = done.returncode
+                except Exception as e:  # noqa: BLE001 —— 收尾尽力而为，不阻塞退出
+                    self.audit("child_kill",
+                               detail="pid=%d taskkill失败 %s: %s"
+                                      % (pid, type(e).__name__, e))
+                    continue
+                self.audit("child_kill", detail="pid=%d taskkill_rc=%s" % (pid, rc))
+                with self.audit_lock:  # 收尾即摘除（与 _reap_children 同口径）
+                    self.children.pop(pid, None)
+                    self.finished[pid] = None  # 退出码未 reap，记 None=已终止未知
+            proc = None  # 释放循环变量持有的 Popen 引用（见 _reap_children 说明）
             sock.close()
             try:
                 os.remove(self.endpoint_path)

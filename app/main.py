@@ -4368,6 +4368,20 @@ def _run_panel():
             threading.Timer(0.6, lambda: webbrowser.open(url)).start()
             server_thread.join()  # Ctrl+C 或进程被杀退出
     except KeyboardInterrupt:
+        # SRV-06/B3（2026-11-18）：Ctrl+C 路径此前不停执行器——ok-nte 无头任务
+        # 会随面板退出成孤儿。补齐与 _graceful_shutdown（窗口关闭路径，显式调
+        # RUNNER.stop()）同一形态：先 stop（尽力而为）+ ≤3 秒等待窗（轮询
+        # snapshot 的 state 键，超时继续不挂死退出路径），随后照旧 STATE.save()
+        # + ELEV.shutdown()（既有顺序不变）；except KeyboardInterrupt 结构保持
+        # 信号语义不被吞改。
+        try:
+            RUNNER.stop()
+        except Exception as e:  # noqa: BLE001 —— 退出路径尽力而为
+            print(f"停止执行器时出现问题（不影响退出）: {e}")
+        deadline = time.time() + 3
+        while time.time() < deadline and \
+                RUNNER.snapshot()["state"] in ("running", "waiting", "stopping"):
+            time.sleep(0.1)
         STATE.save()
         try:
             elev_client.ELEV.shutdown()  # SEC-10：Ctrl+C 退出同样清理提权辅助进程
