@@ -566,6 +566,23 @@ class _Helper:
             raise RuntimeError("launcher 不在白名单路径内")
         if not os.path.isfile(launcher):
             raise RuntimeError("launcher 文件不存在")
+        # SEC-11（B3-B）：launcher 内容 SHA-256 契约——写方期望值绑定执行对象。
+        # 路径白名单（launcher_allowed）拦不住「同路径异内容」篡改（B3 slice-f
+        # 复现在案：篡改文件在白名单路径被执行）；launcher 是写方每次动态写盘的
+        # 动态文件，不能像内嵌解释器那样只在会话首启固化一次指纹，故每次 launch
+        # 都对写方随 args 下发的 expected_launcher_sha256 复核盘面实际内容
+        # （_sha256_file 与 _verify_python_fingerprint 同源），一致才执行。
+        # args 缺该字段 = 契约收紧，拒绝执行（fail-closed）。方案：B3-B 任务书裁定。
+        expected_sha = args.get("expected_launcher_sha256")
+        if not isinstance(expected_sha, str) or not expected_sha:
+            raise RuntimeError(
+                "missing_expected_launcher_sha256: args 缺或非法"
+                " expected_launcher_sha256（契约收紧，拒绝执行）")
+        launcher_sha = _sha256_file(launcher)
+        if launcher_sha != expected_sha:
+            raise RuntimeError(
+                "launcher_sha_mismatch expected=%s got=%s"
+                % (expected_sha, launcher_sha))
         if not profile_allowed(profile, self.root) or not os.path.isdir(profile):
             raise RuntimeError("profile 目录不在白名单内")
         if not task_allowed(task):

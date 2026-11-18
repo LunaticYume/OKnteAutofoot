@@ -4,6 +4,7 @@
 自动更新会保留），并读取 working/logs/ok-script*.log。
 """
 import copy
+import hashlib
 import json
 import os
 import re
@@ -115,6 +116,16 @@ LAUNCHER_SRC = (
     "cfg['windows']['capture_method'] = _capture_methods\n"
     "run_task(cfg, task=os.environ['OKNTE_PLANNER_TASK'])\n"
 )
+
+# SEC-11（B3-B）：launcher 内容 SHA-256 期望值（写方侧锚点）。launcher 是每次
+# prepare_daily_profile/prepare_hunter_profile 动态写盘的动态文件，提权执行侧
+# 只靠 launcher_allowed 路径白名单拦不住「同路径异内容」篡改（B3 slice-f 复现
+# 在案：篡改文件在白名单路径被执行）。本常量 = LAUNCHER_SRC 按 utf-8 编码后的
+# SHA-256 十六进制摘要：写盘点写盘后自校验（下方两处，防写盘损坏/半截），
+# 并经 elev_client.launch_runner 随 args 下发（expected_launcher_sha256），
+# elev_helper._op_launch_runner 在 Popen 前复核盘面一致才执行——写方期望值
+# 绑定执行对象（方案：B3-B 任务书裁定）。
+LAUNCHER_SHA256 = hashlib.sha256(LAUNCHER_SRC.encode("utf-8")).hexdigest()
 
 # DXGI 采集探测片段（内嵌解释器实跑；与 LAUNCHER_SRC 的探测段同口径——门控必须
 # 真实 create 而非仅 import，见 LAUNCHER_SRC 注释）。成功输出 __DXGI_PROBE_OK__
@@ -663,7 +674,20 @@ class OkNte:
                 hcfg["领取奖励次数"] = max(0, int(hunter_override["领取奖励次数"]))
             save_json_atomic(hunter_path, hcfg)
         launcher_path = os.path.join(profile, LAUNCHER_NAME)
-        Path(launcher_path).write_text(LAUNCHER_SRC, encoding="utf-8")
+        # newline="\n"：Windows 默认 write_text 会把 \n 翻译成 \r\n（本机实测），
+        # 盘面字节随平台漂移；显式固定 LF 使盘面字节与 LAUNCHER_SHA256（
+        # LAUNCHER_SRC 的 utf-8 哈希）一致——SEC-11 内容契约才有唯一锚点，
+        # 对 ok-nte 内嵌 Python 执行无行为差异。
+        Path(launcher_path).write_text(LAUNCHER_SRC, encoding="utf-8", newline="\n")
+        # SEC-11（B3-B）写盘自校验：读回盘面字节算 SHA-256 与写方期望值比对，
+        # 不符（损坏/半截/被掉包）即抛错拒绝写盘完成态——执行侧
+        # （elev_helper._op_launch_runner）只放行盘面哈希 == 写方期望值的
+        # launcher，写坏就绝不进入提权执行链。
+        written_sha = hashlib.sha256(Path(launcher_path).read_bytes()).hexdigest()
+        if written_sha != LAUNCHER_SHA256:
+            raise OkNteError(
+                "launcher 写盘自校验失败: 盘面 SHA-256 %s != 期望 %s（%s）"
+                % (written_sha, LAUNCHER_SHA256, launcher_path))
         return launcher_path
 
     def prepare_hunter_profile(self, target, reward_count):
@@ -684,7 +708,20 @@ class OkNte:
         hcfg["领取奖励次数"] = max(0, int(reward_count))
         save_json_atomic(hunter_path, hcfg)
         launcher_path = os.path.join(profile, LAUNCHER_NAME)
-        Path(launcher_path).write_text(LAUNCHER_SRC, encoding="utf-8")
+        # newline="\n"：Windows 默认 write_text 会把 \n 翻译成 \r\n（本机实测），
+        # 盘面字节随平台漂移；显式固定 LF 使盘面字节与 LAUNCHER_SHA256（
+        # LAUNCHER_SRC 的 utf-8 哈希）一致——SEC-11 内容契约才有唯一锚点，
+        # 对 ok-nte 内嵌 Python 执行无行为差异。
+        Path(launcher_path).write_text(LAUNCHER_SRC, encoding="utf-8", newline="\n")
+        # SEC-11（B3-B）写盘自校验：读回盘面字节算 SHA-256 与写方期望值比对，
+        # 不符（损坏/半截/被掉包）即抛错拒绝写盘完成态——执行侧
+        # （elev_helper._op_launch_runner）只放行盘面哈希 == 写方期望值的
+        # launcher，写坏就绝不进入提权执行链。
+        written_sha = hashlib.sha256(Path(launcher_path).read_bytes()).hexdigest()
+        if written_sha != LAUNCHER_SHA256:
+            raise OkNteError(
+                "launcher 写盘自校验失败: 盘面 SHA-256 %s != 期望 %s（%s）"
+                % (written_sha, LAUNCHER_SHA256, launcher_path))
         return launcher_path
 
     def run_command(self, launcher_path, task="日常任务"):

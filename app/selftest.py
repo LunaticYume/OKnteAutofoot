@@ -9661,10 +9661,16 @@ def test_elev_helper_e2e_auth_ops_audit():
         os.makedirs(profile, exist_ok=True)
         launcher = _safe_path(profile, "run_planner_task.py")
         Path(launcher).write_text("print('ok')", encoding="utf-8")
+        # SEC-11（B3-B）夹具适配：契约收紧后 launch args 必带
+        # expected_launcher_sha256——夹具自算盘面哈希随 args 下发（内容与哈希
+        # 一致）；下方越界断言全部保留原语义（路径闸先于内容闸，越界路径被拒
+        # 与哈希字段无关）
+        launcher_sha = elev_client.file_sha256(launcher)
 
         def launch_args(**over):
             args = {"launcher": launcher, "profile": profile, "task": "日常任务",
-                    "stdout": "ok-nte-headless-selftest.log"}
+                    "stdout": "ok-nte-headless-selftest.log",
+                    "expected_launcher_sha256": launcher_sha}
             args.update(over)
             return args
 
@@ -9714,6 +9720,265 @@ def test_elev_helper_e2e_auth_ops_audit():
         assert not elev_client._pid_alive(pid), "shutdown 后辅助进程应退出"
         assert not Path(_safe_path(log_dir,
                                    "elev_helper_endpoint-%d.json" % pid)).exists()
+    finally:
+        elev_client.set_test_spawn(False)
+        elev_client.ELEV.shutdown()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ---------- B3-B SEC-11：launcher 内容 SHA-256 契约（写方期望值绑定执行对象） ----------
+# 依据：B3 slice-f 修复前确定性复现在案——launch_runner 对 launcher 无内容校验，
+# 白名单路径上的同路径异内容篡改文件被执行（防线不对称：解释器指纹篡改被拒）。
+# 修复方案（任务书裁定）：写方常量 LAUNCHER_SHA256（oknte_adapter）绑定执行对象，
+# helper 每次 launch 前 Popen 复核盘面 SHA-256 与 args 期望值一致才执行。
+
+@case
+def test_sec11_launcher_sha_tamper_rejected():
+    """SEC-11 ①：同路径异内容（篡改）→ launch 被拒且审计记 launcher_sha_mismatch。
+
+    复现口径（B3 slice-f 同款夹具：_sec10_materialize_python 物化真解释器，
+    set_test_spawn(True) 无 UAC 拉起真实 helper）：白名单路径
+    <root>/working/configs_planner/run_planner_task.py 写入与写方期望值
+    （LAUNCHER_SHA256）不同的无害篡改内容（纯 print+sys.exit，无网络/文件写）
+    → launch_runner。修复前该请求放行且篡改内容被执行；修复后 helper 在
+    Popen 前复核盘面 SHA-256 不符 → 拒绝 + 审计 reject 行记
+    launcher_sha_mismatch，篡改内容绝不执行。"""
+    from app import elev_client
+    elev_client.set_test_spawn(True)
+    tmp = _sec10_tmp("sec11tamper")
+    root = _sec10_materialize_python(tmp)
+    if root is None:
+        print("SKIP test_sec11_launcher_sha_tamper_rejected: 当前解释器无法物化"
+              "到 .tmp 临时根（跨卷且缺运行 DLL）")
+        elev_client.set_test_spawn(False)
+        shutil.rmtree(tmp, ignore_errors=True)
+        return
+    profile = _safe_path(root, "working", "configs_planner")
+    os.makedirs(profile, exist_ok=True)
+    launcher = _safe_path(profile, "run_planner_task.py")
+    # 篡改内容：无害 print+退出（复现脚本同款），不 import ok、无网络、无文件写
+    Path(launcher).write_text(
+        "import sys\nprint('TAMPERED-SEC11-REJECTED')\nsys.exit(0)\n",
+        encoding="utf-8")
+    log_dir = _safe_path(tmp, "log")
+    os.makedirs(log_dir, exist_ok=True)
+    stdout_name = "ok-nte-headless-sec11-tamper.log"
+    try:
+        E = elev_client.ELEV
+        assert E.ensure(root, log_dir=log_dir, game_process="HTGame.exe"), \
+            E.reason()
+        port, token = E._port, E._token
+        # 写方期望值 = 合法 LAUNCHER_SRC 哈希（生产 client 缺省下发形态），
+        # 盘面是篡改内容 → 必须 launcher_sha_mismatch 拒绝
+        try:
+            elev_client.request_once(port, token, "launch_runner", {
+                "launcher": launcher, "profile": profile, "task": "日常任务",
+                "stdout": stdout_name,
+                "expected_launcher_sha256": adapter_mod.LAUNCHER_SHA256},
+                timeout=20)
+            raise AssertionError("篡改 launcher 应被拒绝（launcher_sha_mismatch）")
+        except elev_client.ElevRejected as e:
+            assert "launcher_sha_mismatch" in str(e), str(e)
+        # 审计：reject 行记 launcher_sha_mismatch（照既有审计形态）
+        audit = Path(_safe_path(log_dir, "elev_helper_audit.log")).read_text(
+            encoding="utf-8")
+        assert "launcher_sha_mismatch" in audit, "审计应记 launcher_sha_mismatch"
+        # 核心补强断言：篡改内容绝未被执行（stdout 镜像不存在或不含标记）
+        stdout_path = _safe_path(log_dir, stdout_name)
+        assert not os.path.isfile(stdout_path) or \
+            "TAMPERED-SEC11-REJECTED" not in Path(stdout_path).read_text(
+                encoding="utf-8", errors="replace"), "篡改内容被执行"
+        # 会话仍健康（操作被拒不得作废会话）
+        assert E.available()
+    finally:
+        elev_client.set_test_spawn(False)
+        elev_client.ELEV.shutdown()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_sec11_launcher_sha_valid_launch_e2e():
+    """SEC-11 ②：合法内容 + 正确哈希 → launch 成功（e2e 全链）。
+
+    同一 helper 会话内两阶段串行：阶段一 request_once 直发（夹具 print 内容 +
+    其自算盘面哈希，内容与哈希一致）断言放行且子进程真实执行（stdout 镜像含
+    标记）；阶段二以 newline="\\n" 写盘形态精确等于 LAUNCHER_SRC 的 launcher
+    （盘面字节哈希 == 写方常量）走生产 client 链（ELEV.launch_runner 缺省下发
+    expected_launcher_sha256）断言放行——写方期望值绑定执行对象全链闭环。
+    阶段二子进程在占位 root import ok 失败自行退出（launch 成功语义不受影响），
+    finally 收尾不留孤儿。"""
+    from app import elev_client
+    elev_client.set_test_spawn(True)
+    tmp = _sec10_tmp("sec11valid")
+    root = _sec10_materialize_python(tmp)
+    if root is None:
+        print("SKIP test_sec11_launcher_sha_valid_launch_e2e: 当前解释器无法物化"
+              "到 .tmp 临时根（跨卷且缺运行 DLL）")
+        elev_client.set_test_spawn(False)
+        shutil.rmtree(tmp, ignore_errors=True)
+        return
+    profile = _safe_path(root, "working", "configs_planner")
+    os.makedirs(profile, exist_ok=True)
+    launcher = _safe_path(profile, "run_planner_task.py")
+    log_dir = _safe_path(tmp, "log")
+    os.makedirs(log_dir, exist_ok=True)
+    pids = []
+    try:
+        E = elev_client.ELEV
+        assert E.ensure(root, log_dir=log_dir, game_process="HTGame.exe"), \
+            E.reason()
+        port, token = E._port, E._token
+        # 阶段一：夹具内容 + 夹具自算盘面哈希（内容与哈希一致）→ 放行并真实执行
+        Path(launcher).write_text(
+            "import sys\nprint('SEC11-VALID-LAUNCH', flush=True)\nsys.exit(0)\n",
+            encoding="utf-8")
+        resp = elev_client.request_once(port, token, "launch_runner", {
+            "launcher": launcher, "profile": profile, "task": "日常任务",
+            "stdout": "ok-nte-headless-sec11-valid.log",
+            "expected_launcher_sha256": elev_client.file_sha256(launcher)},
+            timeout=20)
+        assert resp.get("ok") and isinstance(resp.get("pid"), int) \
+            and resp["pid"] > 0, resp
+        pids.append(resp["pid"])
+        stdout_path = _safe_path(log_dir, "ok-nte-headless-sec11-valid.log")
+        deadline = time.time() + 15
+        seen = ""
+        while time.time() < deadline:
+            if os.path.isfile(stdout_path):
+                seen = Path(stdout_path).read_text(encoding="utf-8",
+                                                   errors="replace")
+                if "SEC11-VALID-LAUNCH" in seen:
+                    break
+            if not elev_client._pid_alive(pids[-1]):
+                break  # 子进程退出后再做终判
+            time.sleep(0.1)
+        assert os.path.isfile(stdout_path), "stdout 镜像未创建"
+        assert "SEC11-VALID-LAUNCH" in seen, \
+            f"合法内容未被执行（stdout 镜像）: {seen[:200]!r}"
+        # 阶段二：盘面 = LAUNCHER_SRC（LF 写盘，盘面字节哈希 == 写方常量）→
+        # 生产 client 链（缺省下发）放行
+        Path(launcher).write_text(adapter_mod.LAUNCHER_SRC,
+                                  encoding="utf-8", newline="\n")
+        pid2 = E.launch_runner(root, launcher, "日常任务", profile,
+                               "ok-nte-headless-sec11-valid2.log")
+        assert isinstance(pid2, int) and pid2 > 0, pid2
+        pids.append(pid2)
+    finally:
+        elev_client.set_test_spawn(False)
+        elev_client.ELEV.shutdown()
+        for pid in pids:  # 收尾不留孤儿（SRV-06 收尸兜底之上的测试侧兜底）
+            if elev_client._pid_alive(pid):
+                subprocess.run(["taskkill", "/F", "/PID", str(pid)],
+                               capture_output=True, creationflags=0x08000000)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_sec11_writeback_selfcheck():
+    """SEC-11 ③：写盘自校验——LAUNCHER_SRC 与盘面不符 → 异常（拒绝写盘完成态）。
+
+    把写方常量 LAUNCHER_SRC patch 为篡改内容（LAUNCHER_SHA256 保持不变）模拟
+    「盘面内容与写方期望值不符」（写盘损坏/半截/被掉包），prepare_hunter_profile
+    写盘后读回盘面字节复核必须抛 OkNteError（含「写盘自校验失败」）；再验不
+    patch 时写盘成功且盘面字节 SHA-256 精确等于 LAUNCHER_SHA256（LF 盘面形态
+    锁定，防未来 write_text 行为漂移静默破坏契约）。"""
+    tmp = _sec10_tmp("sec11write")
+    try:
+        root = _safe_path(tmp, "root")
+        # OkNte.working = <root>/data/apps/ok-nte/working（oknte_adapter.py:234）
+        os.makedirs(_safe_path(root, "data", "apps", "ok-nte", "working",
+                               "configs"), exist_ok=True)
+        ok = OkNte(root)
+        # 正向：写盘成功且盘面字节哈希 == 写方期望值（LF 形态锁定）
+        p = ok.prepare_hunter_profile("测试目标", 3)
+        assert os.path.isfile(p), p
+        disk_sha = hashlib.sha256(Path(p).read_bytes()).hexdigest()
+        assert disk_sha == adapter_mod.LAUNCHER_SHA256, \
+            (disk_sha, adapter_mod.LAUNCHER_SHA256)
+        # 反向：写盘内容与写方期望值不符 → 自校验抛错
+        orig_src = adapter_mod.LAUNCHER_SRC
+        try:
+            adapter_mod.LAUNCHER_SRC = orig_src + "\n# sec11-tampered\n"
+            try:
+                ok.prepare_hunter_profile("测试目标", 3)
+                raise AssertionError("盘面与写方期望值不符应抛 OkNteError")
+            except adapter_mod.OkNteError as e:
+                assert "写盘自校验失败" in str(e), str(e)
+        finally:
+            adapter_mod.LAUNCHER_SRC = orig_src
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_sec11_launcher_allowed_matrix_regression():
+    """SEC-11 ④：launcher_allowed 矩阵回归——契约收紧不得触碰路径白名单既有
+    防线。逐字重跑既有矩阵用例 test_elev_helper_pure_validators（任务书所指
+    约 :8250-8328 实读偏移至 selftest.py:9553-9623：stdout/task/坐标/
+    launcher/profile/启动配置全矩阵），并补充断言路径闸语义逐字不变
+    （launcher_allowed 纯函数在契约改动前后零改动）。"""
+    test_elev_helper_pure_validators()
+    # 路径闸语义补充回归（契约闸必须建立在路径闸之后，不得替代/收紧路径面）
+    from app import elev_helper as eh
+    tmp = _sec10_tmp("sec11matrix")
+    try:
+        root = _sec10_root(tmp)
+        profile = _safe_path(root, "working", "configs_planner")
+        os.makedirs(profile, exist_ok=True)
+        good = _safe_path(profile, "run_planner_task.py")
+        Path(good).write_text("pass", encoding="utf-8")
+        assert eh.launcher_allowed(good, root)
+        assert not eh.launcher_allowed(good + ".bak", root)
+        assert not eh.launcher_allowed(_safe_path(profile, "evil.py"), root)
+        assert not eh.launcher_allowed(_safe_path(root, "working", "main.py"),
+                                       root)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_sec11_missing_sha_arg_rejected():
+    """SEC-11 ⑤：args 缺 expected_launcher_sha256 字段 → 拒绝并审计（契约收紧
+    行为锁定）。占位 root 即可到达契约闸（指纹固化一致 → 路径/存在闸通过 →
+    缺字段拒绝发生在 Popen 之前）；空串/None/非字符串同面 fail-closed。
+    审计 reject 行记 missing_expected_launcher_sha256。"""
+    from app import elev_client
+    elev_client.set_test_spawn(True)
+    tmp = _sec10_tmp("sec11missing")
+    log_dir = _safe_path(tmp, "log")
+    os.makedirs(log_dir, exist_ok=True)
+    root = _sec10_root(tmp)
+    try:
+        E = elev_client.ELEV
+        assert E.ensure(root, log_dir=log_dir, game_process="HTGame.exe"), \
+            E.reason()
+        port, token = E._port, E._token
+        profile = _safe_path(root, "working", "configs_planner")
+        os.makedirs(profile, exist_ok=True)
+        launcher = _safe_path(profile, "run_planner_task.py")
+        Path(launcher).write_text("print('ok')", encoding="utf-8")
+        base = {"launcher": launcher, "profile": profile, "task": "日常任务",
+                "stdout": "ok-nte-headless-sec11-missing.log"}
+        for bad_args in (
+                dict(base),                                  # 键不存在
+                dict(base, expected_launcher_sha256=""),     # 空串
+                dict(base, expected_launcher_sha256=None),   # None
+                dict(base, expected_launcher_sha256=123),    # 非字符串
+        ):
+            try:
+                elev_client.request_once(port, token, "launch_runner",
+                                         bad_args, timeout=15)
+                raise AssertionError("缺 expected_launcher_sha256 应拒绝: %r"
+                                     % (bad_args,))
+            except elev_client.ElevRejected as e:
+                assert "expected_launcher_sha256" in str(e), str(e)
+        # 审计锁定：契约收紧拒绝落盘
+        audit = Path(_safe_path(log_dir, "elev_helper_audit.log")).read_text(
+            encoding="utf-8")
+        assert "missing_expected_launcher_sha256" in audit, \
+            "审计应记契约收紧拒绝"
+        # 会话仍健康
+        assert E.available()
     finally:
         elev_client.set_test_spawn(False)
         elev_client.ELEV.shutdown()
@@ -9835,6 +10100,8 @@ def test_runner_helper_launch_stdout_stop():
     root = _sec10_materialize_python(tmp)
     r = runner_mod.RUNNER
     helper_pid = None
+    # SEC-11（B3-B）夹具适配锚点：写方常量在本用例内被 patch（见下），finally 恢复
+    orig_launcher_sha = adapter_mod.LAUNCHER_SHA256
     try:
         if root is None:
             print("SKIP test_runner_helper_launch_stdout_stop: 当前解释器无法"
@@ -9850,6 +10117,10 @@ def test_runner_helper_launch_stdout_stop():
                 "print('[ok-nte] sec10-fixture-line-1', flush=True)\n"
                 "print('sec10-fixture-line-2', flush=True)\n"
                 "time.sleep(30)\n", encoding="utf-8")
+            # SEC-11（B3-B）夹具适配：本用例经生产 client 链（ELEV.launch_runner
+            # 缺省下发写方常量），夹具内容非 LAUNCHER_SRC，故把写方常量 patch 为
+            # 夹具盘面哈希（finally 恢复原值）——执行链路与全部断言不变
+            adapter_mod.LAUNCHER_SHA256 = elev_client.file_sha256(launcher)
             ok = OkNte(root)
             cmd, cwd, env = ok.run_command(launcher)
             assert elev_client.ELEV.ensure(root, log_dir=log_dir,
@@ -9908,6 +10179,7 @@ def test_runner_helper_launch_stdout_stop():
         r.child = None
         elev_client.ELEV.shutdown()
         elev_client.set_test_spawn(False)
+        adapter_mod.LAUNCHER_SHA256 = orig_launcher_sha  # SEC-11 夹具适配恢复
         runner_mod.RUNTIME_FILE = orig_runtime
         runner_mod.DATA_DIR = orig_data_dir
         shutil.rmtree(tmp, ignore_errors=True)
@@ -10144,7 +10416,11 @@ def test_srv06_helper_exit_kills_children():
         port, token = E._port, E._token
         resp = elev_client.request_once(port, token, "launch_runner", {
             "launcher": launcher, "profile": profile, "task": "日常任务",
-            "stdout": "ok-nte-headless-srv06-exit.log"}, timeout=20)
+            "stdout": "ok-nte-headless-srv06-exit.log",
+            # SEC-11（B3-B）夹具适配：契约收紧后必带写方期望哈希（夹具自算盘面
+            # 哈希，内容与哈希一致），收尸断言语义不变
+            "expected_launcher_sha256": elev_client.file_sha256(launcher)},
+            timeout=20)
         assert resp.get("ok"), resp
         child_pid = resp["pid"]
         deadline = time.time() + 10

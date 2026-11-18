@@ -25,6 +25,7 @@ import time
 from pathlib import Path
 
 from . import elev_helper as _eh
+from . import oknte_adapter as _oa  # SEC-11：写方 LAUNCHER_SHA256 期望值来源
 
 CREATE_NO_WINDOW = _eh.CREATE_NO_WINDOW
 CONFIG_NAME_RE = _eh.CONFIG_NAME_RE
@@ -401,9 +402,16 @@ class ElevClient:
                           timeout=15.0)
         return bool(resp.get("ok"))
 
-    def launch_runner(self, root, launcher, task, profile, stdout_name):
+    def launch_runner(self, root, launcher, task, profile, stdout_name,
+                      expected_launcher_sha256=None):
         """提权拉起 ok-nte 无头任务。客户端侧先做一遍与辅助进程同口径的参数
-        校验（纵深防御 + 不必为明显非法参数弹 UAC 往返）。返回子进程 pid。"""
+        校验（纵深防御 + 不必为明显非法参数弹 UAC 往返）。返回子进程 pid。
+
+        SEC-11（B3-B）：launcher 内容 SHA-256 契约——expected_launcher_sha256
+        缺省取写方常量 oknte_adapter.LAUNCHER_SHA256（prepare_daily_profile/
+        prepare_hunter_profile 写盘后自校验同源），随 args 下发
+        （expected_launcher_sha256，与 helper 侧 args 校验面字段名一致），
+        辅助进程执行前复核盘面一致才执行——写方期望值绑定执行对象。"""
         root = os.path.realpath(str(root or ""))
         if self._root != root:
             raise ElevError("oknte_root 与辅助进程会话不一致（先 ensure）")
@@ -417,9 +425,14 @@ class ElevClient:
             raise ElevError("task 不在白名单内")
         if not _eh.safe_stdout_name(str(stdout_name or "")):
             raise ElevError("stdout 文件名不在白名单内")
+        # 动态属性访问（而非 import 快照）：每次调用读写方常量，留测试注入点
+        expected_sha = (expected_launcher_sha256
+                        if isinstance(expected_launcher_sha256, str)
+                        and expected_launcher_sha256 else _oa.LAUNCHER_SHA256)
         resp = self._call("launch_runner",
                           {"launcher": launcher, "profile": profile,
-                           "task": str(task), "stdout": str(stdout_name)},
+                           "task": str(task), "stdout": str(stdout_name),
+                           "expected_launcher_sha256": expected_sha},
                           timeout=25.0)
         pid = resp.get("pid")
         if not isinstance(pid, int) or pid <= 0:
