@@ -299,11 +299,11 @@ def copy_data_tables(dest_data):
         shutil.copytree(mysqil_src, os.path.join(dest_data, "mysqil"), dirs_exist_ok=True,
                         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     # 攻略站数据源快照：source_crosscheck.json=独立来源交叉核对证据链（静态、
-    # selftest 依赖，随包分发）；character_cooldowns.json=角色冷却参考数据（同）；
-    # guide_sites.json 为运行时用户数据，不随包
+    # selftest 依赖，随包分发）；guide_sites.json 为运行时用户数据，不随包。
+    # character_cooldowns.json 已移除（SEC-04①/B3，2026-11-18 用户裁定①：其源站
+    # 已全面禁用（AGENTS.md 数据源白名单），文件 git rm 删除，不再随包分发）。
     extra_data_files = [
         os.path.join("sites", "source_crosscheck.json"),
-        os.path.join("character_cooldowns.json"),
     ]
     for rel in extra_data_files:
         src = os.path.join(ROOT, "data", rel)
@@ -316,9 +316,10 @@ def check_dist_data_clean(dist_roots=(DIST, DIST_SINGLE)):
     """打包前数据自检（BUILD-01/SEC-01 闸门；纯检查，绝不删任何文件）。
 
     dist 各档 data/ 下只允许出厂数据表集（与 copy_data_tables 写入一一对应）：
-    TABLE_FILES + build_info.json + character_cooldowns.json + mysqil/ 整目录
+    TABLE_FILES + build_info.json + mysqil/ 整目录
     （公开游戏数据，含随包 .bak）+ sites/source_crosscheck.json（sites 下唯一
-    放行文件）。其余任何文件——state.json*、backups/、panel.log、runtime.json*、
+    放行文件）。character_cooldowns.json 已移除（SEC-04①/B3，2026-11-18 用户
+    裁定①：禁用源站数据清除（详见 AGENTS.md 数据源白名单），文件 git rm 删除，保留集 15→14 文件）。其余任何文件——state.json*、backups/、panel.log、runtime.json*、
     oknte_plan.json、ocr_layout.json*、game_data_custom.json、edge_profile/、
     avatars/、tajiduo_*、gacha_history.json、ok-nte-live.log、
     sites/guide_sites.json*、materials.json.pre-manual.bak 等历史 .bak 名等
@@ -326,7 +327,7 @@ def check_dist_data_clean(dist_roots=(DIST, DIST_SINGLE)):
     build_dist() 的 rmtree(DIST) 之前阻断打包。dist 根目录文件（crash.log/
     launcher.log 等）不在本闸门契约范围（只扫各档 data/）。
     """
-    allowed_files = set(TABLE_FILES) | {"build_info.json", "character_cooldowns.json"}
+    allowed_files = set(TABLE_FILES) | {"build_info.json"}  # character_cooldowns.json 已移除（SEC-04①/B3）
     allowed_dirs = {"mysqil"}
     allowed_exact = {os.path.join("sites", "source_crosscheck.json")}
     offenders = []

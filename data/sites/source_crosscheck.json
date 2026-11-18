@@ -22,11 +22,6 @@
       "url": "https://m.ali213.net/news/gl2609/1807213.html",
       "role": "第三方养成材料页",
       "recheck_2026_11_09": "WebFetch 引用原文：「基础技能书：新兵的怯懦×40、尉官的谨慎×40、白蔷薇×64，副本【扑克茶会】产出」；「弧盘突破：液态梦系列罐头（试用装×14、旅行者×18、罐装液态梦×18）」（注意页原文作「旅行者」，侦察摘要作「旅行装」，数量×18 一致）；全文未出现胡迪尼/魔术舞台/泡影罐头工厂/兔子洞等副本名。"
-    },
-    "nteguide": {
-      "url": "https://nteguide.com/zh/characters/<slug>/",
-      "role": "角色冷却数据来源（详见 data/character_cooldowns.json）",
-      "recheck_2026_11_09": "WebFetch 渲染文本仅见技能名无数值；E/Q 冷却取自页面内嵌 RSC JSON（curl 实抓 46 个角色页，解析 skills.skill/ultimate 字段），测得口径见 character_cooldowns.json。"
     }
   },
   "crosscheck": [
@@ -66,7 +61,7 @@
       "target_id": "ability_2",
       "name": "异能升级材料·贰（雏鸟系：雏鸟的希冀→「橄榄枝」）",
       "ours": "副本=异象界域·扑克茶会（技能本），40/次，序号2；每局 18 白当量@鉴别7",
-      "independent": "wiki /database 74 材料实名表含「雏鸟的希冀」「白鸽的振翅」「橄榄枝」；wiki live JS skillBook=cost40+18/局@鉴别7（五系共用同一技能本口径）；nteguide /zh/materials/ 历史索引未收录技能书系名，逐系关卡归属独立来源未单列",
+      "independent": "wiki /database 74 材料实名表含「雏鸟的希冀」「白鸽的振翅」「橄榄枝」；wiki live JS skillBook=cost40+18/局@鉴别7（五系共用同一技能本口径）；逐系关卡归属独立来源未单列",
       "verdict": "一致",
       "evidence_url": "https://wiki.mysqil.com/database"
     },
@@ -122,7 +117,7 @@
       "target_id": "arc_4",
       "name": "弧盘突破材料·肆（螺旋乐：碎屑→齐奏）",
       "ours": "副本=异象界域·泡影罐头工厂，40/次，序号4",
-      "independent": "wiki /database 列「螺旋乐碎屑/小节/齐奏」实名（nteguide 历史索引英译为 Beaty/Versey/Harmony）；wiki live JS weaponBreakMat=cost40",
+      "independent": "wiki /database 列「螺旋乐碎屑/小节/齐奏」实名；wiki live JS weaponBreakMat=cost40",
       "verdict": "一致",
       "evidence_url": "https://wiki.mysqil.com/database"
     },

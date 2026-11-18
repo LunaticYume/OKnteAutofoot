@@ -8463,43 +8463,6 @@ def test_materials_stamina_blocks_loaded():
 
 
 @case
-def test_source_crosscheck_json_valid():
-    """独立来源交叉核对快照与冷却表 JSON 合法性（2026-11-09 落盘，生产 data 只读）：
-    source_crosscheck.json 可解析且含 fetched_at/sources/crosscheck；条目 target_id
-    与体力本目标全集重合不重不漏、verdict ∈ {一致,不一致,无数据}；不一致条目带
-    https evidence_url 且对应 targets 注记「独立来源标注…以游戏内实测为准」（快照与
-    materials.json 联动，防注记丢失）；character_cooldowns.json 可解析、characters
-    非空且每条 e_sec/q_sec 为数值或 null。"""
-    snap = json.load(open(os.path.join(planner.DATA_DIR, "sites",
-                                       "source_crosscheck.json"), encoding="utf-8"))
-    assert isinstance(snap.get("fetched_at"), str) and snap["fetched_at"].strip(), snap
-    assert isinstance(snap.get("sources"), dict) and snap["sources"], snap.get("sources")
-    entries = snap.get("crosscheck")
-    assert isinstance(entries, list) and len(entries) == len(planner.TARGET_ORDER), \
-        (len(entries), len(planner.TARGET_ORDER))
-    ids = [e.get("target_id") for e in entries]
-    assert len(ids) == len(set(ids)), "快照 target_id 不得重复"
-    assert set(ids) == set(planner.TARGET_ORDER), "快照应覆盖全部体力本目标（重合不遗漏）"
-    for e in entries:
-        assert e.get("verdict") in ("一致", "不一致", "无数据"), e
-        if e["verdict"] in ("一致", "不一致"):
-            assert str(e.get("evidence_url", "")).startswith("https://"), e
-        if e["verdict"] == "不一致":
-            note = planner.TARGETS[e["target_id"]].get("note") or ""
-            assert "独立来源标注" in note and "以游戏内实测为准" in note, \
-                (e["target_id"], note)
-    cd = json.load(open(os.path.join(planner.DATA_DIR, "character_cooldowns.json"),
-                        encoding="utf-8"))
-    chars = cd.get("characters")
-    assert isinstance(chars, dict) and chars, "冷却表 characters 不得为空"
-    for name, c in chars.items():
-        assert isinstance(name, str) and name.strip(), c
-        for key in ("e_sec", "q_sec"):
-            assert c.get(key) is None or isinstance(c.get(key), (int, float)), (name, c)
-    assert any(c.get("e_sec") is not None for c in chars.values()), "至少应有 E 冷却实测值"
-
-
-@case
 def test_dungeon_gaps_blocks_and_endpoint():
     """材料缺口分块聚合（2026-11-08 材料副本页）：planner.dungeon_gaps() 用构造
     state 断言六块分组、需/持/差、轮数与合计（含追猎按 hunter_yield 折算、周本
@@ -9770,9 +9733,10 @@ def test_build_dist_data_gate():
         data = _safe_path(root, "data")
         os.makedirs(_safe_path(data, "mysqil"))
         os.makedirs(_safe_path(data, "sites"))
-        # keepList 出厂集（与 copy_data_tables 写入一一对应）
+        # keepList 出厂集（与 copy_data_tables 写入一一对应；character_cooldowns.json
+        # 已移除，SEC-04①/B3 2026-11-18 用户裁定①，保留集 15→14 文件）
         for rel in ("materials.json", "yields.json", "requirements.json",
-                    "game_data.json", "build_info.json", "character_cooldowns.json"):
+                    "game_data.json", "build_info.json"):
             Path(_safe_path(data, rel)).write_text("{}", encoding="utf-8")
         Path(_safe_path(data, "mysqil", "cassettes.json")).write_text("{}", encoding="utf-8")
         Path(_safe_path(data, "mysqil", "cassettes.json.bak")).write_text("{}", encoding="utf-8")
