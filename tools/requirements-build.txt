@@ -1,0 +1,9 @@
+# 构建工具链钉版（B3 W3 冻结构建用；BUILD-05 双构建可复现的前提）
+# 用途：tools/build_exe.py 的依赖安装段（_ensure_pyi_deps）读取本文件，
+#       按 == 钉版把 pyinstaller / pywebview 装进 tools/_build/pyi；
+#       两次构建使用同一钉版工具链，产物方可逐文件 sha256 比对。
+# 版本实查来源（2026-11-18，仓库 .tmp/buildvenv 建 venv 前执行）：
+#   python -m pip index versions pyinstaller  → 6.22.3（最新稳定）
+#   python -m pip index versions pywebview    → 6.2.1（最新稳定）
+pyinstaller==6.22.3
+pywebview==6.2.1

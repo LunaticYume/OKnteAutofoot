@@ -438,26 +438,75 @@ def verify_dist(py):
     return checks
 
 
+BUILD_REQS = os.path.join(ROOT, "tools", "requirements-build.txt")
+
+
+def _build_pins():
+    """读 tools/requirements-build.txt 的钉版映射（小写包名→版本）。缺失/坏行→{}。"""
+    pins = {}
+    try:
+        with open(BUILD_REQS, encoding="utf-8") as f:
+            for raw in f:
+                line = raw.split("#", 1)[0].strip()
+                if "==" not in line:
+                    continue
+                name, ver = (part.strip() for part in line.split("==", 1))
+                if name and ver:
+                    pins[name.lower()] = ver
+    except OSError:
+        return {}
+    return pins
+
+
+def _pinned_specs(packages):
+    """包名按钉版映射拼成 pkg==ver（无钉版则原样，保持旧行为）。"""
+    pins = _build_pins()
+    return [f"{p}=={pins[p.lower()]}" if p.lower() in pins else p
+            for p in packages]
+
+
+def _dep_versions(py):
+    """PYI_DEPS 内已装版本清单（构建日志留证，供双构建工具链比对）。"""
+    r = subprocess.run(
+        [py, "-m", "pip", "list", "--path", PYI_DEPS, "--format=freeze",
+         "--disable-pip-version-check"],
+        capture_output=True, text=True, timeout=120)
+    if r.returncode != 0:
+        return f"(pip list 失败 exit={r.returncode})"
+    return (r.stdout or "").strip()
+
+
 def _ensure_pyi_deps(py, packages):
     """把额外依赖装进隔离目录 tools/_build/pyi（绝不碰 ok-nte 的 Python）。返回是否成功。
 
     镜像优先（腾讯云），失败回退默认 PyPI——2026-11-03 镜像抖动导致
-    "Could not find a version" 假性缺依赖、单文件档静默跳过（真机反馈）。"""
+    "Could not find a version" 假性缺依赖、单文件档静默跳过（真机反馈）。
+
+    钉版（B3 W3 BUILD-05 前提）：packages 中在 tools/requirements-build.txt
+    有钉版的包按 pkg==ver 安装（--upgrade 保证陈旧 target 目录也被替换），
+    两次构建使用同一钉版工具链；文件缺失时退回未钉版旧行为。"""
     os.makedirs(PYI_DEPS, exist_ok=True)
+    specs = _pinned_specs(packages)
     r = subprocess.run(
-        [py, "-m", "pip", "install", "--quiet", "--target", PYI_DEPS,
+        [py, "-m", "pip", "install", "--quiet", "--upgrade", "--target",
+         PYI_DEPS,
          "--index-url", "https://mirrors.cloud.tencent.com/pypi/simple/",
-         *packages],
+         *specs],
         capture_output=True, text=True, timeout=900)
     if r.returncode == 0:
+        print(f"  构建依赖已装（{specs}）→ {PYI_DEPS}")
+        print(f"  PYI_DEPS 版本清单:\n{_dep_versions(py)}")
         return True
     print("依赖源 mirrors.cloud.tencent.com 安装失败，尝试默认 PyPI…")
     r = subprocess.run(
-        [py, "-m", "pip", "install", "--quiet", "--target", PYI_DEPS,
+        [py, "-m", "pip", "install", "--quiet", "--upgrade", "--target",
+         PYI_DEPS,
          "--index-url", "https://pypi.org/simple/",
-         *packages],
+         *specs],
         capture_output=True, text=True, timeout=900)
     if r.returncode == 0:
+        print(f"  构建依赖已装（{specs}，回退 pypi.org）→ {PYI_DEPS}")
+        print(f"  PYI_DEPS 版本清单:\n{_dep_versions(py)}")
         return True
     print(f"依赖安装失败（不阻断，运行时将自动降级）:\n"
           f"{r.stdout[-400:]}\n{r.stderr[-400:]}")
