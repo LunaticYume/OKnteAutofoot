@@ -1532,6 +1532,9 @@ def _parse_ocr_windows(out):
 # DC）与识别保留在本进程（用户裁决：OCR 截屏/识别留在普通权限面板）。
 
 _ELEV_ENSURE_FAILED = False  # OCR 的 UAC 拒绝后本进程内不再反复弹（见 _ensure_helper_for_ocr）
+# OCR-05/B3-B：置位时刻（time.monotonic 口径），0.0=未置位——TTL 兜底依据此值
+# 放行重试（修复前全仓无复位路径，降级与底层状态脱钩、只能重启进程恢复）。
+_ELEV_ENSURE_FAILED_AT = 0.0
 
 
 def _win32_is_window(hwnd):
@@ -1578,16 +1581,26 @@ def _ocr_foreground(hwnd):
 
 def _ensure_helper_for_ocr():
     """OCR 合成输入需要提权辅助进程（面板中 IL → 游戏高 IL 的注入输入被 UIPI
-    丢弃）。UAC 拒绝/失败后本面板进程内不再重复弹（避免每页反复打扰），由调用方
-    回退旧路径并提示。运行器拉起路径有独立的 ensure()，不受本标志影响。"""
-    global _ELEV_ENSURE_FAILED
+    丢弃）。UAC 拒绝/失败后本面板进程内置位短路（避免每页反复打扰弹 UAC），由
+    调用方回退旧路径并提示。OCR-05/B3-B 起 TTL 兜底：置位满 10 分钟（600 秒，
+    time.monotonic 口径）自动放行一次重试并复位标志——底层故障已恢复时自愈；
+    重试仍失败会重新置位并刷新置位时刻，短路语义保持（不会反复弹 UAC）。也可
+    经 POST /api/elev/retry 显式复位重试。运行器拉起路径有独立的 ensure()，
+    不受本标志影响。"""
+    global _ELEV_ENSURE_FAILED, _ELEV_ENSURE_FAILED_AT
     if _ELEV_ENSURE_FAILED:
-        return False
+        if time.monotonic() - _ELEV_ENSURE_FAILED_AT < 600.0:  # OCR-05/B3-B：TTL 内短路
+            return False
+        # OCR-05/B3-B：TTL 已过——复位放行重试（重试失败在下方重新置位并刷新 _AT）
+        _ELEV_ENSURE_FAILED = False
+        _ELEV_ENSURE_FAILED_AT = 0.0
     if elev_client.ELEV.ensure(STATE.settings.get("oknte_root")):
         return True
     _ELEV_ENSURE_FAILED = True
+    _ELEV_ENSURE_FAILED_AT = time.monotonic()  # OCR-05/B3-B：记录置位时刻（TTL 起点）
     print("提示：提权辅助进程未就绪（" + elev_client.ELEV.reason() + "）——"
-          "OCR 点击/滚动可能无法送达管理员权限的游戏窗口（UIPI 拦截），已回退内置路径")
+          "OCR 点击/滚动可能无法送达管理员权限的游戏窗口（UIPI 拦截），已回退内置路径，"
+          "可用设置页重试或 10 分钟后自动恢复")
     return False
 
 
@@ -3063,6 +3076,7 @@ _NO_BODY_ROUTES = frozenset((
     "/api/sites/sync-guide", "/api/tajiduo/sync", "/api/tajiduo/sync-gacha",
     "/api/tajiduo/logout", "/api/ocr/cancel", "/api/plan", "/api/dry-run",
     "/api/stop", "/api/today/clear-blacklist",
+    "/api/elev/retry",  # OCR-05/B3-B：显式重试无 body 裸 POST（分支零 body 访问）
 ))
 
 
@@ -3891,6 +3905,23 @@ class Handler(BaseHTTPRequestHandler):
             # 运行中白名单放行——遍历挂起时规划器可能恰好启动，取消必须可用。
             _ocr_cancel_active()
             self._send(200, {"ok": True, "cancelled": True})
+        elif path == "/api/elev/retry":
+            # OCR-05/B3-B：提权辅助进程 ensure 失败后的显式重试端点（复现确认
+            # 置位后本进程内无复位路径=降级与底层状态脱钩）。先复位失败标志
+            # （TTL 兜底之外的用户主动恢复通道）再调 _ensure_helper_for_ocr()
+            # 重试；重试失败会重新置位并刷新 TTL，短路语义不变。
+            # 有意不加入运行中 409 白名单：ensure 重试可能触发 UAC 弹窗，仅应
+            # 在面板空闲时由用户主动发起（运行中弹窗会打断无人值守运行）。
+            global _ELEV_ENSURE_FAILED, _ELEV_ENSURE_FAILED_AT
+            _ELEV_ENSURE_FAILED = False
+            _ELEV_ENSURE_FAILED_AT = 0.0
+            ensured = _ensure_helper_for_ocr()
+            if ensured:
+                message = ("提权辅助进程已就绪，OCR 点击/滚动恢复经提权路径送达游戏窗口")
+            else:
+                message = ("提权辅助进程仍未就绪（" + elev_client.ELEV.reason()
+                           + "）——可检查 oknte_root 设置后重试，或 10 分钟后自动恢复重试")
+            self._send(200, {"ok": True, "ensured": ensured, "message": message})
         elif path == "/api/ocr/map-unknown":
             # 未收录道具实名映射：OCR unknown_items 的人工确认结果 → item_names 别名。
             # 校验失败 400（ValueError）/500（磁盘 OSError）；成功后同名格下次识别

@@ -5323,6 +5323,278 @@ def test_ocr01_existing_ocr_cases_rerun():
     assert not main_mod._OCR_CANCEL.is_set(), "复跑后取消令牌必须复位"
 
 
+# ---------- B3-B OCR-05：提权辅助 ensure 失败——显式重试端点 + TTL 兜底专项 ----------
+
+def _ocr05_cleanup_flags(main_mod):
+    """OCR-05 用例间模块全局复位：_ELEV_ENSURE_FAILED/_AT 不跨用例泄漏。"""
+    main_mod._ELEV_ENSURE_FAILED = False
+    main_mod._ELEV_ENSURE_FAILED_AT = 0.0
+
+
+def _ocr05_spy_ensure(return_value):
+    """OCR-05 专用 spy：实例属性遮蔽 elev_client.ELEV.ensure，计数调用并固化
+    返回值（不触真实拉起）。返回 (calls, uninstall)；uninstall 删实例属性还原
+    类绑定方法（复现脚本 .tmp/repro_slice_e_ocr05.py 先例口径）。"""
+    import app.elev_client as elev_client
+    calls = []
+
+    def _spy(root, *a, **kw):
+        calls.append(root)
+        return return_value
+
+    elev_client.ELEV.ensure = _spy
+
+    def uninstall():
+        if "ensure" in elev_client.ELEV.__dict__:
+            del elev_client.ELEV.ensure
+
+    return calls, uninstall
+
+
+@case
+def test_ocr05_retry_endpoint_restores_degradation():
+    """OCR-05/B3-B ①置位→端点重试→恢复：坏 root（目录在、缺内嵌 python.exe，
+    elev_client.py:215-217 确定性失败，不起进程不弹 UAC）直调
+    _ensure_helper_for_ocr 置位降级（stdout 含新口径文案）后，同一 root 修好
+    （写回 python.exe 合法形态）→ POST /api/elev/retry（空体裸 POST）复位标志
+    并重试 → ensured=True、_ELEV_ENSURE_FAILED=False、_AT=0.0；再直调返回 True
+    （会话复用 elev_client.py:218-220）=后续 OCR 走 elev 路径。
+    夹具照 test_elev_helper_e2e_auth_ops_audit 先例（set_test_spawn 测试模式
+    普通 Popen——helper IPC 仅 127.0.0.1、不弹真实 UAC）；HTTP 层照 _srv02_call
+    先例（回环 Origin + X-Panel-Token）；临时目录仓库 .tmp/（E 盘）。"""
+    import io
+    import threading
+    from contextlib import redirect_stdout
+    import app.elev_client as elev_client
+    import app.main as main_mod
+    from app import state as state_mod
+    from app.main import create_server
+
+    _srv02_wait_runner_idle()
+    tmp = _sec10_tmp("ocr05")
+    log_dir = _safe_path(tmp, "log")
+    os.makedirs(log_dir, exist_ok=True)
+    root = _safe_path(tmp, "root")
+    py_dir = _safe_path(root, "data", "apps", "ok-nte", "python")
+    os.makedirs(py_dir, exist_ok=True)  # 坏 root：目录在、python.exe 缺
+    orig_data_dir = state_mod.DATA_DIR
+    state_mod.DATA_DIR = log_dir  # _default_log_dir()（elev_client.py:112-116）重定向
+    elev_client.set_test_spawn(True)
+    buf = io.StringIO()
+    try:
+        with _StateGuard(), redirect_stdout(buf):
+            STATE.data["settings"] = dict(DEFAULT_SETTINGS)
+            STATE.settings["oknte_root"] = root
+            assert main_mod._ensure_helper_for_ocr() is False  # 坏 root 置位
+            assert main_mod._ELEV_ENSURE_FAILED is True
+            out0 = buf.getvalue()
+            assert "已回退内置路径" in out0 and \
+                "可用设置页重试或 10 分钟后自动恢复" in out0  # OCR-05/B3-B 新口径
+            # 修好 root（同路径写回 python.exe = _sec10_root 合法形态）
+            Path(_safe_path(py_dir, "python.exe")).write_text(
+                "placeholder", encoding="utf-8")
+            main_mod._PANEL_TOKEN = main_mod._new_panel_token()
+            server, _port = create_server(0, auto_range=1)
+            port = server.server_address[1]
+            threading.Thread(target=server.serve_forever, daemon=True,
+                             name="selftest-ocr05-retry").start()
+            try:
+                code, r = _srv02_call(port, "POST", "/api/elev/retry")
+                assert code == 200 and r.get("ok") is True, (code, r)
+                assert r.get("ensured") is True, r  # 重试成功（测试模式普通 Popen）
+                assert isinstance(r.get("message"), str) and r["message"], r
+                assert main_mod._ELEV_ENSURE_FAILED is False  # 端点已复位标志
+                assert main_mod._ELEV_ENSURE_FAILED_AT == 0.0
+                # 后续 OCR 走 elev 路径：再直调不置位、复用既有会话
+                assert main_mod._ensure_helper_for_ocr() is True
+                assert elev_client.ELEV.available()
+            finally:
+                server.shutdown()
+                server.server_close()
+    finally:
+        elev_client.set_test_spawn(False)
+        pid = elev_client.ELEV._pid
+        elev_client.ELEV.shutdown()
+        deadline = time.time() + 6
+        while pid and time.time() < deadline and elev_client._pid_alive(pid):
+            time.sleep(0.2)
+        assert not (pid and elev_client._pid_alive(pid)), \
+            "辅助进程应随 shutdown 退出（不留孤儿）"
+        state_mod.DATA_DIR = orig_data_dir
+        _ocr05_cleanup_flags(main_mod)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_ocr05_ttl_expiry_allows_retry():
+    """OCR-05/B3-B ②TTL 过期放行：置位后注入过期 _AT（monotonic()-601，>600 秒
+    TTL）→ 直调 _ensure_helper_for_ocr 必须放行重试并复位——spy 证明 ensure
+    真实被调（非短路）、实参=STATE.settings["oknte_root"]；spy 固化重试仍失败
+    → 重新置位并刷新 _AT（TTL 只放行重试、不反复弹 UAC，短路语义保持）；
+    stdout 置位与重新置位两次均含 OCR-05/B3-B 新口径文案。"""
+    import io
+    from contextlib import redirect_stdout
+    import app.main as main_mod
+
+    tmp = _sec10_tmp("ocr05ttl")
+    root_bad = _safe_path(tmp, "root_bad")  # 不存在路径：ensure 确定性失败不拉进程
+    buf = io.StringIO()
+    with _StateGuard(), redirect_stdout(buf):
+        STATE.data["settings"] = dict(DEFAULT_SETTINGS)
+        STATE.settings["oknte_root"] = root_bad
+        try:
+            # 先真实置位（坏 root：elev_client.py:215-217 失败，不起进程不弹 UAC）
+            assert main_mod._ensure_helper_for_ocr() is False
+            assert main_mod._ELEV_ENSURE_FAILED is True
+            assert main_mod._ELEV_ENSURE_FAILED_AT > 0.0
+            # 注入过期 _AT（>600 秒）
+            main_mod._ELEV_ENSURE_FAILED_AT = time.monotonic() - 601.0
+            calls, uninstall = _ocr05_spy_ensure(False)
+            try:
+                assert main_mod._ensure_helper_for_ocr() is False  # 重试失败（spy）
+                assert len(calls) == 1, "TTL 过期必须放行重试（ensure 真实被调）"
+                assert calls[0] == root_bad  # 调用链实参不破坏
+                # 重试失败 → 重新置位并刷新 _AT（短路语义保持）
+                assert main_mod._ELEV_ENSURE_FAILED is True
+                assert main_mod._ELEV_ENSURE_FAILED_AT > time.monotonic() - 601.0
+                assert main_mod._ELEV_ENSURE_FAILED_AT <= time.monotonic()
+            finally:
+                uninstall()
+        finally:
+            _ocr05_cleanup_flags(main_mod)
+    assert buf.getvalue().count("可用设置页重试或 10 分钟后自动恢复") == 2, \
+        buf.getvalue()  # 置位+重新置位各一次
+    shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_ocr05_ttl_unexpired_still_short_circuit():
+    """OCR-05/B3-B ③TTL 未过期仍短路：置位后 _AT 为近期值（<600 秒）→ 直调
+    短路返回 False 且 ensure 未被重试（spy 零调用，短路于 main.py
+    _ensure_helper_for_ocr TTL 闸）——修复前「不反复弹」语义在 TTL 窗口内
+    保持；标志与置位时刻均不变。"""
+    import app.main as main_mod
+
+    tmp = _sec10_tmp("ocr05ttl2")
+    root_bad = _safe_path(tmp, "root_bad")
+    with _StateGuard():
+        STATE.data["settings"] = dict(DEFAULT_SETTINGS)
+        STATE.settings["oknte_root"] = root_bad
+        try:
+            assert main_mod._ensure_helper_for_ocr() is False  # 真实置位
+            at_first = main_mod._ELEV_ENSURE_FAILED_AT
+            assert main_mod._ELEV_ENSURE_FAILED is True and at_first > 0.0
+            calls, uninstall = _ocr05_spy_ensure(True)
+            try:
+                assert main_mod._ensure_helper_for_ocr() is False  # TTL 内短路
+                assert calls == [], "TTL 未过期不得重试（ensure 未被调）"
+                assert main_mod._ELEV_ENSURE_FAILED is True  # 标志不变
+                assert main_mod._ELEV_ENSURE_FAILED_AT == at_first  # 时刻不变
+            finally:
+                uninstall()
+        finally:
+            _ocr05_cleanup_flags(main_mod)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_ocr05_retry_endpoint_surface():
+    """OCR-05/B3-B ④端点面断言：/api/elev/retry 在 _NO_BODY_ROUTES（空体裸
+    POST 放行为 {}——不在册则 400 缺少请求体）；有意不在运行中 409 白名单
+    （UAC 弹窗仅在空闲发起）——静态断言 do_POST 的 409 白名单元组不含本路由
+    （对照 /api/stop 证明定位）+ 运行态注入正面验证 409；空闲态空体 POST
+    可达（坏 root 打桩 ensured=False、重新置位，不拉进程不弹 UAC）。"""
+    import inspect
+    import re as re_mod
+    import threading
+    import app.main as main_mod
+    from app.main import create_server
+
+    assert "/api/elev/retry" in main_mod._NO_BODY_ROUTES
+    # 静态：运行中 409 白名单元组（main.py do_POST）不含 /api/elev/retry
+    src = inspect.getsource(main_mod.Handler.do_POST)
+    m = re_mod.search(r"path not in \(([^)]*)\)\s*and\s*\\?\s*RUNNER\.snapshot", src)
+    assert m, "do_POST 运行中 409 白名单元组定位失败"
+    assert "/api/stop" in m.group(1), "正则定位到的应是 409 白名单元组（对照组）"
+    assert "/api/elev/retry" not in m.group(1), "重试端点不得加入运行中 409 白名单"
+
+    _srv02_wait_runner_idle()
+    tmp = _sec10_tmp("ocr05surf")
+    with _StateGuard():
+        STATE.data["settings"] = dict(DEFAULT_SETTINGS)
+        STATE.settings["oknte_root"] = _safe_path(tmp, "no_such_root")
+        main_mod._PANEL_TOKEN = main_mod._new_panel_token()
+        server, _port = create_server(0, auto_range=1)
+        port = server.server_address[1]
+        threading.Thread(target=server.serve_forever, daemon=True,
+                         name="selftest-ocr05-surface").start()
+        runner_state0 = runner_mod.RUNNER.snapshot()["state"]
+        try:
+            # 运行态注入（status 持锁改，不 start/stop、不写 runtime）→ 空
+            # 体 POST 必须 409（端点有意不在 409 白名单）
+            with runner_mod.RUNNER.lock:
+                runner_mod.RUNNER.status["state"] = "running"
+            try:
+                code, r = _srv02_call(port, "POST", "/api/elev/retry")
+                assert code == 409, (code, r)
+            finally:
+                with runner_mod.RUNNER.lock:
+                    runner_mod.RUNNER.status["state"] = runner_state0
+            # 空闲态空体 POST 可达：坏 root → ensured=False（失败不拉进程）
+            code, r = _srv02_call(port, "POST", "/api/elev/retry")
+            assert code == 200 and r.get("ok") is True, (code, r)
+            assert r.get("ensured") is False, r
+            assert isinstance(r.get("message"), str) and r["message"], r
+            assert main_mod._ELEV_ENSURE_FAILED is True  # 重试失败重新置位
+        finally:
+            server.shutdown()
+            server.server_close()
+            _ocr05_cleanup_flags(main_mod)
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_ocr05_ensure_success_path_regression():
+    """OCR-05/B3-B ⑤ensure 成功路径回归：不置位（标志 False/_AT 0.0）→ 直调
+    不短路、ensure 被调且实参=STATE.settings["oknte_root"]、成功返回 True 后
+    不置位、_AT 保持 0.0、零打印（修复前成功路径行为保持）；失败对照：ensure
+    返回 False → 置位 + _AT 记录（TTL 起点就绪）。spy 固化返回值，不拉子进程
+    不弹 UAC。"""
+    import io
+    from contextlib import redirect_stdout
+    import app.main as main_mod
+
+    tmp = _sec10_tmp("ocr05reg")
+    root_fake = _safe_path(tmp, "root")
+    _ocr05_cleanup_flags(main_mod)  # 夹具准备：不置位基线
+    buf = io.StringIO()
+    with _StateGuard(), redirect_stdout(buf):
+        STATE.data["settings"] = dict(DEFAULT_SETTINGS)
+        STATE.settings["oknte_root"] = root_fake
+        calls, uninstall = _ocr05_spy_ensure(True)
+        try:
+            assert main_mod._ensure_helper_for_ocr() is True  # 成功路径直通
+            assert calls == [root_fake]  # 实参=STATE.settings["oknte_root"]
+            assert main_mod._ELEV_ENSURE_FAILED is False  # 成功不置位
+            assert main_mod._ELEV_ENSURE_FAILED_AT == 0.0
+        finally:
+            uninstall()
+        out_mid = buf.getvalue()
+        assert "提权辅助进程未就绪" not in out_mid, out_mid  # 成功路径零打印
+        # 失败对照：ensure False → 置位 + _AT 记录（TTL 起点就绪）
+        calls2, uninstall2 = _ocr05_spy_ensure(False)
+        try:
+            assert main_mod._ensure_helper_for_ocr() is False
+            assert calls2 == [root_fake]
+            assert main_mod._ELEV_ENSURE_FAILED is True
+            assert 0.0 < main_mod._ELEV_ENSURE_FAILED_AT <= time.monotonic()
+        finally:
+            uninstall2()
+        assert "可用设置页重试或 10 分钟后自动恢复" in buf.getvalue()  # 新口径
+    _ocr05_cleanup_flags(main_mod)
+    shutil.rmtree(tmp, ignore_errors=True)
+
+
 # ---------- 塔吉多通道（协议纯函数 / 请求构造 / 解析 / 预览应用） ----------
 
 @case
