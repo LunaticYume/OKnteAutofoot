@@ -413,6 +413,15 @@ def verify_dist(py):
     for base, _dirs, files in os.walk(DIST):
         for name in files:
             pristine.add(os.path.join(base, name))
+
+    def _clean_step_residue():  # 验证过程新生成的用户数据文件清掉，保持 dist 模板干净
+        for base, _dirs, files in os.walk(DIST):
+            for name in files:
+                path = os.path.join(base, name)
+                if path not in pristine:
+                    os.remove(path)
+        shutil.rmtree(os.path.join(data_dir, "backups"), ignore_errors=True)
+
     try:
         for step, cmd, env_extra in (
             ("自测", [py, "-m", "app.selftest"], {}),
@@ -428,13 +437,13 @@ def verify_dist(py):
             print(f"dist {step}: exit={r.returncode} {tail[0] if tail else ''}")
             assert r.returncode == 0, f"dist {step} 未通过（exit {r.returncode}）"
             checks.append(f"dist {step} 通过 ✅")
-    finally:  # 验证过程新生成的用户数据文件清掉，保持 dist 模板干净
-        for base, _dirs, files in os.walk(DIST):
-            for name in files:
-                path = os.path.join(base, name)
-                if path not in pristine:
-                    os.remove(path)
-        shutil.rmtree(os.path.join(data_dir, "backups"), ignore_errors=True)
+            # 每步后即清（B3 冻结重试 2026-11-19，主会话授权的最小改动）：
+            # 自测残留的 state.json.bak 会被冒烟面板 load_json .bak 回落读走
+            # （app/state.py:238-239），oknte_root=自测夹具 fake_root →
+            # /api/dry-run compat incompatible → 冒烟 15/16。B3F-06。
+            _clean_step_residue()
+    finally:  # 兜底：断言失败中断时也清理，保持 dist 模板干净
+        _clean_step_residue()
     return checks
 
 
