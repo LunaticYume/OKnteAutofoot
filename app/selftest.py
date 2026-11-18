@@ -8797,9 +8797,20 @@ def _srv02_noop_payload():
     """no-op 导入载荷：build_export()（内存现值）。前提校验——产量键全在
     TARGETS 且值全在 clamp 区间（main.py:927-929 过滤/钳制不改键值），
     clean_yields 与内存表内容完全等价 → yields.json 重写字节不变——磁盘注入
-    用例「yields/requirements 两文件不变」断言的根基。"""
+    用例「yields/requirements 两文件不变」断言的根基。
+    B3 冻结期修正（2026-11-18，B3F-01）：characters 非空保证——build_export()
+    取内存 STATE.data["characters"]，干净 dist（无用户 state.json）下为空列表
+    → /api/import 入口 400（main.py:915-916 空 characters 拒绝），OSError 注入
+    点不可达（W3 构建 A/B 双双 219/221 确定性失败）。此处兜底追加一个合成角色
+    （_sanitize_character 口径同 test_srv02_import_normal_regression），使载荷
+    不依赖环境用户数据：test ① 的「state.json 未写」断言不受影响（OSError
+    中断发生在 STATE.save() 之前）；test ② 自身 append 语义不变；test ③ 仅有
+    事件序/锁深度断言、无字节等价断言。"""
     from app import main as main_mod
     payload = main_mod.build_export()
+    if not payload.get("characters"):
+        payload["characters"].append(main_mod._sanitize_character(
+            {"id": "srv02noop", "name": "SRV02夹具角色"}))
     assert payload.get("schema") == 3, payload.get("schema")
     assert payload["yields"]["per_run"] == dict(planner.YIELDS["per_run"]), \
         "夹具前提：导出产量必须等于内存表（no-op 导入）"
