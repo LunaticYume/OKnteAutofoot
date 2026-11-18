@@ -985,7 +985,10 @@ def _recover_auth(client, first_error, retry):
     ① refreshToken 续期恰一次，成功即落盘并重试（重试仍失败按现状原样上抛）；
     ② 续期失败且有落盘 laohu 根凭据 → 同 device_id 重走 user_center_login 重建
       会话并落盘（见 _relogin_via_laohu）后重试恰一次；
-    ③ 仍失败抛现有友好重绑错误——官方原文进 raw 供诊断，绝不透传给用户。
+    ③ 仍失败抛现有友好重绑错误——官方原文进 raw 供诊断，绝不透传给用户；
+      混合路径例外（TJD-02/B3-B）：laohu 重登成功后重试仍抛非 auth 错误（如
+      接口 HTTP 500）时原样上抛，保留 status_code/raw 与原始消息（HTTP 层据此
+      回 502 而非 401，不误导用户重绑账号）。
 
     B2.8-A（TJD-01/CONC-05 恢复链互斥）：全程持模块级 _AUTH_LOCK——并发双 sync
     （sync/sync-gacha 路由均不持 main._TJD_LOCK，用户裁定不在路由层补整段锁）
@@ -1012,6 +1015,13 @@ def _recover_auth(client, first_error, retry):
                 try:
                     return retry()
                 except TajiduoError as e3:
+                    # TJD-02/B3-B：laohu 重登成功后重试仍失败——按 e3.auth 分流。
+                    # 非 auth 错误（如「接口 HTTP 500」）原样上抛（raise e3 from e2，
+                    # 保留 status_code/raw 与原始消息；auth 判定在构造器按原始
+                    # status_code/消息算得，此处不可信包装文案反推）；auth 错误
+                    # 维持现状：origin 累积后走下方友好重绑错误（auth=True）。
+                    if not e3.auth:
+                        raise e3 from e2
                     origin = f"{origin}；laohu重登后仍失败：{e3}"
             raise TajiduoError(
                 "登录已过期，请重新绑定（在塔吉多卡片输入手机号获取验证码）",

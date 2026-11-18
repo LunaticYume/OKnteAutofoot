@@ -6554,6 +6554,341 @@ def test_tajiduo_laohu_recovery_chain():
             tc.TajiduoClient = orig_client_cls
 
 
+# ---------- B3-B（TJD-02）：_recover_auth 尾段按 e3.auth 分流保留 status_code（2026-11-18） ----------
+# 修复点 app/tajiduo_client.py:1017-1025：laohu 重登成功后 retry 仍失败——
+# e3.auth=False 原样上抛（raise e3 from e2，保留 status_code/raw 与原始消息，
+# HTTP 层据此回 502 而非 401）；e3.auth=True 维持现状（origin 累积+友好重绑
+# 错误 auth=True）。夹具先例：_FakeReloginClient（test_tajiduo_laohu_
+# recovery_chain）、test_tajiduo_endpoints_http 的真实 Handler 端口 0 冒烟；
+# 非 auth 重试错构造参数复刻 _wrap_http_error（tajiduo_client.py:313-315）
+# 「接口 HTTP {code}（{path}）」形态。全部离线桩零真实网络请求；临时目录一律
+# 仓库内 .tmp/（显式 dir=，E 盘）。
+
+
+@case
+def test_tjd02_relogin_retry_nonauth_passthrough():
+    """①（TJD-02 主症状修复）：laohu 重登成功 → retry 抛非 auth 错误（接口
+    HTTP 500）→ 最终异常原样上抛：auth=False、status_code=500、原始消息与
+    raw.body 保留、__cause__ 为①级 refresh 失败错（raise e3 from e2 链路）——
+    不再被包装成 auth=True 重绑误导（修复前复现：e.auth=True、status_code=0、
+    raw 只剩 origin/origin_error 字符串，见 .testarchive/2026-11-18-B3-
+    acceptance/fixes-b/slice-g/repro_stdout.txt）。"""
+    from app import tajiduo_client as tc
+    os.makedirs(".tmp", exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="tjd02_a_", dir=".tmp") as tmp:
+        orig_file = tc.TOKEN_FILE
+        orig_dump = tc.LAST_PAYLOAD_FILE
+        orig_hist = tc.GACHA_HISTORY_FILE
+        orig_client_cls = tc.TajiduoClient
+        tc.TOKEN_FILE = _safe_path(tmp, "tajiduo_token.json")
+        tc.LAST_PAYLOAD_FILE = _safe_path(tmp, "tajiduo_last_payload.json")
+        tc.GACHA_HISTORY_FILE = _safe_path(tmp, "gacha_history.json")
+        try:
+            relogin_calls = []
+
+            class _ReloginOkClient:
+                """顶替 TajiduoClient（_relogin_via_laohu 用）：user_center_login
+                恒成功（离线桩），记录 device_id 供同 device_id 复用断言。"""
+
+                def __init__(self, device_id):
+                    self.device_id = device_id
+                    relogin_calls.append(device_id)
+
+                def user_center_login(self, laohu_token, laohu_user_id):
+                    return {"access_token": "A9", "refresh_token": "R9",
+                            "center_uid": "1"}
+            tc.TajiduoClient = _ReloginOkClient
+
+            class _RetryHttp500Client:
+                device_id = "HTDEV"
+
+                def __init__(self):
+                    self.roles_calls = 0
+
+                def get_game_roles(self, game_id):
+                    self.roles_calls += 1
+                    if self.roles_calls == 1:
+                        raise tc.TajiduoError(
+                            "[/getGameRoles] FAILED TO TOUCH", auth=True)
+                    # 构造参数逐字复刻 _wrap_http_error（无 auth 关键词 +
+                    # status_code=500 → 构造器算得 auth=False）
+                    raise tc.TajiduoError(
+                        "接口 HTTP 500（/usercenter/api/v2/getGameRoles）",
+                        raw={"body": '{"code":500,"msg":"internal error"}'},
+                        status_code=500)
+
+                def refresh_session(self):
+                    raise tc.TajiduoError(
+                        "[/refreshToken] FAILED TO TOUCH", auth=True)
+
+            tc.save_token_store({"device_id": "HTDEV", "access_token": "A1",
+                                 "refresh_token": "R1", "center_uid": "1",
+                                 "laohu_token": "LAOHU_T", "laohu_user_id": "42"})
+            fake = _RetryHttp500Client()
+            try:
+                tc.sync_all(fake)
+                raise AssertionError("重登后重试仍失败必须抛错")
+            except tc.TajiduoError as e:
+                assert e.auth is False, e.auth  # 非 auth：不误导用户重绑
+                assert e.status_code == 500, e.status_code  # 原始 code 保留
+                assert "接口 HTTP 500（/usercenter/api/v2/getGameRoles）" in str(e), \
+                    str(e)  # 原始消息透传
+                assert e.raw.get("body") == '{"code":500,"msg":"internal error"}', \
+                    e.raw  # 原始响应体保留（非仅 origin 字符串残留）
+                assert "重新绑定" not in str(e), str(e)  # 不出现重绑误导文案
+                assert e.__cause__ is not None \
+                    and "refreshToken" in str(e.__cause__), \
+                    str(e.__cause__)  # raise e3 from e2 的异常链依据
+            assert fake.roles_calls == 2, fake.roles_calls  # 失败→重登→重试恰一次
+            assert relogin_calls == ["HTDEV"], relogin_calls
+            store = tc.load_token_store()
+            assert store["access_token"] == "A9", "重登新会话必须落盘"
+        finally:
+            tc.TOKEN_FILE = orig_file
+            tc.LAST_PAYLOAD_FILE = orig_dump
+            tc.GACHA_HISTORY_FILE = orig_hist
+            tc.TajiduoClient = orig_client_cls
+
+
+@case
+def test_tjd02_relogin_retry_auth_friendly_rebind():
+    """②（现状回归）：laohu 重登成功 → retry 仍抛 auth 错误 → 维持现状——
+    origin 累积（含「laohu重登后仍失败」段）+ 友好重绑错误 auth=True，官方
+    原文不透传（只进 raw 供诊断）。"""
+    from app import tajiduo_client as tc
+    os.makedirs(".tmp", exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="tjd02_b_", dir=".tmp") as tmp:
+        orig_file = tc.TOKEN_FILE
+        orig_dump = tc.LAST_PAYLOAD_FILE
+        orig_hist = tc.GACHA_HISTORY_FILE
+        orig_client_cls = tc.TajiduoClient
+        tc.TOKEN_FILE = _safe_path(tmp, "tajiduo_token.json")
+        tc.LAST_PAYLOAD_FILE = _safe_path(tmp, "tajiduo_last_payload.json")
+        tc.GACHA_HISTORY_FILE = _safe_path(tmp, "gacha_history.json")
+        try:
+            class _ReloginOkClient2:
+                def __init__(self, device_id):
+                    self.device_id = device_id
+
+                def user_center_login(self, laohu_token, laohu_user_id):
+                    return {"access_token": "A9", "refresh_token": "R9",
+                            "center_uid": "1"}
+            tc.TajiduoClient = _ReloginOkClient2
+
+            class _RetryAuthFailClient:
+                device_id = "HTDEV"
+
+                def __init__(self):
+                    self.roles_calls = 0
+
+                def get_game_roles(self, game_id):
+                    self.roles_calls += 1
+                    raise tc.TajiduoError(
+                        "[/getGameRoles] FAILED TO TOUCH", auth=True)
+
+                def refresh_session(self):
+                    raise tc.TajiduoError(
+                        "[/refreshToken] FAILED TO TOUCH", auth=True)
+
+            tc.save_token_store({"device_id": "HTDEV", "access_token": "A1",
+                                 "refresh_token": "R1", "center_uid": "1",
+                                 "laohu_token": "LAOHU_T", "laohu_user_id": "42"})
+            fake = _RetryAuthFailClient()
+            try:
+                tc.sync_all(fake)
+                raise AssertionError("重登后重试仍 auth 失败必须抛错")
+            except tc.TajiduoError as e:
+                assert e.auth is True and "重新绑定" in str(e), (e.auth, str(e))
+                assert "FAILED TO TOUCH" not in str(e), str(e)  # 原文不透传
+                assert "laohu重登后仍失败" in e.raw.get("origin", ""), e.raw
+                assert "[/getGameRoles] FAILED TO TOUCH" \
+                    in e.raw.get("origin", ""), e.raw
+            assert fake.roles_calls == 2, fake.roles_calls
+        finally:
+            tc.TOKEN_FILE = orig_file
+            tc.LAST_PAYLOAD_FILE = orig_dump
+            tc.GACHA_HISTORY_FILE = orig_hist
+            tc.TajiduoClient = orig_client_cls
+
+
+@case
+def test_tjd02_refresh_success_retry_passthrough():
+    """③（①级路径现状回归）：refresh 续期成功 → 落盘 → retry 仍失败 → 按现状
+    原样上抛（本修复不触该路径：非 auth 错误不包装、不进重绑文案）；另证首错
+    非 auth 时 sync_all 根本不进恢复链（tajiduo_client.py:1035-1036 直接
+    raise）——两条既有透传路径均不被破坏。"""
+    from app import tajiduo_client as tc
+    os.makedirs(".tmp", exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="tjd02_c_", dir=".tmp") as tmp:
+        orig_file = tc.TOKEN_FILE
+        orig_dump = tc.LAST_PAYLOAD_FILE
+        orig_client_cls = tc.TajiduoClient
+        tc.TOKEN_FILE = _safe_path(tmp, "tajiduo_token.json")
+        tc.LAST_PAYLOAD_FILE = _safe_path(tmp, "tajiduo_last_payload.json")
+        try:
+            class _BoomReloginClient:
+                """若被构造即失败：①级成功路径绝不应触②级重登。"""
+
+                def __init__(self, device_id):
+                    raise AssertionError("①级成功路径不得进入②级 laohu 重登")
+            tc.TajiduoClient = _BoomReloginClient
+
+            class _RefreshOkRetryFailClient:
+                device_id = "HTDEV"
+
+                def __init__(self):
+                    self.roles_calls = 0
+
+                def get_game_roles(self, game_id):
+                    self.roles_calls += 1
+                    if self.roles_calls == 1:
+                        raise tc.TajiduoError(
+                            "[/getGameRoles] FAILED TO TOUCH", auth=True)
+                    raise tc.TajiduoError(
+                        "接口 HTTP 500（/usercenter/api/v2/getGameRoles）",
+                        raw={"body": '{"code":500,"msg":"internal error"}'},
+                        status_code=500)
+
+                def refresh_session(self):
+                    return {"access_token": "A2", "refresh_token": "R2",
+                            "center_uid": "1"}
+
+            tc.save_token_store({"device_id": "HTDEV", "access_token": "A1",
+                                 "refresh_token": "R1", "center_uid": "1",
+                                 "laohu_token": "LAOHU_T", "laohu_user_id": "42"})
+            fake = _RefreshOkRetryFailClient()
+            try:
+                tc.sync_all(fake)
+                raise AssertionError("续期后重试仍失败必须抛错")
+            except tc.TajiduoError as e:
+                assert e.auth is False and e.status_code == 500, (e.auth,
+                                                                  e.status_code)
+                assert "接口 HTTP 500（/usercenter/api/v2/getGameRoles）" in str(e), \
+                    str(e)
+                assert "重新绑定" not in str(e), str(e)
+            assert fake.roles_calls == 2, fake.roles_calls
+            assert tc.load_token_store()["access_token"] == "A2", \
+                "续期成功必须落盘"
+
+            # 首错非 auth：sync_all 不进恢复链，原样上抛（roles_calls==1）
+            class _FirstNonAuthClient:
+                device_id = "HTDEV"
+
+                def __init__(self):
+                    self.roles_calls = 0
+
+                def get_game_roles(self, game_id):
+                    self.roles_calls += 1
+                    raise tc.TajiduoError(
+                        "接口 HTTP 500（/usercenter/api/v2/getGameRoles）",
+                        raw={"body": '{"code":500,"msg":"internal error"}'},
+                        status_code=500)
+
+                def refresh_session(self):
+                    raise AssertionError("非 auth 首错不得进入恢复链续期")
+
+            fake2 = _FirstNonAuthClient()
+            try:
+                tc.sync_all(fake2)
+                raise AssertionError("非 auth 首错必须抛错")
+            except tc.TajiduoError as e:
+                assert e.auth is False and e.status_code == 500, (e.auth,
+                                                                  e.status_code)
+            assert fake2.roles_calls == 1, fake2.roles_calls
+        finally:
+            tc.TOKEN_FILE = orig_file
+            tc.LAST_PAYLOAD_FILE = orig_dump
+            tc.TajiduoClient = orig_client_cls
+
+
+@case
+def test_tjd02_sync_route_nonauth_502():
+    """④（HTTP 层映射）：sync 路由对「重登成功→重试抛非 auth 接口 HTTP 500」
+    回 502 而非 401（needs_rebind=False、原始错误消息可见、无重绑误导文案）
+    ——夹具照 test_tajiduo_endpoints_http 先例（真实 Handler 端口 0、回环
+    Origin、面板令牌，绝不触网）。"""
+    import http.client
+    import threading
+    from app import main as main_mod
+    from app import tajiduo_client as tc
+    from app.main import create_server
+
+    def call(port, method, path, body=None):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        headers = {"Origin": "http://127.0.0.1:%d" % port,  # 回环 Origin 过防线
+                   "X-Panel-Token": main_mod._PANEL_TOKEN}  # 面板令牌过 SEC-05 闸
+        payload = json.dumps(body).encode("utf-8") if body is not None else None
+        if payload is not None:
+            headers["Content-Type"] = "application/json"
+        conn.request(method, path, payload, headers)
+        resp = conn.getresponse()
+        data = json.loads(resp.read().decode("utf-8"))
+        conn.close()
+        return resp.status, data
+
+    class _ReloginOkClient3:
+        def __init__(self, device_id):
+            self.device_id = device_id
+
+        def user_center_login(self, laohu_token, laohu_user_id):
+            return {"access_token": "A9", "refresh_token": "R9",
+                    "center_uid": "1"}
+
+    class _RouteRetryHttp500Client:
+        """getGameRoles 首抛 auth 错进恢复链；重登后重试抛非 auth 500
+        （_wrap_http_error 同构）→ 路由应回 502。"""
+        device_id = "HTX"
+
+        def __init__(self):
+            self.roles_calls = 0
+
+        def get_game_roles(self, game_id):
+            self.roles_calls += 1
+            if self.roles_calls == 1:
+                raise tc.TajiduoError("[/getGameRoles] FAILED TO TOUCH",
+                                      auth=True)
+            raise tc.TajiduoError(
+                "接口 HTTP 500（/usercenter/api/v2/getGameRoles）",
+                raw={"body": '{"code":500,"msg":"internal error"}'},
+                status_code=500)
+
+        def refresh_session(self):
+            raise tc.TajiduoError("[/refreshToken] FAILED TO TOUCH", auth=True)
+
+    os.makedirs(".tmp", exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="tjd02_d_", dir=".tmp") as tmp:
+        orig_file, orig_client, orig_client_cls = \
+            tc.TOKEN_FILE, tc.build_client, tc.TajiduoClient
+        tc.TOKEN_FILE = _safe_path(tmp, "tajiduo_token.json")
+        tc.TajiduoClient = _ReloginOkClient3
+        route_fake = _RouteRetryHttp500Client()
+        tc.build_client = lambda: route_fake
+        # SEC-05：直设全局令牌（现生成，零凭据字面量）→ _ensure_panel_token 空转
+        main_mod._PANEL_TOKEN = main_mod._new_panel_token()
+        tc.save_token_store({"device_id": "HTX", "access_token": "A",
+                             "refresh_token": "R", "center_uid": "1",
+                             "laohu_token": "LAOHU_T", "laohu_user_id": "42"})
+        server, _port = create_server(0, auto_range=1)
+        port = server.server_address[1]
+        threading.Thread(target=server.serve_forever, daemon=True,
+                         name="selftest-tjd02-http").start()
+        try:
+            code, data = call(port, "POST", "/api/tajiduo/sync", {})
+            assert code == 502, (code, data)  # 非 auth 错误回 502 而非 401
+            assert data["ok"] is False and data.get("needs_rebind") is False, data
+            assert "接口 HTTP 500（/usercenter/api/v2/getGameRoles）" \
+                in data["error"], data  # 原始错误消息可见（非重绑文案）
+            assert "重新绑定" not in data["error"], data
+            assert route_fake.roles_calls == 2, route_fake.roles_calls
+        finally:
+            server.shutdown()
+            server.server_close()
+            # tmp 目录由上方 with tempfile.TemporaryDirectory() 上下文自清理
+            tc.TOKEN_FILE = orig_file
+            tc.build_client = orig_client
+            tc.TajiduoClient = orig_client_cls
+
+
 # ---------- B2.8-A（TJD-01）：persist 写回边界守卫 + 恢复链互斥（2026-11-17） ----------
 # 覆盖 audit/2026-11-12/BUG-REGISTER.md:43（TJD-01，并入 CONC-05）登记验证法：
 # ①sync 在途（refresh 网络往返 Event gate）并发 logout 先删 → persist 写回前 gate
