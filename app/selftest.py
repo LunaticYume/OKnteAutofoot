@@ -13595,6 +13595,52 @@ def test_fetch01_endpoint_failed_field():
     assert "wiki 拉取失败" in post_src, "抓取异常必须有 502 错误包"
 
 
+def _web_index_src():
+    """读取 app/web/index.html（前端静态守卫用；只读，不写）。"""
+    return Path(_safe_path(_ROOT, "app", "web", "index.html")).read_text(encoding="utf-8")
+
+
+def _js_fn_src(src, name):
+    """截取前端顶层函数源码：从 `function NAME(...){` / `async function NAME(...){`
+    到首个顶格 `}` 行（顶层函数收尾；函数体内语句均有缩进，不会误截）。"""
+    m = re.search(r"^(?:async )?function " + re.escape(name) + r"\([^)]*\)\{", src, re.M)
+    assert m, f"未找到顶层函数 {name}"
+    end = src.find("\n}\n", m.end())
+    assert end != -1, f"未找到 {name} 的结束行"
+    return src[m.start():end + 3]
+
+
+@case
+def test_ui01_overview_history_error_banner():
+    """UI-01 静态守卫（W4a-R）：总览 /api/status 与历史 /api/history 必须带 .catch
+    兜底；失败分支写可见错误横幅并 early return——禁止 catch 后仍停在「加载中…」。
+    运行期 DOM 终态（错误横幅出现且 loading 消失）由
+    .testarchive/2026-11-18-B3-acceptance/w4ar/ui-fix/ 的 backend-death 探针断言；
+    本用例把守源码形态，防回退。"""
+    src = _web_index_src()
+    loading = """$("#main").innerHTML='<div class="card"><div class="muted">加载中…</div></div>';"""
+    # ① 总览：/api/status 直接 await 无 catch 是 W4a 的回归形态（:579 永久 loading）
+    ov = _js_fn_src(src, "renderOverview")
+    assert loading in ov, "renderOverview 必须先置 loading 占位（页面约定）"
+    ov_call = 'const compat = BOOT.compat, run = await api("/api/status").catch(e=>({error:e.message}));'
+    assert ov_call in ov, "renderOverview 的 /api/status 必须带 .catch 兜底（UI-01）"
+    ov_banner = ('if(run.error){ $("#main").innerHTML=`<div class="card"><div class="banner warn">'
+                 '加载失败：${esc(run.error)}</div></div>`; return; }')
+    assert ov_banner in ov, "renderOverview 失败时必须写错误横幅并 early return（禁止 catch 后仍 loading）"
+    assert ov.index(ov_call) < ov.index(ov_banner) < ov.index('$("#main").innerHTML = `'), \
+        "错误横幅必须位于 /api/status 兜底之后、成功渲染路径之前，且失败分支必须 return"
+    # ② 历史：/api/history 同形（W4a 堆栈 :3488）
+    hist = _js_fn_src(src, "renderHistory")
+    assert loading in hist, "renderHistory 必须先置 loading 占位（页面约定）"
+    hist_call = 'const r=await api("/api/history").catch(e=>({error:e.message}));'
+    assert hist_call in hist, "renderHistory 的 /api/history 必须带 .catch 兜底（UI-01）"
+    hist_banner = ('if(r.error){ $("#main").innerHTML=`<div class="card"><div class="banner warn">'
+                   '加载失败：${esc(r.error)}</div></div>`; return; }')
+    assert hist_banner in hist, "renderHistory 失败时必须写错误横幅并 early return（禁止 catch 后仍 loading）"
+    assert hist.index(hist_call) < hist.index(hist_banner) < hist.index('$("#main").innerHTML=`${chart}'), \
+        "错误横幅必须位于 /api/history 兜底之后、成功渲染路径之前，且失败分支必须 return"
+
+
 def main():
     stress = "--stress" in sys.argv[1:]
     cases = CASES + STRESS_CASES if stress else CASES

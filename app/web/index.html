@@ -576,7 +576,8 @@ async function renderOverview(){
   $("#main").innerHTML='<div class="card"><div class="muted">加载中…</div></div>';
   const st = BOOT.state, plan = await api("/api/plan").catch(e=>({error:e.message}));
   const dg = await api("/api/dungeon-gaps").catch(e=>({error:e.message}));  // 总计划（2026-11-12）
-  const compat = BOOT.compat, run = await api("/api/status");
+  const compat = BOOT.compat, run = await api("/api/status").catch(e=>({error:e.message}));
+  if(run.error){ $("#main").innerHTML=`<div class="card"><div class="banner warn">加载失败：${esc(run.error)}</div></div>`; return; }  // UI-01：失败结束 loading，给出可见错误
   const today = run.today||{};
   const pend = run.pending||[];
   const limit = st.settings.daily_stamina_limit;
@@ -3485,7 +3486,8 @@ function statusTag(st){
 }
 async function renderHistory(){
   $("#main").innerHTML='<div class="card"><div class="muted">加载中…</div></div>';
-  const r=await api("/api/history");
+  const r=await api("/api/history").catch(e=>({error:e.message}));
+  if(r.error){ $("#main").innerHTML=`<div class="card"><div class="banner warn">加载失败：${esc(r.error)}</div></div>`; return; }  // UI-01：失败结束 loading，给出可见错误
   const chart=historyChart(r.history);
   const rows=(r.history||[]).slice().reverse().map(h=>{
     const actualCell = h.status!=="done" ? `<span class="muted">—</span>` :
