@@ -11893,9 +11893,14 @@ def test_conc08_barrier_break_reported():
     收集 try 之外——barrier 破坏/超时会以线程未捕获异常形式静默逸出（threading
     默认 excepthook 打印后消散），用例 errors==[] 照常通过（假绿）。本例按修复后
     worker 边界形态（try 首语句 wait + except BaseException → errors 收集）起
-    4 写者线程写同一预建 JSON；全部 start() 后主线程立即 barrier.abort()
-    （标准库语义：已阻塞与未到达的 wait 全部立即抛 threading.BrokenBarrierError），
-    _join_all(ths, timeout=30)。断言一：errors 非空且每条都含 BrokenBarrierError
+    4 写者线程写同一预建 JSON；主线程在全部 start() 之前先 barrier.abort()
+    （标准库语义：未到达的 wait 全部立即抛 threading.BrokenBarrierError——与本
+    用例要自证的「worker 边界捕获 barrier 破坏进正式失败通道」性质完全一致；
+    先 start 后 abort 存在竞态：start() 让出 GIL 的窗口里 4 个 worker 可能凑齐
+    trip 放行，abort 落空 → errors 为空 → 断言一非确定 FAIL，2026-11-20 门禁
+    实测 4 连跑挂 1 次（daily 225/226 errors 为空、stress 同代码 230/230），
+    :11937 注详），_join_all(ths, timeout=30)。断言一：errors 非空且每条都含
+    BrokenBarrierError
     （worker 异常进入可观察失败通道）；断言二：全部线程已退出（_join_all 硬截止）；
     断言三（测试确实会 FAIL 的证明）：同构 mini 流程（预建文件+同款边界+abort+
     join+成功档 errors==[] 断言）包在 try/except AssertionError 里复跑，断言
@@ -11932,9 +11937,14 @@ def test_conc08_barrier_break_reported():
 
         ths = [threading.Thread(target=worker, args=(i,), name="W%d" % i,
                                 daemon=True) for i in range(n_threads)]
+        # abort 先于 start（竞态注：start() 让出 GIL 的窗口里 worker 可能全部
+        # 抵达 wait()——barrier 凑齐即 trip 放行，后到的 abort() 落空、errors
+        # 为空、断言一非确定 FAIL，2026-11-20 门禁实测 4 连跑挂 1 次）。先 abort
+        # 走「未到达」路径：每个 worker 的 wait() 立即抛 BrokenBarrierError 被
+        # 边界捕获进 errors，与本用例自证性质一致且确定性成立。
+        barrier.abort()
         for t in ths:
             t.start()
-        barrier.abort()  # 已阻塞与未到达的 wait 全部立即抛 BrokenBarrierError
         _join_all(ths, timeout=30)  # 断言二：全部线程已退出（硬截止兜底）
         assert errors, "断言一：barrier 破坏必须进 errors 失败通道，实际为空"
         assert all("BrokenBarrierError" in e for e in errors), \
@@ -11964,9 +11974,9 @@ def test_conc08_barrier_break_reported():
 
         m_ths = [threading.Thread(target=m_worker, args=(i,), name="M%d" % i,
                                   daemon=True) for i in range(n_threads)]
+        m_barrier.abort()  # 同款 abort 先于 start（竞态注见主流程）
         for t in m_ths:
             t.start()
-        m_barrier.abort()
         _join_all(m_ths, timeout=30)
         raised = None
         try:
@@ -13669,6 +13679,241 @@ def test_ui07_render_generation_guard():
     check_pos = upg.index("if(gen!==RENDER_GEN) return;")
     body_pos = upg.index("body.innerHTML")
     assert await_pos < check_pos < body_pos, (await_pos, check_pos, body_pos)
+
+
+# ---------- TJD-04：用户数据目录 DACL 私有化（2026-11-20 W4b preflight CONFIRMED） ----------
+# 打包态 %LOCALAPPDATA%\OKntePlanner\data 含继承 ACE CodexSandboxUsers:(I)(OI)(CI)(RX)
+# （沙箱组可读凭据）；修复=app/data_dacl.py harden_data_dir 白名单 DACL（PROTECTED
+# 断继承+SY/BA/当前用户三 allow，不加 deny——Users/AU/Everyone 均含当前用户本人），
+# require_private 在三处凭据写盘前作硬闸。三用例分别覆盖：实跑轮询回归、失败注入
+# 拒写、源码静态守卫。
+
+_TJD04_WIDE_SDDL = "D:(A;OICI;FR;;;WD)(A;OICI;FA;;;SY)(A;OICI;FA;;;AU)"
+# 任务书宽形态 D:(A;OICI;FR;;;WD)(A;OICI;FA;;;SY) 之外补 AU:FA 一条：SDDL 转换的
+# DACL 实测即便不标 P 也丢失父目录继承 ACE（2026-11-20 探针，icacls 佐证），当前
+# 用户（Authenticated Users 成员）须显式授权才能在宽目录里建 token/sub 夹具；
+# 权利必须 FA 而非 FW——save_json_atomic 的 os.replace 发布步要源文件（tmp，继承
+# 本 DACL）的 DELETE 位，FW（FILE_GENERIC_WRITE 0x120196）不含 DELETE（0x10000），
+# 非提权 token（BA 为 deny-only）实测 WinError 5（runas /trustlevel:0x20000 复现，
+# selftest.py:13736→state.py:193/:98），提权 token 经 BA:FA 生效会掩盖该缺位。
+# WD=Everyone 模拟沙箱组宽继承的语义不变，AU:FA 仍是被 harden 必须剥掉的宽授予。
+
+_TJD04_WIDE_SIDS = ("S-1-1-0", "S-1-5-11", "S-1-5-32-545")  # Everyone/AU/Users 组
+
+
+def _tjd04_no_wide(info, expect_sids=None):
+    """TJD-04 轮询单次检查：info 无宽组 SID；expect_sids 给定时 ACE 主体恰为其集合
+    （含 deny 拒绝段判定：type 非 allow 即 False）。返回 None 表示通过，否则返回
+    失败原因字符串（供轮询累积诊断）。"""
+    from app import data_dacl  # 与用例同款延迟导入（模块级 helper 拿不到函数内名）
+    sids = {a["sid"] for a in info["aces"]}
+    if sids & set(_TJD04_WIDE_SIDS):
+        return "宽组 SID 仍在: %s" % sorted(sids)
+    if any(a["type"] != data_dacl.ACCESS_ALLOWED_ACE_TYPE for a in info["aces"]):
+        return "出现非 allow ACE（deny 段）: %s" % info["aces"]
+    if expect_sids is not None and sids != set(expect_sids):
+        return "主体集不符: %s（期望 %s）" % (sorted(sids), sorted(expect_sids))
+    return None
+
+
+@case
+def test_tjd04_dacl_hardening_roundtrip():
+    """TJD-04 实跑型回归：宽 DACL 预置（WD=Everyone 模拟沙箱组宽继承）→
+    harden_data_dir → 轮询读回（NTFS 子项传播异步，至多 3 秒）断言主目录
+    SE_DACL_PROTECTED+恰 3 条 allow（无 deny）+主体恰 SY/BA/当前用户；既有
+    token.json、sub/、sub 既有文件、harden 后新写文件（save_json_atomic 同目录）
+    均无 WD/BU/Users 宽 SID；二次 harden 返回 already。
+    读回解析复用模块内共享入口 data_dacl._read_dacl（_apply_sddl 同款预置）。
+    SKIP 防御：非 Windows / ctypes 初始化失败 / .tmp 卷非 NTFS
+    （GetNamedSecurityInfoW 返回 ERROR_NOT_SUPPORTED）→ print 原因 return。"""
+    from app import data_dacl
+    if os.name != "nt" or not data_dacl.dacl_supported():
+        print("SKIP test_tjd04_dacl_hardening_roundtrip: 非 Windows 或 ctypes "
+              "初始化失败，DACL 硬化不可用")
+        return
+    os.makedirs(".tmp", exist_ok=True)
+    probe_dir = tempfile.mkdtemp(prefix="tjd04_probe_", dir=".tmp")
+    try:
+        probe = data_dacl.harden_data_dir(probe_dir)
+    finally:
+        shutil.rmtree(probe_dir, ignore_errors=True)
+    if probe["status"] == "failed" and "ERROR_NOT_SUPPORTED" in probe["detail"]:
+        print("SKIP test_tjd04_dacl_hardening_roundtrip: .tmp 卷不支持 ACL（非 NTFS）"
+              "：%s" % probe["detail"])
+        return
+    assert probe["status"] == "ok", "探针目录硬化应成功：%s" % probe
+    user_sid = data_dacl._current_user_sid_string()
+    tmp = tempfile.mkdtemp(prefix="tjd04_dacl_", dir=".tmp")
+    try:
+        data_dacl._apply_sddl(tmp, _TJD04_WIDE_SDDL, protected=False)
+        token_path = _safe_path(tmp, "token.json")
+        state_mod.save_json_atomic(token_path, {"placeholder": "tjd04"})
+        sub_dir = _safe_path(tmp, "sub")
+        os.makedirs(sub_dir)
+        inner_path = _safe_path(sub_dir, "inner.json")
+        Path(inner_path).write_text("{}", encoding="utf-8")
+        pre = data_dacl._read_dacl(token_path)
+        assert "S-1-1-0" in {a["sid"] for a in pre["aces"]}, \
+            "夹具预置失败：token.json 未继承宽组（WD）：%s" % pre["aces"]
+
+        result = data_dacl.harden_data_dir(tmp)
+        assert result["status"] == "ok", result
+
+        expect_children = {"S-1-5-18", "S-1-5-32-544", user_sid}
+        deadline = time.time() + 3.0
+        while True:
+            main_info = data_dacl._read_dacl(tmp)
+            fail = _tjd04_no_wide(main_info, expect_sids=expect_children)
+            if fail is None and (main_info["control"] & data_dacl.SE_DACL_PROTECTED) \
+                    and len(main_info["aces"]) == 3:
+                for p in (token_path, sub_dir, inner_path):
+                    fail = _tjd04_no_wide(data_dacl._read_dacl(p))
+                    if fail:
+                        break
+                if fail is None:
+                    break
+            if time.time() >= deadline:
+                raise AssertionError("3 秒内 DACL 传播未收敛：%s" % fail)
+            time.sleep(0.2)
+
+        # harden 后新写入文件（save_json_atomic 同目录）只继承三主体；重写 token
+        # 生成 .bak 一并不重新继承宽权限
+        post_path = _safe_path(tmp, "post_harden.json")
+        state_mod.save_json_atomic(post_path, {"post": True})
+        state_mod.save_json_atomic(token_path, {"placeholder": "tjd04-v2"})
+        for p in (post_path, token_path + ".bak"):
+            fail = _tjd04_no_wide(data_dacl._read_dacl(p))
+            assert fail is None, "%s: %s" % (p, fail)
+
+        again = data_dacl.harden_data_dir(tmp)
+        assert again["status"] == "already", again
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_tjd04_sensitive_write_refused_on_dacl_failure():
+    """TJD-04 失败注入型（照 test_conc01_failure_injection_no_residue :11033 范式
+    保存原引用→赋桩→finally 还原）：harden_data_dir 恒返 failed + 打包态判定注入
+    True → 三处凭据闸必须拒绝写盘且零落盘残留。
+    （i）tajiduo save_token_store 实测：抛 DataDaclError，TOKEN_FILE 与 *.tmp
+    残留双无；（ii）main._ensure_panel_token 实测：生成分支（重定向
+    PANEL_TOKEN_FILE 到不存在路径+置 _PANEL_TOKEN=None）抛错不落盘；
+    （iii）elev_client._start 静态断言闸存在（inspect.getsource）+ensure 转链
+    DataDaclError 存在 + require_private failed 分支直调抛错实测。"""
+    from app import data_dacl
+    from app import elev_client
+    from app import main as main_mod
+    from app import tajiduo_client as tc
+
+    orig_harden = data_dacl.harden_data_dir
+    orig_cache = data_dacl._LAST_HARDEN
+    orig_packaged = data_dacl.is_packaged
+
+    def _injected_fail(path):
+        return {"status": "failed", "detail": "注入失败（TJD-04 用例）"}
+
+    data_dacl.harden_data_dir = _injected_fail
+    data_dacl._LAST_HARDEN = {}
+    data_dacl.is_packaged = lambda: True  # 测试进程非打包态，须注入才能测闸本体
+    try:
+        os.makedirs(".tmp", exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="tjd04_inject_", dir=".tmp") as tmp:
+            # (i) tajiduo save_token_store（实测口径）
+            orig_file = tc.TOKEN_FILE
+            tc.TOKEN_FILE = _safe_path(tmp, "injected_token.json")
+            try:
+                try:
+                    # 占位值运行时生成（os.urandom）：源码不含硬编码凭据形状字面量
+                    # （pre-commit 安全闸口径）；save_token_store 首步即 require_private
+                    # 闸（tajiduo_client.py:833），拒绝后值永不落盘，占位值形状无关。
+                    tc.save_token_store({"device_id": "TJD04-SELFTEST",
+                                         "access_token": os.urandom(16).hex(),
+                                         "refresh_token": os.urandom(16).hex()})
+                except data_dacl.DataDaclError as e:
+                    assert "注入失败（TJD-04 用例）" in str(e), e
+                else:
+                    raise AssertionError("DACL 修复失败时 save_token_store 必须拒绝写盘")
+                assert not os.path.exists(tc.TOKEN_FILE), "拒绝后不得落盘"
+                residue = [p for p in os.listdir(tmp) if p.endswith(".tmp")]
+                assert residue == [], f"tmp 残留: {residue}"
+            finally:
+                tc.TOKEN_FILE = orig_file
+
+            # (ii) main._ensure_panel_token 生成分支（实测口径）
+            orig_panel_file = main_mod.PANEL_TOKEN_FILE
+            orig_panel_token = main_mod._PANEL_TOKEN
+            main_mod.PANEL_TOKEN_FILE = _safe_path(tmp, "injected_panel_token.json")
+            main_mod._PANEL_TOKEN = None  # 强制走「文件不存在需新生成落盘」分支
+            try:
+                try:
+                    main_mod._ensure_panel_token()
+                except data_dacl.DataDaclError as e:
+                    assert "注入失败（TJD-04 用例）" in str(e), e
+                else:
+                    raise AssertionError("_ensure_panel_token 必须拒绝落盘")
+                assert not os.path.exists(main_mod.PANEL_TOKEN_FILE), "拒绝后不得落盘"
+            finally:
+                main_mod.PANEL_TOKEN_FILE = orig_panel_file
+                main_mod._PANEL_TOKEN = orig_panel_token
+
+            # (iii) elev 闸：静态断言（inspect.getsource，:13614 风格）+ 直调实测
+            import inspect
+            start_src = inspect.getsource(elev_client.ElevClient._start)
+            assert "data_dacl.require_private(log_dir)" in start_src, \
+                "_start 必须在写 config 前调 require_private"
+            ensure_src = inspect.getsource(elev_client.ElevClient.ensure)
+            assert "except data_dacl.DataDaclError" in ensure_src, \
+                "ensure 必须把 DataDaclError 转 reason()+False（既有 elev 失败链）"
+            try:
+                data_dacl.require_private(tmp)
+            except data_dacl.DataDaclError as e:
+                assert "注入失败（TJD-04 用例）" in str(e), e
+            else:
+                raise AssertionError("require_private failed 分支必须抛 DataDaclError")
+    finally:
+        data_dacl.is_packaged = orig_packaged
+        data_dacl.harden_data_dir = orig_harden
+        data_dacl._LAST_HARDEN = orig_cache
+
+
+@case
+def test_tjd04_dacl_wiring_static():
+    """TJD-04 静态守卫（照 test_ui01_overview_history_error_banner :13614 风格）：
+    读五文件源码断言 SDDL 固定形态（D:P + FA;;;SY + FA;;;BA）、
+    PROTECTED_DACL_SECURITY_INFORMATION、全文无 deny ACE 段（(D;）与无 WD 主体
+    授予（;;;WD)）；三接线点调用形态存在——harden_data_dir 在 ensure_user_data/
+    _run_panel、require_private 在 tajiduo 双函数/main panel token/elev _start。"""
+    def _src(*parts):
+        return Path(_safe_path(_ROOT, *parts)).read_text(encoding="utf-8")
+
+    dd = _src("app", "data_dacl.py")
+    assert "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)" in dd, "SDDL 固定形态缺失"
+    assert "PROTECTED_DACL_SECURITY_INFORMATION" in dd, "断继承标志缺失"
+    assert "SE_DACL_PROTECTED" in dd, "幂等判定 PROTECTED 位缺失"
+    assert "SetNamedSecurityInfoW" in dd and "GetNamedSecurityInfoW" in dd, \
+        "读写回 API 缺失"
+    assert "(D;" not in dd, "白名单方案不得出现 deny ACE 段"
+    assert ";;;WD)" not in dd, "不得授予 WD（Everyone）主体"
+
+    st = _src("app", "state.py")
+    assert "from app import data_dacl" in st, "state 延迟导入缺失"
+    assert "data_dacl.harden_data_dir(user_dir)" in st, \
+        "ensure_user_data 必须调 harden_data_dir"
+
+    mn = _src("app", "main.py")
+    assert "data_dacl.harden_data_dir(DATA_DIR)" in mn, \
+        "_run_panel 必须对 DATA_DIR 幂等复查"
+    assert "data_dacl.require_private(os.path.dirname(PANEL_TOKEN_FILE))" in mn, \
+        "_ensure_panel_token 生成分支必须闸"
+
+    tj = _src("app", "tajiduo_client.py")
+    assert tj.count("data_dacl.require_private(os.path.dirname(TOKEN_FILE))") == 2, \
+        "save_token_store 与 _write_token_store_locked 两处闸都必须存在"
+
+    el = _src("app", "elev_client.py")
+    assert "data_dacl.require_private(log_dir)" in el, "_start 写 config 前必须闸"
+    assert "except data_dacl.DataDaclError" in el, "ensure 必须转 elev 失败链"
 
 
 def main():

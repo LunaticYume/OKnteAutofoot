@@ -19,6 +19,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from app import planner
+from app import data_dacl
 from app import game_data
 from app import growth
 from app import wiki_fetch
@@ -3051,6 +3052,12 @@ def _ensure_panel_token():
     global _PANEL_TOKEN
     if _PANEL_TOKEN is None:
         _PANEL_TOKEN = _new_panel_token()
+        # TJD-04：仅「文件不存在需新生成落盘」分支前闸（升级场景已有文件不闸不误伤；
+        # 已有文件读用路径不闸）。DataDaclError 继承 OSError，直接抛＝启动失败进
+        # crash.log——create_server 对本函数的 fail-closed 调用语义保持（宁可面板
+        # 起不来，不给 DACL 未私有化的目录落 token）。
+        if not os.path.isfile(PANEL_TOKEN_FILE):
+            data_dacl.require_private(os.path.dirname(PANEL_TOKEN_FILE))
         _save_json_atomic(PANEL_TOKEN_FILE, {
             "token": _PANEL_TOKEN,
             "generated_at": datetime.now().isoformat(),
@@ -4447,6 +4454,16 @@ def main():
 
 
 def _run_panel():
+    # TJD-04：打包态启动即幂等复查用户数据目录 DACL 私有化（覆盖「已有目录升级时
+    # 收紧」与外部改坏后每次启动自愈——ensure_user_data 只在首启/迁移跑，marker
+    # 在即跳过，覆盖不了这两形态）。failed 仅 print 告警不抛（启动照常；凭据写盘
+    # 闸 require_private 会在写敏感凭据时再拦一次，fail-closed）。
+    # is_packaged 复用 data_dacl 公开判定（自含实现，不经 app.state 防循环导入）。
+    if data_dacl.is_packaged():
+        harden = data_dacl.harden_data_dir(DATA_DIR)
+        if harden["status"] == "failed":
+            print("警告：用户数据目录 DACL 私有化失败，凭据写盘将被拒绝（%s）：%s"
+                  % (DATA_DIR, harden["detail"]))
     # 启动对账：上次面板异常退出遗留的运行状态在此判定（只读检测，不拉起/杀进程）
     summary = RUNNER.recover_on_startup()
     # 启动回填：旧版缺陷洗掉的角色属性/物态按目录找回（只补空值，见函数说明）

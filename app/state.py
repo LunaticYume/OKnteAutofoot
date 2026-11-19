@@ -359,6 +359,17 @@ def ensure_user_data(user_dir, bundled_dir, marker_path=None):
     返回 {"action": "skip"|"empty"|"migrated", "stats": …}。
     """
     os.makedirs(user_dir, exist_ok=True)
+    # TJD-04：目录就绪即建立私有 DACL（沙箱组继承只读 ACE 实测缺陷）。仅打包态
+    # 生效；失败只告警不抛——与 _ensure_user_data_boot「失败不阻断启动」口径一致
+    # （凭据写盘时 require_private 仍会 fail-closed），ok/already/unsupported 静默。
+    # 延迟导入放函数体：state.py 在导入期被大量模块依赖，data_dacl 仅打包态需要
+    # （源码态/测试态零成本）。harden_data_dir 对任意自建目录安全（创建者有 WRITE_DAC）。
+    from app import data_dacl
+    if data_dacl.is_packaged():
+        harden = data_dacl.harden_data_dir(user_dir)
+        if harden["status"] == "failed":
+            _migration_note(user_dir, "用户数据目录 DACL 私有化失败，凭据写盘将被拒绝：%s"
+                                      % harden["detail"])
     marker = marker_path if marker_path is not None \
         else os.path.join(user_dir, ".migrated")
     if os.path.isfile(marker):

@@ -24,6 +24,7 @@ import threading
 import time
 from pathlib import Path
 
+from . import data_dacl
 from . import elev_helper as _eh
 from . import oknte_adapter as _oa  # SEC-11：写方 LAUNCHER_SHA256 期望值来源
 
@@ -225,10 +226,22 @@ class ElevClient:
             if not os.path.isdir(log_dir):
                 self._reason = "面板数据目录不存在: " + log_dir
                 return False
-            return self._start(root, py_path, log_dir, str(game_process or "HTGame.exe"),
-                               timeout)
+            try:
+                return self._start(root, py_path, log_dir,
+                                   str(game_process or "HTGame.exe"), timeout)
+            except data_dacl.DataDaclError as e:
+                # TJD-04：log_dir DACL 私有化失败（config 含会话令牌，_start 内闸）
+                # ——沿既有 elev 失败链转 reason()+False（调用方
+                # main._ensure_helper_for_ocr 据此置位 _ELEV_ENSURE_FAILED 并提示），
+                # 绝不带半初始化会话继续。
+                self._reason = "配置目录 DACL 私有化失败: " + str(e)
+                return False
 
     def _start(self, root, py_path, log_dir, game_process, timeout):
+        # TJD-04：写 config（含会话令牌）前闸目标目录 DACL 私有化；失败沿既有
+        # elev 失败链（ensure() 转 reason()+False → _ELEV_ENSURE_FAILED 置位），
+        # 绝不半写 config、不弹 UAC。
+        data_dacl.require_private(log_dir)
         name = "elev_helper_config-%d-%s.json" % (os.getpid(), secrets.token_hex(4))
         cfg_path = Path(log_dir) / name
         endpoint_path = Path(log_dir) / ("elev_helper_endpoint-%d.json"

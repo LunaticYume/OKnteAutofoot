@@ -50,6 +50,7 @@ import uuid
 
 from pathlib import Path
 
+from . import data_dacl
 from . import url_guard
 from .state import (_replace_bounded_retry, DATA_DIR, _path_lock, load_json,
                     save_json_atomic)
@@ -824,7 +825,12 @@ def load_token_store():
 
 
 def save_token_store(store):
-    """原子落盘凭证（复用 state.save_json_atomic 的 tmp→bak→replace 链）。"""
+    """原子落盘凭证（复用 state.save_json_atomic 的 tmp→bak→replace 链）。
+
+    TJD-04：写盘前 require_private 闸（打包态目标目录 DACL 私有化失败 →
+    DataDaclError，继承 OSError——沿 /api/tajiduo/bind 端点既有 except OSError
+    →500「凭证保存失败」映射上抛为可见错误），绝不静默落凭据。"""
+    data_dacl.require_private(os.path.dirname(TOKEN_FILE))
     store = dict(store)
     store["schema"] = 1
     save_json_atomic(TOKEN_FILE, store)
@@ -896,6 +902,10 @@ def _write_token_store_locked(store):
     finally 只清本次写者自己的 tmp。tmp/bak tmp 命名与 save_json_atomic 同形
     （<name>.<uuid4.hex>.tmp / <name>.bak.<uuid4.hex>.tmp）——崩溃/硬杀残留仍落
     clear_token_store 的 _TOKEN_UUID_TMP_RE（TJD-09）精确清理口径内。"""
+    # TJD-04：与 save_token_store 同款写盘前闸（persist_session 临界区内首次调用
+    # 才可能触发懒加固，有 _LAST_HARDEN 缓存后零开销）；失败 DataDaclError 沿
+    # sync/sync-gacha 端点既有 except OSError 映射上抛为可见错误。
+    data_dacl.require_private(os.path.dirname(TOKEN_FILE))
     tmp = Path(str(TOKEN_FILE) + f".{uuid.uuid4().hex}.tmp")
     bak_tmp = None
     try:
