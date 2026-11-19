@@ -13641,6 +13641,36 @@ def test_ui01_overview_history_error_banner():
         "错误横幅必须位于 /api/history 兜底之后、成功渲染路径之前，且失败分支必须 return"
 
 
+@case
+def test_ui07_render_generation_guard():
+    """UI-07 静态守卫（W4a-R）：模块级导航代次计数器 + switchPage 派发前自增 +
+    顶层异步 render 在 await 后比对代次。防回退：切页后晚归结果覆盖当前页
+    （stale）或对已重建宿主写入（W4a :3004 null 宿主）。"""
+    src = _web_index_src()
+    assert "let RENDER_GEN=0;" in src, "必须有模块级导航代次计数器"
+    sw = _js_fn_src(src, "switchPage")
+    assert "++RENDER_GEN;" in sw, "switchPage 必须在派发 render 前自增代次"
+    assert sw.index("++RENDER_GEN;") < sw.index("const p=({overview:"), \
+        "代次自增必须先于渲染函数派发（否则本页首个 render 捕获旧代次）"
+    # 顶层异步 render 入口：开始捕获代次，await 后写 DOM 前比对
+    for name in ("renderOverview", "renderChars", "renderArc", "renderNullmux", "renderTeams",
+                 "renderCommon", "renderHistory", "renderCodex", "renderLogs", "renderDungeons"):
+        fn = _js_fn_src(src, name)
+        assert "const gen=RENDER_GEN;" in fn, f"{name} 必须捕获导航代次"
+        assert "if(gen!==RENDER_GEN) return;" in fn, f"{name} 代次过期必须丢弃结果（不写 DOM）"
+    # renderUpgradeBlock：晚归结果丢弃 + 已销毁宿主存在性守卫（W4a :3004 null 宿主）
+    upg = _js_fn_src(src, "renderUpgradeBlock")
+    assert "const gen=RENDER_GEN;" in upg, "renderUpgradeBlock 必须捕获导航代次"
+    assert "if(gen!==RENDER_GEN) return;" in upg, "renderUpgradeBlock 代次过期必须丢弃结果"
+    assert 'const body = $("#upgBody");' in upg and "if(!body||!body.isConnected) return;" in upg, \
+        "renderUpgradeBlock 必须校验宿主存在，不写已销毁 #upgBody"
+    # 位置硬校验：代次检查必须在 await 之后、首次宿主写入之前（防机械放置）
+    await_pos = upg.index('await api("/api/wiki/upgrades")')
+    check_pos = upg.index("if(gen!==RENDER_GEN) return;")
+    body_pos = upg.index("body.innerHTML")
+    assert await_pos < check_pos < body_pos, (await_pos, check_pos, body_pos)
+
+
 def main():
     stress = "--stress" in sys.argv[1:]
     cases = CASES + STRESS_CASES if stress else CASES

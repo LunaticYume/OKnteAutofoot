@@ -573,10 +573,12 @@ function ringSvg(pct){
 
 /* ---------- 总览 ---------- */
 async function renderOverview(){
+  const gen=RENDER_GEN;  // 导航代次（UI-07）：await 期间切页则丢弃结果，不写 DOM
   $("#main").innerHTML='<div class="card"><div class="muted">加载中…</div></div>';
   const st = BOOT.state, plan = await api("/api/plan").catch(e=>({error:e.message}));
   const dg = await api("/api/dungeon-gaps").catch(e=>({error:e.message}));  // 总计划（2026-11-12）
   const compat = BOOT.compat, run = await api("/api/status").catch(e=>({error:e.message}));
+  if(gen!==RENDER_GEN) return;  // 切页后数据已过期：丢弃，不覆盖当前页（UI-07）
   if(run.error){ $("#main").innerHTML=`<div class="card"><div class="banner warn">加载失败：${esc(run.error)}</div></div>`; return; }  // UI-01：失败结束 loading，给出可见错误
   const today = run.today||{};
   const pend = run.pending||[];
@@ -1144,6 +1146,7 @@ async function startHunterRun(){
 
 /* ---------- 角色（含角色库/武器库） ---------- */
 async function renderChars(){
+  const gen=RENDER_GEN;  // 导航代次（UI-07）：await 期间切页则丢弃结果，不写 DOM
   $("#main").innerHTML='<div class="card"><div class="muted">加载中…</div></div>';
   const st = BOOT.state;
   const tracks = BOOT.tables.requirements.tracks||{};
@@ -1157,6 +1160,7 @@ async function renderChars(){
   const rowsOf = name => rowsByChar[name];
   // 弧盘下拉数据（与弧盘页同源：目录实名+物态）：失败不阻塞角色页
   const gd = await api("/api/game-data").catch(()=>({}));
+  if(gen!==RENDER_GEN) return;  // 切页后数据已过期：丢弃，不写 DOM（UI-07）
   const weaponMeta = {};
   (gd.weapons||[]).forEach(w=>{
     if(w && w.name) weaponMeta[w.name]={matter_state:w.matter_state||"", rarity:w.rarity||""};
@@ -1997,6 +2001,7 @@ async function persistCharOrder(){
 
 /* ---------- 弧盘（武器中心：适配过滤 + 搜索 + S/A 排序 + 材料按目标计算） ---------- */
 async function renderArc(){
+  const gen=RENDER_GEN;  // 导航代次（UI-07）：await 期间切页则丢弃结果，不写 DOM
   $("#main").innerHTML='<div class="card"><div class="muted">加载中…</div></div>';
   const tracks = BOOT.tables.requirements.tracks||{};
   const chars = (BOOT.state.characters||[]).filter(c=>c.enabled);  // 不想练（停用）角色不出现在弧盘页
@@ -2014,6 +2019,7 @@ async function renderArc(){
     const purple=t&&t.concrete_names&&t.concrete_names.purple;
     return purple||(t?(t.display_name||t.name):`罐头系${n}（名称缺失）`); };
   const snap = await api("/api/status").catch(()=>null);
+  if(gen!==RENDER_GEN) return;  // 切页后数据已过期：丢弃，不写 DOM（UI-07）
   const rowsByChar = {};
   if(snap && snap.snapshot) (snap.snapshot.characters||[]).forEach(c=>{ rowsByChar[c.name] = c.rows||[]; });
   const gapOf = (name, matId) => {
@@ -2148,11 +2154,13 @@ function statOpts(list, cur){
     + list.map(x=>`<option ${x===cur?"selected":""}>${esc(x)}</option>`).join("");
 }
 async function renderNullmux(){
+  const gen=RENDER_GEN;  // 导航代次（UI-07）：await 期间切页则丢弃结果，不写 DOM
   $("#main").innerHTML='<div class="card"><div class="muted">加载中…</div></div>';
   if(!NULLMUX_CASSETTES){
     const r=await api("/api/wiki/cassettes").catch(()=>null);
     if(r && r.sets){ NULLMUX_CASSETTES=r; }
   }
+  if(gen!==RENDER_GEN) return;  // 切页后数据已过期：丢弃，不写 DOM（UI-07）
   const sets=(NULLMUX_CASSETTES||{}).sets||[];
   const mainStats=(NULLMUX_CASSETTES||{}).main_stats||[];
   const subStats=(NULLMUX_CASSETTES||{}).sub_stats||[];
@@ -2470,7 +2478,9 @@ function showBisModal(builds, source){
 
 /* ---------- 配队（4 人小队；跨队可重复、队内唯一） ---------- */
 async function renderTeams(){
+  const gen=RENDER_GEN;  // 导航代次（UI-07）：await 期间切页则丢弃结果，不写 DOM
   const r=await api("/api/teams").catch(()=>({teams:[]}));
+  if(gen!==RENDER_GEN) return;  // 切页后数据已过期：丢弃，不写 DOM（UI-07）
   const teams=r.teams||[];
   const charNames=(BOOT.state.characters||[]).map(c=>c.name).filter(Boolean);
   $("#main").innerHTML=`
@@ -2992,15 +3002,18 @@ const GENERIC_MATS=[["exp_char","角色经验（猎人攻略）"],["exp_arc","�
   ["ability_mat","技能书（按角色所选系）"],["arc_mat","弧盘突破·罐头（按角色所选系）"],["console_mat","空幕（按角色所选节点）"]];
 let UPGRADES_CACHE = undefined;  // undefined=未加载, null=尚未抓取, object=已抓取
 async function renderUpgradeBlock(host){
+  const gen=RENDER_GEN;  // 导航代次（UI-07）：await 期间切页则丢弃结果，不写 DOM
   if(UPGRADES_CACHE === undefined){
     try{ UPGRADES_CACHE = await api("/api/wiki/upgrades"); }
     catch(e){ UPGRADES_CACHE = null; }
+    if(gen!==RENDER_GEN) return;  // 切页后数据已过期：丢弃，不写旧节点（UI-07）
   }
   const chars = UPGRADES_CACHE ? Object.entries(UPGRADES_CACHE.characters||{}) : [];
   const matName = (d, id) => (d.materials||{})[id]?.name || id;
   const itemsTxt = (d, items) => (items||[]).map(i=>`${esc(matName(d,i.id))}×${i.amount}`).join("、");
   const pick = $("#upgChar") ? $("#upgChar").value : (chars[0]?.[0]||"");
   const body = $("#upgBody");
+  if(!body||!body.isConnected) return;  // 加载期间切页：#main 已重建，不写旧节点（同 :903 口径）
   if(!chars.length){
     body.innerHTML = `<div class="empty">尚未抓取角色技能/突破数据</div>
       <div class="row" style="margin-top:8px"><button class="btn sec mini" id="btnUpgFetch">🌐 从 wiki 拉取全部角色数据（约 1 分钟）</button></div>`;
@@ -3259,8 +3272,10 @@ const COMMON_LABELS = {
   coin_arc: ["甲硬币 · 弧盘全程", "枚"],
 };
 async function renderCommon(){
+  const gen=RENDER_GEN;  // 导航代次（UI-07）：await 期间切页则丢弃结果，不写 DOM
   $("#main").innerHTML='<div class="card"><div class="muted">加载中…</div></div>';
   const r = await api("/api/common-costs").catch(e=>({error:e.message}));
+  if(gen!==RENDER_GEN) return;  // 切页后数据已过期：丢弃，不写 DOM（UI-07）
   if(r.error){ $("#main").innerHTML=`<div class="card"><div class="banner warn">${esc(r.error)}</div></div>`; return; }
   const listInput=(key,i,val)=>`<input type="number" min="0" data-cc="${key}" data-i="${i}" value="${val}" style="width:80px">`;
   const costRows = Object.entries(COMMON_LABELS).map(([key,[label,unit]])=>{
@@ -3485,8 +3500,10 @@ function statusTag(st){
   return m[0]?`<span class="tag ${m[0]}">${m[1]}</span>`:`<span class="tag">${esc(st)}</span>`;
 }
 async function renderHistory(){
+  const gen=RENDER_GEN;  // 导航代次（UI-07）：await 期间切页则丢弃结果，不写 DOM
   $("#main").innerHTML='<div class="card"><div class="muted">加载中…</div></div>';
   const r=await api("/api/history").catch(e=>({error:e.message}));
+  if(gen!==RENDER_GEN) return;  // 切页后数据已过期：丢弃，不覆盖当前页（UI-07）
   if(r.error){ $("#main").innerHTML=`<div class="card"><div class="banner warn">加载失败：${esc(r.error)}</div></div>`; return; }  // UI-01：失败结束 loading，给出可见错误
   const chart=historyChart(r.history);
   const rows=(r.history||[]).slice().reverse().map(h=>{
@@ -3500,6 +3517,7 @@ async function renderHistory(){
     <td>${statusTag(h.status)}</td>
     <td class="muted" style="max-width:260px">${esc(h.note||"")}</td></tr>`;}).join("");
   const sug = await api("/api/yield-suggestions").catch(()=>({suggestions:[]}));
+  if(gen!==RENDER_GEN) return;  // 第二次 await 晚归同样丢弃，不覆盖当前页（UI-07）
   const sugRows=(sug.suggestions||[]).map(s=>`
     <tr><td><b>${esc(s.name)}</b></td><td class="num">${s.configured_yield}</td>
     <td class="num">${s.confirmed_runs} 轮 / ${s.confirmed_gain} 个</td>
@@ -3542,8 +3560,10 @@ let CODEX_CUSTOM = {characters: [], weapons: []};
 const CX_FAMILIES = ["絮语", "掠影", "数符", "幻妄"];
 
 async function renderCodex(){
+  const gen=RENDER_GEN;  // 导航代次（UI-07）：await 期间切页则丢弃结果，不写 DOM
   $("#main").innerHTML='<div class="card"><div class="muted">加载中…</div></div>';
   const r = await api("/api/game-data").catch(e=>({error:e.message}));
+  if(gen!==RENDER_GEN) return;  // 切页后数据已过期：丢弃，不写 DOM（UI-07）
   if(r.error){ $("#main").innerHTML=`<div class="card"><div class="banner warn">${esc(r.error)}</div></div>`; return; }
   CODEX_CUSTOM = r.custom || {characters: [], weapons: []};
   const attrs = Object.keys(r.attribute_to_skill_series||{}).filter(k=>k!=="_note" && r.attribute_to_skill_series[k]);
@@ -3718,7 +3738,9 @@ function renderCodexCustomList(){
 /* ---------- 日志（ok-nte 任务/应用日志 + 面板日志） ---------- */
 let LOGS_CURRENT = {files: [], idx: -1, lines: 300};
 async function renderLogs(){
+  const gen=RENDER_GEN;  // 导航代次（UI-07）：await 期间切页则丢弃结果，不写 DOM
   const r = await api("/api/logs").catch(e=>({error:e.message}));
+  if(gen!==RENDER_GEN) return;  // 切页后数据已过期：丢弃，不写 DOM（UI-07）
   if(r.error){ $("#main").innerHTML=`<div class="card"><div class="banner warn">${esc(r.error)}</div></div>`; return; }
   LOGS_CURRENT.files = r.logs||[];
   const rows = LOGS_CURRENT.files.map((f,i)=>`
@@ -3774,12 +3796,14 @@ async function renderDungeons(){
      .dmat/.dstat 样式：材料 chip + 需/持/差 三格 + 约 N 轮 · N 体力 pill）；
      块合计=总轮数/总体力；空幕带双通道标注；巡礼展示周次数口径（面板不追踪
      本周已刷次数，只标注每周上限口径——不编造「本周剩余次数」数值）。 */
+  const gen=RENDER_GEN;  // 导航代次（UI-07）：await 期间切页则丢弃结果，不写 DOM
   $("#main").innerHTML=`
     <div class="card"><h3>🗡️ 材料副本<span class="h-sub">体力缺口 → 副本轮数换算 · 只读聚合（/api/dungeon-gaps），不写计划不改数据</span></h3>
       <div id="dgBody" class="muted">加载中…</div></div>`;
   let d;
   try{ d=await (await fetch("/api/dungeon-gaps",{headers:AUTH_HEADERS})).json(); }
-  catch(e){ const b=$("#dgBody"); if(b) b.textContent="加载失败："+e.message; return; }
+  catch(e){ if(gen!==RENDER_GEN) return; const b=$("#dgBody"); if(b) b.textContent="加载失败："+e.message; return; }
+  if(gen!==RENDER_GEN) return;  // 切页后数据已过期：丢弃，不覆盖当前页（UI-07）
   const body=$("#dgBody");
   if(!body) return;  // 加载期间切页：#main 已重建，不写旧节点
   body.className="";
@@ -3862,8 +3886,10 @@ async function boot(){
   $("#envTags").innerHTML=tags.join("");
 }
 let CURRENT="overview";
+let RENDER_GEN=0;  // 导航代次（UI-07）：switchPage 每次派发 render 前自增；异步 render 在 await 后比对代次，过期结果丢弃不写 DOM
 function switchPage(t){
   CURRENT=t;
+  ++RENDER_GEN;  // 先自增再派发：此前派发的异步 render 结果一律作废（UI-07）
   document.querySelectorAll("#nav button").forEach(x=>x.classList.toggle("on",x.dataset.t===t));
   const title=PAGE_TITLES[t]||[t,""];
   $("#pageTitle").textContent=title[0];
