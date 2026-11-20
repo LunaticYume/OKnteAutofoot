@@ -10390,6 +10390,164 @@ def test_elev_client_root_fp_relaunch():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# ---------- ELEV-01（W4b 2.4）：ensure 复用分支死会话探活——强杀后可重新 UAC 建会话 ----------
+# 实机复现：helper 被提权 taskkill /F 强杀后面板内存态未失效，/api/elev/retry
+# ensured=true 假阳性（无新 helper 拉起、无 UAC、审计无新 start 行、endpoint 仍
+# 指向死 PID、孤儿 endpoint 未清扫）。修复裁定六点：复用分支必须 _pid_alive 探活
+# （既有函数，与 _start 启动等待循环同语义）；确认死 → 内存会话态经既有
+# shutdown() 失效（幂等安全）→ 走既有 _start 重拉链（内含 _sweep_stale_helper_
+# files 孤儿清扫；新握手只认新 helper 新写的端点）→ 新 helper 建立后才 True。
+# 行为用例零桩（真实 helper×2 + 真实 taskkill /F 强杀）+ 静态守卫防回退。
+# 注册位置（2026-11-20 实测裁定）：行为用例依赖自测进程客户端侧 socket 健康——
+# 全量档末尾（~#225）实测自测进程 getaddrinfo("127.0.0.1") 返回空列表而 helper
+# 本体健康（端点/审计 start 行俱在；存证 .tmp/sec10/elev01_faildiag.json），任何
+# 真实握手用例在彼处必挂；故与 elev e2e 家族同区注册（该区全量档实测健康）。
+
+
+def _elev01_count_start_rows(audit_path):
+    """数审计 JSONL 的 start 行数（ELEV-01：每拉起一个 helper 记一行）。"""
+    if not audit_path.is_file():
+        return 0
+    n = 0
+    for line in audit_path.read_text(encoding="utf-8").splitlines():
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(entry, dict) and entry.get("event") == "start":
+            n += 1
+    return n
+
+
+@case
+def test_elev01_stale_session_not_reused():
+    """ELEV-01 行为型（W4b 2.4 验收全覆盖）：①真实建会话（set_test_spawn
+    测试模式普通 Popen，test_elev_helper_e2e_auth_ops_audit 先例）→ ②taskkill
+    /F 强杀 helper（字段场景同机制，sec11 用例收尾同法）而面板内存态保留
+    （强杀残留端点文件必须在）→ ③再 ensure 不得对死会话假阳性复用：新会话
+    pid/port/token 与旧值不同、孤儿 endpoint 随重拉链 _sweep_stale_helper_
+    files 清扫、端点被新 helper 重写、审计新增 start 行、新令牌 ping 通过且
+    旧令牌被拒（True 只来自新握手）→ 负例：无会话（_port=None）+ 拉起即死
+    （_spawn 桩 _DeadProc，CONC-01 失败注入范式——仅桩 OS 拉起环节，_start
+    失败链本体真实执行）→ 如实 False 零假阳性。临时目录仓库 .tmp/（E 盘）。
+    注册位置依据见上方节头注（晚区实测 getaddrinfo 退化）。"""
+    import ctypes
+    from app import elev_client
+    elev_client.set_test_spawn(True)
+    tmp = _sec10_tmp("elev01")
+    log_dir = _safe_path(tmp, "log")
+    os.makedirs(log_dir, exist_ok=True)
+    root = _sec10_root(tmp)
+    py_path = _safe_path(root, "data", "apps", "ok-nte", "python", "python.exe")
+    audit_path = Path(_safe_path(log_dir, "elev_helper_audit.log"))
+    # 手造历史孤儿 endpoint（模拟字段场景残留）：死 pid 用 EnumProcesses 快照
+    # 外实值（test_elev_stale_sweep 先例），mtime 回溯一小时
+    arr = (ctypes.c_ulong * 65536)()
+    needed = ctypes.c_ulong()
+    enum = getattr(ctypes.windll.kernel32, "K32EnumProcesses", None) \
+        or ctypes.windll.psapi.EnumProcesses
+    assert enum(arr, ctypes.sizeof(arr), ctypes.byref(needed)), "EnumProcesses 失败"
+    live_pids = set(arr[:needed.value // ctypes.sizeof(ctypes.c_ulong)])
+    dead_pid = next(p for p in range(100000, 400000, 4) if p not in live_pids)
+    assert not elev_client._pid_alive(dead_pid), "死 pid 探测前置自检"
+    orphan_ep = Path(log_dir, "elev_helper_endpoint-%d.json" % dead_pid)
+    orphan_ep.write_text(json.dumps({"pid": dead_pid, "port": 1,
+                                     "root_fp": "0" * 16}), encoding="utf-8")
+    old_t = time.time() - 3600.0
+    os.utime(orphan_ep, (old_t, old_t))
+    client = elev_client.ElevClient()
+    old_pid = None
+    try:
+        # ① 真实建会话（测试模式普通 Popen，无 UAC）
+        assert client.ensure(root, log_dir=log_dir), client.reason()
+        old_pid, old_port, old_token = client._pid, client._port, client._token
+        starts0 = _elev01_count_start_rows(audit_path)
+        # ② 提权 taskkill /F 强杀 helper——面板内存态保留（不知情）
+        subprocess.run(["taskkill", "/F", "/PID", str(old_pid)],
+                       capture_output=True, creationflags=0x08000000)
+        deadline = time.time() + 6
+        while time.time() < deadline and elev_client._pid_alive(old_pid):
+            time.sleep(0.1)
+        assert not elev_client._pid_alive(old_pid), "强杀后 helper 必须已死"
+        stale_ep = Path(log_dir, "elev_helper_endpoint-%d.json" % os.getpid())
+        assert stale_ep.is_file(), "强杀残留端点文件必须在（helper finally 未跑）"
+        # ③④⑤ 再 ensure：死会话必须失效重拉（新 helper 新握手才 True）
+        assert client.ensure(root, log_dir=log_dir), client.reason()
+        assert client._pid != old_pid, (client._pid, old_pid)  # 新会话非旧 pid
+        assert client._port != old_port, (client._port, old_port)  # port 同
+        assert client._token != old_token, "会话令牌必须换新（不复用旧握手）"
+        assert not orphan_ep.exists(), "重拉链 _sweep 必须清扫孤儿 endpoint"
+        fresh = json.loads(stale_ep.read_text(encoding="utf-8"))
+        assert fresh["pid"] == client._pid, "端点必须已被新 helper 重写"
+        assert _elev01_count_start_rows(audit_path) == starts0 + 1, \
+            "审计必须新增 start 行（字段复现：假阳性路径无新 start 行）"
+        # ⑤ True 只可能来自新握手：新令牌 ping 通过、旧令牌被新 helper 拒绝
+        resp = elev_client.request_once(client._port, client._token, "ping",
+                                        timeout=8)
+        assert resp.get("ok") and resp.get("root_fp") == \
+            elev_client.file_sha256(py_path)[:16], resp
+        try:
+            elev_client.request_once(client._port, old_token, "ping", timeout=8)
+            raise AssertionError("旧令牌对新 helper 必须被拒绝")
+        except elev_client.ElevRejected:
+            pass
+        # 收尾：优雅停掉新 helper（不留孤儿提权进程），等端点文件清理（负例的
+        # 快速失败路径依赖端点文件已清）
+        new_pid = client._pid
+        client.shutdown()
+        deadline = time.time() + 6
+        while time.time() < deadline and elev_client._pid_alive(new_pid):
+            time.sleep(0.1)
+        assert not elev_client._pid_alive(new_pid), "shutdown 后 helper 应退出"
+        deadline = time.time() + 6
+        while time.time() < deadline and stale_ep.exists():
+            time.sleep(0.1)
+        assert not stale_ep.exists(), "shutdown 后端点文件应清理（helper finally）"
+        # 负例：无会话（_port=None）→ ensure 走 _start 失败链如实 False（零假阳性）
+        class _DeadProc:
+            """拉起即死形态：poll() 恒 1（触发 _start 启动等待循环的退出分支）；
+            仅替 OS 拉起这一环，_start 本体（sweep/端点轮询/失败返回）真实执行。"""
+
+            def poll(self):
+                return 1
+
+        neg = elev_client.ElevClient()
+        neg._spawn = lambda cfg_path: _DeadProc()  # 实例属性遮蔽（_ocr05_spy_ensure 先例）
+        assert neg.ensure(root, log_dir=log_dir, timeout=10.0) is False
+        assert neg._port is None and not neg.available(), "失败链不得假阳性"
+        assert "未就绪" in neg.reason() and "已退出" in neg.reason(), neg.reason()
+    finally:
+        elev_client.set_test_spawn(False)
+        client.shutdown()
+        for pid in (old_pid, client._pid):  # 测试侧兜底补杀（sec11 收尾先例）
+            if pid and elev_client._pid_alive(pid):
+                subprocess.run(["taskkill", "/F", "/PID", str(pid)],
+                               capture_output=True, creationflags=0x08000000)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_elev01_reuse_probe_static():
+    """ELEV-01 静态守卫（照 test_ui01_overview_history_error_banner 静态守卫
+    风格）：读 app/elev_client.py 源码断言 ensure() 复用分支含 _pid_alive
+    (self._pid) 探活形态，且探活出现位置在复用 return True 之前（reuse_pos >
+    probe_pos，仿 test_ui01 的 index 前后序硬校验）、且位于「会话在态」分支
+    之后；失效重拉走既有 self.shutdown() 链。防回退：删探活、把探活挪到
+    return 之后或挪出复用分支即本用例失败。"""
+    src = Path(_safe_path(_ROOT, "app", "elev_client.py")).read_text(encoding="utf-8")
+    m = re.search(r"^    def ensure\(self.*?(?=^    def )", src, re.M | re.S)
+    assert m, "未找到 ensure 方法源码"
+    ensure_src = m.group(0)
+    assert "_pid_alive(self._pid)" in ensure_src, \
+        "ensure 复用分支必须含 _pid_alive 探活（ELEV-01）"
+    branch_pos = ensure_src.index("if self._port is not None:")
+    probe_pos = ensure_src.index("_pid_alive(self._pid)")
+    reuse_pos = ensure_src.index("return True")  # ensure 内唯一复用 return
+    assert branch_pos < probe_pos < reuse_pos, (branch_pos, probe_pos, reuse_pos)
+    assert ensure_src.index("self.shutdown()") > reuse_pos, \
+        "失效后必须走既有 shutdown() 重拉链（不新开平行机制）"
+
+
 @case
 def test_runner_helper_launch_stdout_stop():
     """SEC-10 runner 集成（真实提权辅助进程 + 真实子进程）：_launch_and_monitor

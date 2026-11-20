@@ -2,9 +2,9 @@
 
 面板（普通权限）经本模块与受限提权辅助进程（app.elev_helper）通信：
 
-- ensure(oknte_root)：确保辅助进程可用且固化指纹与 oknte_root 一致。root 或内嵌
-  解释器指纹变化时先停旧会话再重新经 UAC 拉起（变更需再次 UAC 同意）。root 结构
-  不完整（无内嵌 python.exe）时直接失败，绝不弹 UAC。
+- ensure(oknte_root)：确保辅助进程可用且固化指纹与 oknte_root 一致。root、内嵌
+  解释器指纹变化或辅助进程已死（被强杀）时先停旧会话再重新经 UAC 拉起（变更
+  需再次 UAC 同意）。root 结构不完整（无内嵌 python.exe）时直接失败，绝不弹 UAC。
 - 生产拉起走 PowerShell Start-Process -Verb RunAs（与旧 run_panel.bat 同通道）；
   selftest/smoke 经 set_test_spawn(True) 走普通 Popen（跳过 UAC，仅测试路径）。
 - 每个 IPC 请求携带会话令牌；令牌只经配置文件交接一次（面板写、辅助进程读毕即删），
@@ -204,9 +204,9 @@ class ElevClient:
 
     # ---- 会话生命周期 ----
     def ensure(self, oknte_root, log_dir=None, game_process=None, timeout=90.0):
-        """确保辅助进程可用且固化指纹与 oknte_root 一致（root/指纹变化 → 先停旧
-        会话再重新拉起，需再次 UAC 同意）。root 结构不完整时直接失败不弹 UAC。
-        返回 True/False；False 时 reason() 给出原因。"""
+        """确保辅助进程可用且固化指纹与 oknte_root 一致（root/指纹变化或辅助进程
+        已死 → 先停旧会话再重新拉起，需再次 UAC 同意）。root 结构不完整时直接
+        失败不弹 UAC。返回 True/False；False 时 reason() 给出原因。"""
         with self._lock:
             root = os.path.realpath(str(oknte_root or ""))
             try:
@@ -218,9 +218,21 @@ class ElevClient:
                 self._reason = "oknte_root 无内嵌 python.exe: " + py_path
                 return False
             if self._port is not None:
-                if self._root == root and self._fp_matches(py_path):
-                    return True  # 会话仍然匹配：直接复用
-                # root 或指纹变化：旧会话拒绝服务，重新拉起（再次 UAC）
+                # ELEV-01（W4b 2.4）：复用前必须探活——helper 被提权 taskkill /F
+                # 强杀后面板内存态不失效，此分支曾对死会话假阳性直接复用（无重
+                # 拉、无 UAC、审计无新 start 行）。_pid_alive 既有口径「探测出错
+                # 按存活处理」（_sweep_stale_helper_files 闸②同源）：仅确认死
+                # （False）才失效重拉；探活异常维持复用，避免瞬态探测错误引发
+                # 多余 UAC。
+                if self._root == root and self._fp_matches(py_path) \
+                        and _pid_alive(self._pid):
+                    return True  # 会话匹配且辅助进程存活：直接复用
+                # root/指纹变化或辅助进程已死：旧会话失效，重新拉起（再次 UAC）。
+                # shutdown() 对已死 helper 幂等安全（_call 连接失败即 _invalidate
+                # 清态、ElevError 被其吞掉；等待循环 _pid_alive(None)=False 立即
+                # 越过）；重拉链 _start 内 _sweep_stale_helper_files 随之执行（死
+                # 会话残留孤儿 endpoint/config 一并清扫），新握手只认新 helper
+                # 新写的端点（_read_endpoint+_handshake 既有链，新令牌不认旧内容）。
                 self.shutdown()
             log_dir = os.path.realpath(log_dir or _default_log_dir())
             if not os.path.isdir(log_dir):
@@ -345,10 +357,13 @@ class ElevClient:
             return None
 
     def _handshake(self, data, token, root, py_path, log_dir):
-        """端点握手：ping + 指纹核对（fp 不一致按会话失效处理）。"""
+        """端点握手：ping + 指纹核对（fp 不一致按会话失效处理）。
+        ELEV-01：端点文件可能陈旧（helper 被强杀残留，内容仍指向死端口）——
+        连接失败（含 OSError 拒绝/超时）按「未就绪」返回 False 继续轮询，等新
+        helper 重写端点后再握手；不外抛打断 _start 重拉链。"""
         try:
             resp = request_once(data["port"], token, "ping", timeout=8.0)
-        except ElevError:
+        except (ElevError, OSError):
             return False
         if str(resp.get("root_fp") or "") != file_sha256(py_path)[:16]:
             return False
