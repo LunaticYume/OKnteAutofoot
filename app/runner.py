@@ -25,6 +25,7 @@ from pathlib import Path
 
 from . import planner
 from . import elev_client
+from . import runtime_paths
 from .oknte_adapter import (LogTail, OkNte, OkNteError, RunMonitor,
                             oknte_plan_target_ids, proc_alive,
                             register_runner_child, unregister_runner_child)
@@ -587,7 +588,18 @@ class Runner:
             raise elev_client.ElevError(
                 "提权辅助进程不可用：" + elev_client.ELEV.reason())
         stdout_name = "ok-nte-headless-%s.log" % record["execution_id"]
-        stdout_path = Path(DATA_DIR) / stdout_name
+        # W4b-R3：stdout 镜像与 ok-nte-live.log 落运行缓存 logs 目录（打包态
+        # E:\\OKntePlannerRuntime\\logs，E 不可写 resolve 已回落 DATA_DIR 同名；
+        # 与 elev_helper 侧写入口径一致——helper 经 config.runtime_logs 拿到
+        # 同一 resolve 结果）。源码态保持 DATA_DIR 模块别名（旧行为；selftest
+        # 以 runner_mod.DATA_DIR=夹具目录 patch 两端对齐，resolve 的 state 派生
+        # 真值不跟随该 patch，故仅打包态走 resolve）。
+        logs_dir = (runtime_paths.resolve("logs")[0]
+                    if runtime_paths.is_packaged() else DATA_DIR)
+        notice = runtime_paths.degrade_notice("logs")
+        if notice:
+            print(notice)
+        stdout_path = Path(logs_dir) / stdout_name
         try:
             if stdout_path.exists():
                 stdout_path.unlink()  # 无需 .bak：诊断行已实时落 ok-nte-live.log
@@ -664,7 +676,10 @@ class Runner:
             # 评审修复：exists() 守卫替代裸 getsize——原顺序对不存在的文件抛
             # FileNotFoundError 被 except 吞掉，连带跳过追加写，全新机器上一行都落不了盘；
             # 全部写入走 pathlib（open(拼接路径) 是安全门禁误报形态）。
-            live = Path(DATA_DIR) / "ok-nte-live.log"
+            # W4b-R3：仅打包态走 resolve（源码态 DATA_DIR 别名可 patch，与 touch 端对齐）
+            live = Path(runtime_paths.resolve("logs")[0]
+                        if runtime_paths.is_packaged() else DATA_DIR) \
+                / "ok-nte-live.log"
             try:
                 for raw in lines:
                     line = raw.decode("utf-8", errors="replace").strip()

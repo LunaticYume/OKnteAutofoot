@@ -26,6 +26,7 @@ from app import wiki_fetch
 from app import sites_fetch
 from app import tajiduo_client
 from app import elev_client
+from app import runtime_paths
 from app.oknte_adapter import (OkNte, OkNteError, load_oknte_plan_overrides,
                                oknte_plan_target_ids, save_oknte_plan_overrides)
 from app.runner import RUNNER
@@ -4240,9 +4241,14 @@ def create_server(port, auto_range=20):
 
 
 def _write_crash_log(error):
-    """顶层异常落 crash.log（frozen 环境下自动落在 EXE 旁）。"""
+    """顶层异常落 crash.log（frozen 环境下自动落在 EXE 旁；W4b-R3 打包态改落
+    运行缓存 crash 子目录——E:\\OKntePlannerRuntime\\crash，E 不可写回落 EXE 旁）。"""
     try:
-        path = os.path.join(ROOT, "crash.log")
+        crash_dir = runtime_paths.resolve("crash")[0]
+        notice = runtime_paths.degrade_notice("crash")
+        if notice:
+            print(notice)
+        path = os.path.join(crash_dir, "crash.log")
         with open(path, "a", encoding="utf-8") as f:
             f.write(f"{datetime.now().isoformat()} {type(error).__name__}: {error}\n")
         return path
@@ -4275,15 +4281,21 @@ class _Tee:
 
 
 def _setup_logging_mirror():
-    """源码+控制台运行时保持原样；frozen / pythonw（stdout=None）时镜像到 data/panel.log。"""
+    """源码+控制台运行时保持原样；frozen / pythonw（stdout=None）时镜像到 panel.log
+    （W4b-R3：打包态落运行缓存 logs 目录——E:\\OKntePlannerRuntime\\logs，E 不可写
+    回落 DATA_DIR 同名并告警一次；源码态仍走 DATA_DIR，行为不变）。"""
     try:
         if sys.stdout is not None and not getattr(sys, "frozen", False):
             return
+        logs_dir = runtime_paths.resolve("logs")[0]
+        notice = runtime_paths.degrade_notice("logs")
         with STATE.lock:
-            log_path = os.path.join(DATA_DIR, "panel.log")
+            log_path = os.path.join(logs_dir, "panel.log")
         mirror = open(log_path, "a", encoding="utf-8", buffering=1)
         sys.stdout = _Tee(sys.stdout, mirror)
         sys.stderr = _Tee(sys.stderr, mirror)
+        if notice:
+            print(notice)  # 经 _Tee 落 panel.log（仅打包态进本分支）
     except OSError:
         pass
 
@@ -4345,7 +4357,19 @@ def _run_window_app(url):
     print(f"正在打开桌面窗口: {url}")
     try:
         webview.create_window("异环养成规划器", url, width=1280, height=860)
-        webview.start(gui="edgechromium")  # 阻塞至窗口关闭
+        # W4b-R3：WebView2 用户数据目录落运行缓存 webview 子目录（pywebview 6.2.1
+        # start(storage_path=…) → winforms.init_storage 用之当 UserDataFolder，
+        # winforms.py:740-757）。仅打包态且未降级传入（源码态传入回退值 DATA_DIR
+        # 会把 WebView2 档撒进仓库 data/，属开发环境漂移）；源码态/降级态不传，
+        # 保持默认一次性临时目录行为，降级时告警一次。
+        wv_dir, wv_degraded = runtime_paths.resolve("webview")
+        if runtime_paths.is_packaged() and not wv_degraded:
+            webview.start(gui="edgechromium", storage_path=wv_dir)  # 阻塞至窗口关闭
+        else:
+            notice = runtime_paths.degrade_notice("webview")
+            if notice:
+                print(notice)
+            webview.start(gui="edgechromium")  # 阻塞至窗口关闭
     except Exception as e:  # noqa: BLE001 —— WebView2 运行时缺失等，降级而非崩溃
         print(f"原生窗口启动失败（{type(e).__name__}: {e}），回退 Edge 应用窗口")
         return False
@@ -4363,7 +4387,14 @@ def _run_edge_app_window(url):
     edge = _find_edge()
     if not edge:
         return False
-    profile = os.path.join(DATA_DIR, "edge_profile")
+    # W4b-R3：降级档 profile 落运行缓存 webview 子目录下 edge_profile（E 不可写
+    # resolve 回落 DATA_DIR → DATA_DIR\\edge_profile，与旧版同款语义）。
+    wv_dir, wv_degraded = runtime_paths.resolve("webview")
+    if wv_degraded:
+        notice = runtime_paths.degrade_notice("webview")
+        if notice:
+            print(notice)
+    profile = os.path.join(wv_dir, "edge_profile")
     try:
         os.makedirs(profile, exist_ok=True)
         print(f"正在打开桌面窗口（Edge 应用模式）: {url}")

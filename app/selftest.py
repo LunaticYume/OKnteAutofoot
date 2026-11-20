@@ -14074,6 +14074,188 @@ def test_tjd04_dacl_wiring_static():
     assert "except data_dacl.DataDaclError" in el, "ensure 必须转 elev 失败链"
 
 
+@case
+def test_runtime_paths_resolve():
+    """W4b-R3 行为型：runtime_paths.resolve 三 kind 与降级回落、源码态零副作用。
+
+    覆盖根（OKNTE_RUNTIME_ROOT）→ resolve 返回覆盖根子目录且目录被创建（mkdir +
+    mkstemp 可写探针通过、无残留）；指向不可写位置（logs/crash 子目录被同名
+    文件挡路）→ degraded=True 且回落 LOCALAPPDATA 用户数据目录（crash 回落
+    ROOT），告警每进程每 kind 恰一次；源码态（OKNTE_PLANNER_USER_DATA 未设且
+    非 frozen）→ 一律返回回退路径且零写盘。还原纪律照 test_conc01 :11033 范式：
+    临时目录 tempfile.mkdtemp(dir=仓库 .tmp)，finally 还原环境变量 + 清模块
+    缓存 + rmtree。夹具写盘全走 pathlib（open+join+write 形态过安全门禁）。"""
+    from app import runtime_paths as rp
+    os.makedirs(os.path.join(_ROOT, ".tmp"), exist_ok=True)
+    tmp = tempfile.mkdtemp(prefix="runtime_paths_",
+                           dir=os.path.join(_ROOT, ".tmp"))
+    env_keys = ("OKNTE_RUNTIME_ROOT", "OKNTE_PLANNER_USER_DATA", "LOCALAPPDATA")
+    saved_env = {k: os.environ.get(k) for k in env_keys}
+    try:
+        assert not getattr(sys, "frozen", False), "selftest 必须以源码态运行"
+        # ① 源码态：一律回退路径、零副作用（不 mkdir、不写探针）
+        for k in env_keys:
+            os.environ.pop(k, None)
+        rp._CACHE.clear()
+        rp._NOTIFIED.clear()
+        src_root = os.path.dirname(os.path.dirname(os.path.abspath(rp.__file__)))
+        src_data = os.path.join(src_root, "data")
+        for kind in rp.KINDS:
+            path, degraded = rp.resolve(kind)
+            assert degraded is False, (kind, path, degraded)
+            expected = src_root if kind == "crash" else src_data
+            assert path == expected, (kind, path, expected)
+        tmp_before = set(os.listdir(tmp))
+        assert rp.degrade_notice("logs") is None, "源码态不得有降级告警"
+        assert set(os.listdir(tmp)) == tmp_before, "源码态 resolve 不得写盘"
+
+        # ② 打包态模拟 + 覆盖根：子目录被创建、可写探针无残留
+        os.environ["OKNTE_PLANNER_USER_DATA"] = "1"
+        root = str(Path(tmp, "rtroot"))
+        os.environ["OKNTE_RUNTIME_ROOT"] = root
+        lad = str(Path(tmp, "lad"))
+        os.environ["LOCALAPPDATA"] = lad
+        rp._CACHE.clear()
+        rp._NOTIFIED.clear()
+        for kind in rp.KINDS:
+            path, degraded = rp.resolve(kind)
+            assert degraded is False, (kind, path, degraded)
+            assert os.path.dirname(path) == root and os.path.basename(path) == kind, \
+                (kind, path)
+            assert os.path.isdir(path), kind
+            assert os.listdir(path) == [], "可写探针文件必须删净"
+        # ③ 降级：logs 子目录被同名文件挡路（mkdir 必败）→ 回落用户数据目录
+        root2 = str(Path(tmp, "rtroot2"))
+        os.makedirs(root2, exist_ok=True)
+        Path(root2, "logs").write_text("blocker", encoding="utf-8")
+        os.environ["OKNTE_RUNTIME_ROOT"] = root2
+        rp._CACHE.clear()
+        rp._NOTIFIED.clear()
+        path, degraded = rp.resolve("logs")
+        assert degraded is True, (path, degraded)
+        # 回落路径分解断言（不做路径组合）：…\lad\OKntePlanner\data
+        assert os.path.basename(path) == "data" \
+            and os.path.basename(os.path.dirname(path)) == "OKntePlanner" \
+            and os.path.dirname(os.path.dirname(path)) == lad, (path, lad)
+        notice = rp.degrade_notice("logs")
+        assert notice and "回落" in notice, notice
+        assert rp.degrade_notice("logs") is None, "告警必须每进程每 kind 只一次"
+        # ④ crash 降级 → 回落 ROOT（打包态模拟下 frozen=False，ROOT=源码树根）
+        Path(root2, "crash").write_text("blocker", encoding="utf-8")
+        rp._CACHE.clear()
+        path, degraded = rp.resolve("crash")
+        assert degraded is True and path == src_root, (path, degraded, src_root)
+    finally:
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        rp._CACHE.clear()
+        rp._NOTIFIED.clear()
+        rp._DEGRADE_INFO.clear()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_runtime_wiring_static():
+    """W4b-R3 静态守卫（照 test_tjd04_dacl_wiring_static 的 _src 风格）：
+    读源码断言 runtime_paths 五处接线存在——main panel.log/crash.log/webview、
+    runner live/headless、elev_client config.runtime_logs 下发、elev_helper
+    审计与 stdout 归属闸换运行缓存根；build_exe.py 为 launcher 形态（探针结论：
+    --runtime-tmpdir 相对值按 CWD 解析不可靠，不得出现在 PyInstaller 参数）；
+    README deprecated 标注与运行缓存说明存在。负断言：state.py/tajiduo_client.py
+    路径常量零改动（内容比对）。SKIP 守卫：dist 不携带 tools/（build_dist 仅
+    复制 app/ 与 tests/），仓库根运行才有效。"""
+    if not os.path.isdir(os.path.join(_ROOT, "tools")):
+        print("SKIP test_runtime_wiring_static: dist 不携带 tools/（build_dist 仅复制"
+              " app/ 与 tests/，构建脚本/README 断言仓库根运行才有效）")
+        return
+
+    def _src(*parts):
+        return Path(_safe_path(_ROOT, *parts)).read_text(encoding="utf-8")
+
+    mn = _src("app", "main.py")
+    assert 'logs_dir = runtime_paths.resolve("logs")[0]' in mn, \
+        "panel.log 必须经 runtime_paths.resolve(\"logs\")"
+    assert 'log_path = os.path.join(logs_dir, "panel.log")' in mn, \
+        "panel.log 落运行缓存 logs 目录"
+    assert 'crash_dir = runtime_paths.resolve("crash")[0]' in mn, \
+        "crash.log 必须经 runtime_paths.resolve(\"crash\")"
+    assert 'os.path.join(crash_dir, "crash.log")' in mn, "crash.log 落 crash 子目录"
+    assert mn.count('wv_dir, wv_degraded = runtime_paths.resolve("webview")') == 2, \
+        "webview 接线必须两处（原生窗口 storage_path + Edge 档 profile）"
+    assert 'runtime_paths.is_packaged() and not wv_degraded' in mn \
+        and 'webview.start(gui="edgechromium", storage_path=wv_dir)' in mn, \
+        "原生窗口仅打包态且未降级传 storage_path（源码态/降级保持默认一次性临时目录）"
+    assert 'profile = os.path.join(wv_dir, "edge_profile")' in mn, \
+        "Edge 档 profile 必须落 resolve(\"webview\") 下 edge_profile"
+    assert 'PANEL_TOKEN_FILE = os.path.join(DATA_DIR, "panel_token.json")' in mn, \
+        "panel token 宿主必须仍是 DATA_DIR（红线）"
+
+    rn = _src("app", "runner.py")
+    assert "from . import runtime_paths" in rn, "runner 必须接线 runtime_paths"
+    assert 'logs_dir = (runtime_paths.resolve("logs")[0]' in rn \
+        and 'if runtime_paths.is_packaged() else DATA_DIR)' in rn, \
+        "headless stdout 镜像 touch：打包态落 resolve(\"logs\")，源码态保持 DATA_DIR 别名"
+    assert 'stdout_path = Path(logs_dir) / stdout_name' in rn, \
+        "stdout 落点经 logs_dir 统一"
+    assert 'live = Path(runtime_paths.resolve("logs")[0]' in rn \
+        and '/ "ok-nte-live.log"' in rn, \
+        "ok-nte-live.log 打包态落 resolve(\"logs\")（源码态 DATA_DIR 别名）"
+
+    ec = _src("app", "elev_client.py")
+    assert "def _default_log_dir():" in ec and "return DATA_DIR" in ec, \
+        "config/endpoint 宿主默认链必须仍是 DATA_DIR（红线）"
+    assert '"log_dir": log_dir' in ec, "config 的 log_dir 宿主不变（红线）"
+    assert '"runtime_logs": runtime_logs' in ec, \
+        "config 必须下发 runtime_logs（helper 为 UAC 提权进程不继承面板环境变量）"
+    assert 'runtime_paths.is_packaged() else log_dir)' in ec, \
+        "runtime_logs 下发必须仅打包态生效（源码态保持 log_dir 旧行为，夹具不漂移）"
+    assert 'runtime_paths.resolve("logs")[0]' in ec, \
+        "runtime_logs 取值必须来自面板 resolve（单一事实源，含回落态）"
+
+    eh_src = _src("app", "elev_helper.py")
+    assert "self.runtime_logs = os.path.realpath(runtime_logs or self.log_dir)" \
+        in eh_src, "helper 审计/stdout 基准必须换运行缓存根（缺省回落 log_dir 兼容）"
+    assert 'os.path.join(self.runtime_logs, "elev_helper_audit.log")' in eh_src, \
+        "审计日志必须落 runtime_logs"
+    assert "_stdout_file_path(self.runtime_logs, stdout_name)" in eh_src, \
+        "stdout 归属闸基准必须换 runtime_logs（闸语义不变）"
+    assert '"elev_helper_endpoint-%d.json" % parent_pid' in eh_src, \
+        "endpoint 必须仍在 log_dir（DACL 闸管辖的数据目录，红线）"
+    assert 'raise ConfigError("配置文件必须位于 log_dir 内")' in eh_src, \
+        "config 位于 log_dir 的校验必须保持"
+    assert 'str(cfg.get("runtime_logs") or "").strip()' in eh_src, \
+        "runtime_logs 可选字段缺省回落（旧 config/schema 兼容）"
+    assert "from . import" not in eh_src and "from app import" not in eh_src \
+        and "from app." not in eh_src, \
+        "elev_helper 纯标准库边界保持（绝不 import 本仓库其他模块）"
+
+    bx = _src("tools", "build_exe.py")
+    assert "LAUNCHER_SINGLE_CS" in bx and "def _compile_single_launcher" in bx, \
+        "单文件档必须为 launcher 形态（W4b-R3 探针结论②）"
+    assert 'psi.EnvironmentVariables["TEMP"] = dir' in bx \
+        and 'psi.EnvironmentVariables["TMP"] = dir' in bx, \
+        "launcher 必须设 TEMP/TMP 指向 EXE 旁 runtime_tmp（探针②实测重定向生效）"
+    assert '"--runtime-tmpdir"' not in bx, \
+        "PyInstaller 参数不得含 --runtime-tmpdir（探针①：相对值按 CWD 解析不可靠）"
+
+    rd = _src("README.md")
+    assert "deprecated" in rd, "README 必须标注目录版 deprecated"
+    assert "OKntePlannerRuntime" in rd and "OKNTE_RUNTIME_ROOT" in rd, \
+        "README 必须写明运行缓存位置与覆盖变量"
+
+    st = _src("app", "state.py")
+    assert 'USER_DATA_DIR = os.path.join(' in st and '"OKntePlanner", "data")' in st, \
+        "USER_DATA_DIR 派生零改动（红线）"
+    assert 'STATE_FILE = os.path.join(DATA_DIR, "state.json")' in st, \
+        "STATE_FILE 零改动（红线）"
+    tj = _src("app", "tajiduo_client.py")
+    assert 'TOKEN_FILE = os.path.join(DATA_DIR, "tajiduo_token.json")' in tj, \
+        "tajiduo TOKEN_FILE 零改动（红线）"
+
+
 def main():
     stress = "--stress" in sys.argv[1:]
     cases = CASES + STRESS_CASES if stress else CASES

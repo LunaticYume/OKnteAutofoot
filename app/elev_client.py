@@ -26,6 +26,7 @@ from pathlib import Path
 
 from . import data_dacl
 from . import elev_helper as _eh
+from . import runtime_paths
 from . import oknte_adapter as _oa  # SEC-11：写方 LAUNCHER_SHA256 期望值来源
 
 CREATE_NO_WINDOW = _eh.CREATE_NO_WINDOW
@@ -262,12 +263,26 @@ class ElevClient:
         # 兜底；本轮两个路径经 keep 排除，活跃会话经 pid 存活闸排除）
         _sweep_stale_helper_files(log_dir, keep_paths=(cfg_path, endpoint_path))
         token = secrets.token_hex(32)
+        # W4b-R3：打包态 helper 审计与 stdout 镜像落运行缓存 logs 根，由 config
+        # 下发——单一事实源=面板进程 resolve 的结果（含 E 不可写回落态）；helper
+        # 为 UAC 提权进程，不继承面板进程级 OKNTE_RUNTIME_ROOT 环境变量，故不走
+        # helper 直连 import runtime_paths（elev_helper「绝不 import 本仓库其他
+        # 模块」边界保持）。源码态保持 log_dir（旧行为：selftest/smoke 以夹具
+        # log_dir 断言审计与 stdout，不漂移）。config/endpoint 宿主 log_dir 不动
+        # （DACL 闸管辖的数据目录，安全红线）：runtime_logs 仅作 helper 落点下发，
+        # 绝不作 config/endpoint 宿主。
+        runtime_logs = (runtime_paths.resolve("logs")[0]
+                        if runtime_paths.is_packaged() else log_dir)
+        notice = runtime_paths.degrade_notice("logs")
+        if notice:
+            print(notice)
         cfg = {
             "schema": _eh.CONFIG_SCHEMA,
             "token": token,
             "parent_pid": os.getpid(),
             "root": root,
             "log_dir": log_dir,
+            "runtime_logs": runtime_logs,
             "game_process": game_process,
         }
         ps_error = ""

@@ -1,12 +1,15 @@
 """阶段7：把 Web 面板封装为 EXE 分发（启动器方案，纯本机依赖）。
 
-产物：dist/OKntePlanner/
-    异环养成规划器.exe   csc 编译的启动器（SEC-10 方案B：asInvoker 普通权限，
-                         提权收敛到受限提权辅助进程 app.elev_helper）
-    app/ data/           面板源码 + 数据表模板（不含用户 state.json/backups/runtime）
+产物：dist/OKntePlanner_single/（发布形态，唯一受支持——2026-11-21 用户裁定）
+    OKntePlanner.exe     csc 编译的单文件档 launcher 壳（LAUNCHER_SINGLE_CS：
+                         设 TEMP/TMP → EXE 旁 runtime_tmp 后拉起主 EXE，_MEI
+                         解包迁出 C 盘；asInvoker 普通权限）
+    OKntePlanner_main.exe  PyInstaller 单文件主 EXE（入口经 launcher）
+    app/ data/           出厂数据表模板（不含用户 state.json/backups/runtime）
     使用说明.txt
-可选档：PyInstaller 单文件 EXE（dist/OKntePlanner_single/OKntePlanner.exe），
-       联网安装失败不阻断（"尽量封装"边界见 docs/results/EXE-PACKAGING-Result.md）。
+中间产物（deprecated）：dist/OKntePlanner/ 异环养成规划器.exe——连续多版本
+    空白页弃用，仍随构建生成但不发布/不计 release gate（见 USAGE_TXT）。
+联网安装失败不阻断（"尽量封装"边界见 docs/results/EXE-PACKAGING-Result.md）。
 
 启动器定位 Python 的顺序：
     1) <exe目录>/python/python.exe   —— 用户自行放入完整 Python 即可脱依赖
@@ -198,19 +201,127 @@ APP_MANIFEST = """<?xml version="1.0" encoding="utf-8"?>
 </assembly>
 """
 
+# 单文件档 launcher 壳（W4b-R3 用户裁定 2026-11-21，发布形态入口）。
+# 职责：把 PyInstaller onefile bootloader 的 _MEI 解包目录迁出 C 盘 %TEMP%。
+# 探针实测（.tmp/b3-w4br3-probe/，PyInstaller 6.22.3）：
+#   ① --runtime-tmpdir "_probe_runtime"（相对值）按 **CWD** 解析——CWD=EXE 目录时
+#     恰落 EXE 旁，CWD=无关目录时解包落无关 CWD（不可靠，形态①排除）；
+#   ② bootloader 经 GetTempPath 取临时目录，设 TEMP/TMP 环境变量即完全受控：
+#     解包=TEMP\_MEIxxxx，退出后 _MEI 自清（父目录保留）。
+# 故本壳：探测 EXE 旁 runtime_tmp 可创建（建目录+写删探针文件）→ 设 TEMP/TMP
+# → CreateProcess 拉主 EXE（OKntePlanner_main.exe，PyInstaller 产物改名）；
+# 不可创建 → 不设变量回落系统 %TEMP%，launcher.log 一行告警。asInvoker 清单
+# （APP_MANIFEST 复用）：launcher 不提权，面板/提权链语义与主 EXE 直启一致。
+LAUNCHER_SINGLE_CS = r"""using System;
+using System.Diagnostics;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+
+// 异环养成规划器单文件档启动器（winexe：无控制台黑框）。
+// 职责：设好运行缓存目录（TEMP/TMP → EXE 旁 runtime_tmp）后拉起同目录主程序
+// OKntePlanner_main.exe，等其退出并透传退出码。致命错误用 MessageBox 弹窗 +
+// launcher.log，绝不无声消失。
+class Launcher {
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)]
+    static extern int MessageBoxW(IntPtr hWnd, string text, string caption, uint type);
+
+    static string BaseDir;
+    static string LogPath;
+    static string MainExe;
+
+    static void Log(string line) {
+        try {
+            File.AppendAllText(LogPath,
+                DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " " + line + Environment.NewLine,
+                Encoding.UTF8);
+        } catch { }
+    }
+
+    static void Alert(string text) {
+        Log("失败：" + text.Replace("\r\n", " | "));
+        MessageBoxW(IntPtr.Zero, text, "异环养成规划器", 0x10);
+    }
+
+    static bool PrepareRuntimeTmp() {
+        try {
+            string dir = Path.Combine(BaseDir, "runtime_tmp");
+            Directory.CreateDirectory(dir);
+            // 可写探针：写删一个小文件（与面板 runtime_paths.resolve 探针同思路）
+            string probe = Path.Combine(dir, "write_probe.tmp");
+            File.WriteAllText(probe, "ok");
+            File.Delete(probe);
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    static int Run() {
+        if (!File.Exists(MainExe)) {
+            Alert("未找到主程序 OKntePlanner_main.exe。launcher 与主 EXE 必须同目录，"
+                + "请使用完整发布目录（重新解压/重新下载），勿单独拷贝本 EXE。");
+            return 1;
+        }
+        var psi = new ProcessStartInfo {
+            FileName = MainExe,
+            WorkingDirectory = BaseDir,
+            UseShellExecute = false,
+        };
+        if (PrepareRuntimeTmp()) {
+            string dir = Path.Combine(BaseDir, "runtime_tmp");
+            // onefile bootloader 经 GetTempPath 解包（探针②）：TEMP/TMP 指向 EXE
+            // 旁 runtime_tmp → _MEI 与运行期临时文件落 EXE 所在盘，C 盘零新增
+            psi.EnvironmentVariables["TEMP"] = dir;
+            psi.EnvironmentVariables["TMP"] = dir;
+            Log("运行缓存: " + dir);
+        } else {
+            Log("警告：EXE 旁 runtime_tmp 不可创建，单文件解包回落系统 %TEMP%");
+        }
+        using (var p = Process.Start(psi)) {
+            p.WaitForExit();  // 主 EXE（面板窗口）退出即收尾
+            Log("主程序退出，退出码 " + p.ExitCode);
+            if (p.ExitCode != 0) {
+                Alert("面板异常退出（退出码 " + p.ExitCode + "）。\r\n"
+                    + "详情见本目录 launcher.log 与 panel.log / crash.log"
+                    + "（运行缓存目录，回落位置见使用说明）。");
+            }
+            return p.ExitCode;
+        }
+    }
+
+    static int Main() {
+        BaseDir = AppDomain.CurrentDomain.BaseDirectory;
+        LogPath = Path.Combine(BaseDir, "launcher.log");
+        MainExe = Path.Combine(BaseDir, "OKntePlanner_main.exe");
+        Log("=== 启动器启动，目录: " + BaseDir);
+        try {
+            return Run();
+        } catch (Exception e) {
+            Log("启动器异常: " + e);
+            Alert("启动器异常: " + e.Message);
+            return 1;
+        }
+    }
+}
+"""
+
 USAGE_TXT = """异环养成规划器（OKnteAutofoot）使用说明
 ==========================================
 
-【推荐】独立桌面版：OKntePlanner_single\\OKntePlanner.exe
-  双击 → 直接弹出一个独立的应用窗口（自己的进程与任务栏项，无黑框、无浏览器、
-  无 Edge 壳）。面板以普通权限运行（SEC-10：HTTP/token 服务面不随面板提权）；
-  首次「开始执行」或背包 OCR 时会弹一次 UAC——那是受限提权辅助进程（仅用于
-  提权拉起 ok-nte 任务与向游戏窗口发送输入，操作白名单封闭、随面板退出）。
-  关闭窗口即整套退出（正在执行的任务会先安全停止并记账）。
+【发布形态，唯一受支持】OKntePlanner_single\\OKntePlanner.exe
+  双击 → launcher 壳设好运行缓存目录后拉起同目录主程序
+  OKntePlanner_main.exe，直接弹出一个独立的应用窗口（自己的进程与任务栏项，
+  无黑框、无浏览器、无 Edge 壳）。面板以普通权限运行（SEC-10：HTTP/token
+  服务面不随面板提权）；首次「开始执行」或背包 OCR 时会弹一次 UAC——那是
+  受限提权辅助进程（仅用于提权拉起 ok-nte 任务与向游戏窗口发送输入，操作
+  白名单封闭、随面板退出）。关闭窗口即整套退出（正在执行的任务会先安全
+  停止并记账）。launcher 与主 EXE 必须同目录，勿拆开分发。
 
-备用：异环养成规划器.exe（启动器版）
-  复用 ok-nte 内嵌 Python，以 Edge 应用窗口打开面板（本机无独立 Python 时用；
-  已强制直连，不会因系统代理出现"拒绝连接"）。
+【deprecated，勿用】异环养成规划器.exe（启动器版，dist\\OKntePlanner\\）
+  连续多版本空白页，已弃用（2026-11-21 用户裁定）：仍随构建生成、仅作中间
+  产物，不作为发布候选、不计 release gate。其行为口径（复用 ok-nte 内嵌
+  Python、以 Edge 应用窗口打开面板、已强制直连）仅留作排查参考。
 
 首次使用：
   - 「角色」页建角色填目标；「库存」页按背包实际填一次库存；
@@ -219,8 +330,18 @@ USAGE_TXT = """异环养成规划器（OKnteAutofoot）使用说明
 
 数据与日志：
   - 用户数据统一在 %LOCALAPPDATA%\\OKntePlanner\\data（角色/库存/设置/图鉴
-    覆盖层/塔吉多凭证/OCR 标定/panel.log 等；两个 EXE 共用同一份，可整体
-    备份/迁移）。【勿同时双开两个 EXE】——并发写会互相覆盖。
+    覆盖层/塔吉多凭证/OCR 标定等；两档 EXE 共用同一份，可整体备份/迁移），
+    本项位置不变。【勿同时双开两个 EXE】——并发写会互相覆盖。
+  - 运行缓存（日志/WebView 缓存）统一在 E:\\OKntePlannerRuntime（2026-11-21
+    起，运行缓存迁出 C 盘）：panel.log 与 ok-nte 执行日志在
+    E:\\OKntePlannerRuntime\\logs，WebView2 缓存与 Edge 档在
+    E:\\OKntePlannerRuntime\\webview，crash.log 在
+    E:\\OKntePlannerRuntime\\crash。E 盘不可写时自动回落既有位置（用户数据
+    目录/EXE 旁）并在日志告警一次；可用环境变量 OKNTE_RUNTIME_ROOT 指定
+    其他位置。
+  - 单文件档解包目录：EXE 旁 runtime_tmp（launcher 设 TEMP/TMP 所致；解包
+    内容退出自清，目录保留）。EXE 所在盘不可写时该目录建不出来 → 回落系统
+    %TEMP%（launcher.log 有告警行）。
   - EXE 旁的 data\\ 仅为出厂数据表模板（materials/yields/requirements 等），
     面板不往里写任何用户数据。
   - 首次启动自动初始化用户数据目录；旧版（数据在 EXE 旁 data\\）首次启动会
@@ -231,13 +352,18 @@ USAGE_TXT = """异环养成规划器（OKnteAutofoot）使用说明
     目录> --apply（可加 --dry-run 先演练；目标已存在的文件一律跳过）。
   - 更新出厂数据表：删除用户数据目录下的 .migrated 与对应表文件后重启面板
     （原子 no-clobber 只补缺失文件，其余用户数据不动）。
-  - 排查日志：launcher.log/crash.log 在 EXE 旁；panel.log 在用户数据目录。
+  - 排查日志（新位置；E 盘不可写时回落用户数据目录/EXE 旁旧位置）：
+    launcher.log 在 EXE 旁（单文件档 launcher 壳记录运行缓存设置与主程序
+    退出码）；panel.log 在 E:\\OKntePlannerRuntime\\logs\\panel.log；crash.log
+    在 E:\\OKntePlannerRuntime\\crash\\crash.log；ok-nte-live.log 与
+    ok-nte-headless-*.log 在 logs 目录（与 panel.log 同目录）。
     端口被占会自动避让并在 panel.log 提示新端口；双击无反应先看上述日志。
-  - 启动器找 Python 优先读 EXE 旁 data\\state.json（旧布局）的 oknte_root，
-    再读用户数据目录的 state.json——面板内改 oknte_root 写的是用户数据目录
-    文件，启动器不跟随。
-  - 提权辅助进程的安全事件审计日志在用户数据目录 elev_helper_audit.log
-    （SEC-10：所有提权操作与拒绝均可追溯）。
+  - （deprecated 启动器版口径，留作排查参考）该启动器找 Python 优先读 EXE 旁
+    data\\state.json（旧布局）的 oknte_root，再读用户数据目录的 state.json——
+    面板内改 oknte_root 写的是用户数据目录文件，启动器不跟随。
+  - 提权辅助进程的安全事件审计日志在 E:\\OKntePlannerRuntime\\logs\\
+    elev_helper_audit.log（SEC-10：所有提权操作与拒绝均可追溯；E 盘不可写
+    回落用户数据目录同名）。
   - 若手动以管理员身份运行面板，数据落管理员账户的 LocalAppData，与普通
     权限运行不共享（建议保持普通权限运行）。
 
@@ -522,6 +648,29 @@ def _ensure_pyi_deps(py, packages):
     return False
 
 
+def _compile_single_launcher(out_exe, ico):
+    """编译单文件档 launcher 壳（LAUNCHER_SINGLE_CS + asInvoker 清单 + 图标）。
+    返回是否成功（失败时调用方回退主 EXE 直启形态，不阻断单文件档）。"""
+    csc = find_csc()
+    if not csc:
+        print("  未找到 csc.exe（.NET Framework 编译器），无法编译单文件 launcher")
+        return False
+    with tempfile.TemporaryDirectory(prefix="oknte_single_lcs_") as tmp:
+        cs = os.path.join(tmp, "LauncherSingle.cs")
+        manifest = os.path.join(tmp, "app.manifest")
+        Path(cs).write_text(LAUNCHER_SINGLE_CS, encoding="utf-8-sig")
+        Path(manifest).write_text(APP_MANIFEST, encoding="utf-8")
+        result = subprocess.run(
+            [csc, "/nologo", "/codepage:65001", "/target:winexe",
+             f"/win32icon:{ico}", f"/win32manifest:{manifest}", f"/out:{out_exe}",
+             cs],
+            capture_output=True, text=True, timeout=120)
+        if result.returncode != 0:
+            print(f"单文件 launcher 编译失败:\n{result.stdout}\n{result.stderr}")
+            return False
+        return True
+
+
 def try_pyinstaller_single(py):
     print("== 可选档：PyInstaller 单文件 EXE（失败不阻断）==")
     deps = PYI_DEPS
@@ -561,6 +710,19 @@ def try_pyinstaller_single(py):
             return None
         size_mb = os.path.getsize(exe) / 1024 / 1024
         print(f"单文件 EXE 构建完成: {exe} ({size_mb:.1f} MB)")
+        # W4b-R3（探针结论见 LAUNCHER_SINGLE_CS 注释）：--runtime-tmpdir 相对值
+        # 按 CWD 解析不可靠 → 不用该参数；主 EXE 改名 OKntePlanner_main.exe，
+        # launcher 壳编译为 OKntePlanner.exe 作发布入口（设 TEMP/TMP → EXE 旁
+        # runtime_tmp → 拉主 EXE；_MEI 解包迁出 C 盘）。launcher 编译失败不
+        # 阻断：改回主 EXE 直启旧形态（_MEI 落系统 %TEMP%）。
+        main_exe = os.path.join(DIST_SINGLE, "OKntePlanner_main.exe")
+        os.replace(exe, main_exe)
+        if _compile_single_launcher(exe, ico):
+            print(f"单文件档发布入口: {exe}（launcher 壳 + 主 EXE"
+                  f" OKntePlanner_main.exe）")
+        else:
+            os.replace(main_exe, exe)  # 回退直启形态
+            print("单文件档：launcher 编译失败，保持主 EXE 直启（_MEI 落系统 %TEMP%）")
         # 冻结模式首启播种源在 EXE 旁 data\：数据表模板必须随行（否则首启 import planner 失败）
         os.makedirs(os.path.join(DIST_SINGLE, "data"), exist_ok=True)
         copy_data_tables(os.path.join(DIST_SINGLE, "data"))
@@ -828,7 +990,9 @@ def verify_exes_live(py):
     if admin:
         for label, exe, port, ui_env in (
             ("启动器 EXE", os.path.join(DIST, "异环养成规划器.exe"), 18771, launcher_ui),
-            ("单文件 EXE(原生窗口)", os.path.join(DIST_SINGLE, "OKntePlanner.exe"), 18772, {}),
+            # W4b-R3：该路径现为单文件档 launcher 壳（真实发布入口），实跑验证
+            # launcher→主 EXE（OKntePlanner_main.exe）→面板全链
+            ("单文件 EXE(launcher壳→原生窗口)", os.path.join(DIST_SINGLE, "OKntePlanner.exe"), 18772, {}),
         ):
             if os.path.isfile(exe):
                 probe(label, exe, port, ui_env)
@@ -895,11 +1059,14 @@ def main():
     print("\n== 构建摘要 ==")
     for line in checks:
         print(" ", line)
-    print(f"  主产物: {DIST}")
+    # W4b-R3（2026-11-21 用户裁定）：发布形态=单文件档（唯一受支持）；目录版
+    # deprecated，仍随构建生成但仅作中间产物（不发布/不计 release gate）。
+    print(f"  发布主产物: {DIST_SINGLE}")
+    print(f"  目录版（deprecated，中间产物）: {DIST}")
     if single:
-        print(f"  可选单文件: {single}")
+        print(f"  单文件档入口: {single}")
     else:
-        print("  可选单文件: 未构建（不影响主产物）")
+        print("  单文件档: 未构建（可选档失败不阻断，但发布形态缺失需人工关注）")
     return 0
 
 

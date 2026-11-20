@@ -186,7 +186,12 @@ def _locate_python(root):
 def validate_config(cfg, config_path, config_dir_real):
     """校验启动配置（fail-closed）。返回 (token, parent_pid, root, log_dir,
     game_process)。config_dir_real 是 main() 锚定的配置目录 realpath；
-    config_path 已在 main() 归属校验通过（realpath 后 dirname 必须等于锚定目录）。"""
+    config_path 已在 main() 归属校验通过（realpath 后 dirname 必须等于锚定目录）。
+
+    W4b-R3：可选字段 runtime_logs（运行缓存 logs 根，helper 审计与 stdout 镜像
+    落点）由面板经 config 下发（单一事实源=面板 resolve 结果，含回落态；helper
+    为 UAC 提权进程不继承面板进程级 OKNTE_RUNTIME_ROOT，不直连 import 本仓库
+    模块）。旧 config 无此字段 → 回落 log_dir（CONFIG_SCHEMA 保持 1 兼容）。"""
     if not isinstance(cfg, dict) or cfg.get("schema") != CONFIG_SCHEMA:
         raise ConfigError("配置 schema 不符")
     token = str(cfg.get("token") or "")
@@ -205,6 +210,10 @@ def validate_config(cfg, config_path, config_dir_real):
     # 配置文件必须位于 log_dir 内（防外部目录里的恶意配置顶替会话配置）
     if os.path.realpath(config_dir_real) != os.path.realpath(log_dir):
         raise ConfigError("配置文件必须位于 log_dir 内")
+    # runtime_logs 可选（面板已 resolve 建目录）；下发则必须存在（fail-closed）
+    runtime_logs = str(cfg.get("runtime_logs") or "").strip()
+    if runtime_logs and not os.path.isdir(runtime_logs):
+        raise ConfigError("runtime_logs 不存在或不是目录")
     py_path = _locate_python(root)
     if not os.path.isfile(py_path):
         raise ConfigError("oknte_root 内未找到内嵌 python.exe")
@@ -293,11 +302,15 @@ class _Helper:
     父进程、审计与端点文件位置都在启动时固化；任何一项变化都以拒绝服务收场。"""
 
     def __init__(self, token, parent_pid, root, log_dir, game_process,
-                 config_path):
+                 config_path, runtime_logs=None):
         self.token = token
         self.parent_pid = parent_pid
         self.root = os.path.realpath(root)
         self.log_dir = os.path.realpath(log_dir)
+        # W4b-R3：审计与 stdout 镜像落运行缓存 logs 根（config.runtime_logs 下发，
+        # 缺省回落 log_dir——旧 config/既有测试夹具兼容）。config/endpoint 宿主
+        # 仍是 log_dir（DACL 私有化的用户数据目录，安全红线不动）。
+        self.runtime_logs = os.path.realpath(runtime_logs or self.log_dir)
         self.game_process = game_process
         self.py_path = _locate_python(self.root)
         self.py_fp = _sha256_file(self.py_path)
@@ -305,7 +318,7 @@ class _Helper:
         self.finished = {}  # pid -> exit code（已收尾子进程；供 stop_runner 幂等与面板判定）
         self.stop_event = threading.Event()
         self.audit_lock = threading.Lock()
-        self.audit_path = os.path.join(self.log_dir, "elev_helper_audit.log")
+        self.audit_path = os.path.join(self.runtime_logs, "elev_helper_audit.log")
         self.endpoint_path = os.path.join(
             self.log_dir, "elev_helper_endpoint-%d.json" % parent_pid)
         self.config_path = config_path
@@ -589,7 +602,7 @@ class _Helper:
             raise RuntimeError("task 不在白名单内")
         if not safe_stdout_name(stdout_name):
             raise RuntimeError("stdout 文件名不在白名单内")
-        stdout_real = _stdout_file_path(self.log_dir, stdout_name)
+        stdout_real = _stdout_file_path(self.runtime_logs, stdout_name)
         working = _working_dir(self.root)
         env = dict(os.environ)
         env["PYTHONIOENCODING"] = "utf-8"
@@ -673,7 +686,9 @@ class _Helper:
 
 
 def _stdout_file_path(log_dir, name):
-    """stdout 镜像文件落点（realpath + commonpath 归属闸；name 已过白名单正则）。"""
+    """stdout 镜像文件落点（realpath + commonpath 归属闸；name 已过白名单正则）。
+    W4b-R3：闸语义不变（防任意文件写），基准目录换为运行缓存 logs 根
+    （调用方传 self.runtime_logs）。"""
     log_real = os.path.realpath(str(log_dir or ""))
     path_real = os.path.realpath(os.path.join(log_real, str(name or "")))
     if os.path.commonpath([path_real, log_real]) != log_real:
@@ -717,7 +732,11 @@ def main(argv=None):
     except ConfigError as e:
         print("elev_helper 配置非法: %s" % e, file=sys.stderr)
         return 2
-    helper = _Helper(token, parent_pid, root, log_dir, game_process, cfg_real)
+    # W4b-R3：运行缓存 logs 根（config.runtime_logs 已在 validate_config 校验
+    # isdir）；旧 config 缺省 → 回落 log_dir（审计/stdout 旧位置，schema 兼容）。
+    runtime_logs = str(cfg.get("runtime_logs") or "").strip() or log_dir
+    helper = _Helper(token, parent_pid, root, log_dir, game_process, cfg_real,
+                     runtime_logs=runtime_logs)
     helper.run()
     return 0
 
