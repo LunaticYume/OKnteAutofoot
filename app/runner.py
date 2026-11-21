@@ -643,11 +643,24 @@ class Runner:
 
         # SEC-10 方案B：优先经受限提权辅助进程拉起（普通权限面板不能直接 Popen
         # 出高 IL 子链，也不能 taskkill 它）；辅助进程不可用（UAC 拒绝/未就绪/
-        # 参数被拒）时回退旧的直接 Popen（普通权限链——游戏未连接时将被 ok-nte
-        # 的管理员启动闸拒绝并给出明确日志，行为与旧版一致）。
+        # 连接失败）时回退旧的直接 Popen（普通权限链——游戏未连接时将被 ok-nte
+        # 的管理员启动闸拒绝并给出明确日志，行为与旧版一致）。白名单/参数类
+        # 安全拒绝不走本回退——见下方 ELEV-04 分支。
+        # ELEV-04/W4c-R：白名单/参数类安全拒绝（ElevRejected）绝不回退——安全
+        # 失败伪装成业务失败会污染当日黑名单（2026-11-22 实机：白名单错配×回退
+        # ×黑名单级联）。按安全语义整轮终止：撤销 planned 记录＋置 stop_event
+        # 令主循环不再尝试后续计划项，本轮以明确拒绝消息收尾。
         elev_child, stdout_path = None, None
         try:
             elev_child, stdout_path = self._launch_via_helper(oknte, cmd, env, record)
+        except elev_client.ElevRejected as e:
+            self._log(f"提权安全校验拒绝（{e}）——按安全语义整轮终止，不回退直接拉起")
+            self._write_runtime(execution=None)  # 从未运行：撤销 planned 记录
+            self.stop_event.set()
+            # 返回 "stopped"（非 "failed"）：attempt 循环立即 break、_settle 记
+            # stopped 不拉黑——attempt-1 已失败后 attempt-2 才撞安全拒绝的角落
+            # 场景也不产生当日黑名单污染（复核 2026-11-22 minor 采纳）
+            return "stopped", 0, f"提权安全校验拒绝：{e}（未回退、未拉起、未消耗体力）"
         except Exception as e:  # noqa: BLE001 —— 辅助进程路径失败必须可回退
             self._log(f"提权辅助进程拉起失败（{type(e).__name__}: {e}）——回退直接拉起")
         if elev_child is None:

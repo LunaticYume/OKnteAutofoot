@@ -11,6 +11,8 @@ import re
 import shutil
 import subprocess
 import threading
+
+from . import oknte_layout  # ELEV-04/W4c-R：ok-nte 安装布局单一来源（纯路径零依赖）
 import time
 import ctypes as ctypes_mod
 from datetime import datetime
@@ -72,7 +74,7 @@ def runner_child_alive():
         pids = list(_RUNNER_CHILD_PIDS)
     return any(proc_alive(pid) for pid in pids)
 
-LAUNCHER_NAME = "run_planner_task.py"
+LAUNCHER_NAME = oknte_layout.LAUNCHER_NAME  # ELEV-04/W4c-R：布局单一来源（原字面量迁 oknte_layout）
 LAUNCHER_SRC = (
     "# OKNTE_PLANNER_HEADLESS 规划器无界面启动器\n"
     "import os, sys\n"
@@ -241,19 +243,21 @@ def _detection_patterns(working, apps_dir):
 class OkNte:
     def __init__(self, root):
         self.root = root
-        self.apps_dir = os.path.join(root, "data", "apps", "ok-nte")
-        self.working = os.path.join(self.apps_dir, "working")
+        # ELEV-04/W4c-R：布局路径全部由 oknte_layout 单一来源派生（原先此处与
+        # elev_helper 白名单各写一份、白名单少算 data/apps/ok-nte 段致实机必拒）
+        self.apps_dir = oknte_layout.apps_dir(root)
+        self.working = oknte_layout.working_dir(root)
         self.python_exe = os.path.join(self.apps_dir, "python", "python.exe")
         self.routine_config = os.path.join(self.working, "configs", ROUTINE_CONFIG_NAME)
         self.routine_items = os.path.join(self.working, "configs", ROUTINE_ITEMS_NAME)
         self.hunter_config = os.path.join(self.working, "configs", HUNTER_CONFIG_NAME)
         self.log_dir = os.path.join(self.working, "logs")
         # 无界面运行的独立配置副本（脚本用自己的一份配置，用户原 configs\ 零写入）
-        self.profile_dir = os.path.join(self.working, "configs_planner")
+        self.profile_dir = oknte_layout.profile_dir(root)
         self.profile_items = os.path.join(self.profile_dir, ROUTINE_ITEMS_NAME)
         self.profile_daily = os.path.join(self.profile_dir, ROUTINE_CONFIG_NAME)
         self.profile_hunter = os.path.join(self.profile_dir, HUNTER_CONFIG_NAME)
-        self.profile_launcher = os.path.join(self.profile_dir, LAUNCHER_NAME)
+        self.profile_launcher = oknte_layout.launcher_path(root)
 
     @staticmethod
     def _contained(path, base):

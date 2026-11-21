@@ -458,16 +458,19 @@ class ElevClient:
         root = os.path.realpath(str(root or ""))
         if self._root != root:
             raise ElevError("oknte_root 与辅助进程会话不一致（先 ensure）")
+        # ELEV-04/W4c-R：白名单/参数类预检拒绝一律 ElevRejected（与 helper 侧
+        # op 拒绝经 _call:91 抛出的类型一致——两侧同判据同类型），runner 據此
+        # fail-fast 整轮终止，绝不回退直接拉起（安全失败不得伪装业务失败）。
         launcher = os.path.realpath(str(launcher or ""))
         if not _eh.launcher_allowed(launcher, root):
-            raise ElevError("launcher 不在白名单路径内")
+            raise ElevRejected("launcher 不在白名单路径内")
         profile = os.path.realpath(str(profile or ""))
         if not _eh.profile_allowed(profile, root):
-            raise ElevError("profile 目录不在白名单内")
+            raise ElevRejected("profile 目录不在白名单内")
         if not _eh.task_allowed(str(task or "")):
-            raise ElevError("task 不在白名单内")
+            raise ElevRejected("task 不在白名单内")
         if not _eh.safe_stdout_name(str(stdout_name or "")):
-            raise ElevError("stdout 文件名不在白名单内")
+            raise ElevRejected("stdout 文件名不在白名单内")
         # 动态属性访问（而非 import 快照）：每次调用读写方常量，留测试注入点
         expected_sha = (expected_launcher_sha256
                         if isinstance(expected_launcher_sha256, str)

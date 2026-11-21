@@ -5,7 +5,8 @@
 
 - launch_runner：提权拉起 ok-nte 无头 runner 子链。解释器固定为启动时固化指纹的
   oknte_root 内嵌 python.exe（路径 + SHA-256，指纹变化一律拒绝）；launcher 只认
-  <root>/working/configs_planner/run_planner_task.py；stdout 只能重定向到启动时
+  <root>/data/apps/ok-nte/working/configs_planner/run_planner_task.py（ELEV-04/
+  W4c-R 布局段与 app/oknte_layout 镜像同源）；stdout 只能重定向到启动时
   固定的面板数据目录内、文件名匹配白名单正则的日志文件。
 - stop_runner：只允许停止本会话内经 launch_runner 拉起的进程。
 - set_foreground / click / scroll：向游戏窗口的合成输入原语。目标窗口必须通过
@@ -53,6 +54,13 @@ STDOUT_NAME_RE = re.compile(r"^ok-nte-headless-[A-Za-z0-9._-]{1,80}\.log$")
 LAUNCHER_NAME = "run_planner_task.py"
 TASKS = ("日常任务", "AnomalyHunter")
 PROFILE_DIR_NAME = "configs_planner"
+# ELEV-04/W4c-R：ok-nte 安装布局应用子目录段——与 app/oknte_layout.APPS_SUBDIR
+# 镜像（本模块被提权进程独立拉起，「绝不 import 本仓库其他模块」依赖面约束，
+# 不能直接 import oknte_layout）；两侧一致性由 selftest
+# test_elev04_layout_single_source_static 静态守卫钉死，再漂移门禁必红。
+# ELEV-04 实机缺陷根因：白名单曾把工作区当作 <root>\working（少算本段），
+# 与 OkNte 适配器真实布局 <root>\data\apps\ok-nte\working 必然错配。
+LAYOUT_APPS_SUBDIR = ("data", "apps", "ok-nte")
 GAME_WINDOW_CLASS = "UnrealWindow"
 MAX_REQUEST_BYTES = 64 * 1024
 MAX_RESPONSE_BYTES = 256 * 1024
@@ -99,14 +107,18 @@ def coords_in_bounds(x, y, vs):
 
 
 def launcher_allowed(launcher, root):
-    """launcher 必须是 <root>/working/configs_planner/run_planner_task.py
-    （realpath 归属校验）：辅助进程提权执行的脚本面固定为面板写入配置副本
-    目录的单一入口，拒绝任意 Python 脚本路径。"""
+    """launcher 必须是 <root>/data/apps/ok-nte/working/configs_planner/
+    run_planner_task.py（realpath 归属校验）：辅助进程提权执行的脚本面固定为
+    面板写入配置副本目录的单一入口，拒绝任意 Python 脚本路径。
+
+    ELEV-04/W4c-R：路径段经 LAYOUT_APPS_SUBDIR 与 app/oknte_layout 同源
+    （镜像常量+静态漂移守卫）；此前少算 data/apps/ok-nte 段，与 OkNte 适配器
+    真实布局必错配，打包态托管启动链 100% 不可用。"""
     try:
         root_real = os.path.realpath(str(root or ""))
         launcher_real = os.path.realpath(str(launcher or ""))
-        profile_real = os.path.realpath(
-            os.path.join(root_real, "working", PROFILE_DIR_NAME))
+        profile_real = os.path.realpath(os.path.join(
+            root_real, *LAYOUT_APPS_SUBDIR, "working", PROFILE_DIR_NAME))
         return (os.path.dirname(launcher_real) == profile_real
                 and os.path.basename(launcher_real) == LAUNCHER_NAME)
     except (OSError, ValueError):
@@ -114,11 +126,13 @@ def launcher_allowed(launcher, root):
 
 
 def profile_allowed(profile, root):
-    """profile 目录必须是 <root>/working/configs_planner。"""
+    """profile 目录必须是 <root>/data/apps/ok-nte/working/configs_planner
+    （ELEV-04/W4c-R 同 launcher_allowed：布局段与 oknte_layout 同源）。"""
     try:
         root_real = os.path.realpath(str(root or ""))
         return os.path.realpath(str(profile or "")) == os.path.realpath(
-            os.path.join(root_real, "working", PROFILE_DIR_NAME))
+            os.path.join(root_real, *LAYOUT_APPS_SUBDIR, "working",
+                         PROFILE_DIR_NAME))
     except (OSError, ValueError):
         return False
 
@@ -697,9 +711,14 @@ def _stdout_file_path(log_dir, name):
 
 
 def _working_dir(root):
-    """ok-nte working 目录（realpath + commonpath 归属闸）。"""
+    """ok-nte working 目录（realpath + commonpath 归属闸）＝launcher 子进程 CWD
+    （launcher 以 sys.path.insert(0, os.getcwd()) 定位 ok 包，CWD 必须是真实
+    working 目录）。ELEV-04/W4c-R：路径段经 LAYOUT_APPS_SUBDIR 与
+    app/oknte_layout 同源——此前 root\\working 不存在于真实安装，即使白名单放行
+    Popen(cwd=...) 也会失败。"""
     root_real = os.path.realpath(str(root or ""))
-    path_real = os.path.realpath(os.path.join(root_real, "working"))
+    path_real = os.path.realpath(os.path.join(
+        root_real, *LAYOUT_APPS_SUBDIR, "working"))
     if os.path.commonpath([path_real, root_real]) != root_real:
         raise RuntimeError("working 目录归属校验失败")
     return path_real

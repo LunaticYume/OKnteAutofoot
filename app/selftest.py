@@ -51,6 +51,7 @@ if _ROOT not in sys.path:
 
 from app import game_data as game_data_mod  # noqa: E402
 from app import oknte_adapter as adapter_mod  # noqa: E402
+from app import oknte_layout  # noqa: E402  # ELEV-04/W4c-R：布局单一来源（夹具按真实结构）
 from app import planner  # noqa: E402
 from app import runner as runner_mod  # noqa: E402
 from app import state as state_mod  # noqa: E402
@@ -1252,6 +1253,18 @@ class _E2EGuard:
         self.root = os.path.join(self.tmp, "root")
         self._orig_runtime = runner_mod.RUNTIME_FILE
         self._orig_oknte = runner_mod.OkNte
+        # ELEV-04/W4c-R：e2e 显式跳过 helper 拉起路径。此前 e2e 靠「白名单拒绝→
+        # 回退直拉」的旧缺陷隐式走 fallback（提权环境静默成功前还可能弹真实 UAC
+        # ——run 一次弹一次）；白名单修通＋fail-fast 落地后 FAKE_OKNTE 拒绝属安全
+        # 拒绝语义（ElevRejected 整轮终止），e2e 编排面必须改走显式 fallback：
+        # helper/白名单真路径由 sec11/elev01/elev04 专项用例覆盖（各自 set_test_spawn）。
+        self._orig_lvh = runner_mod.Runner._launch_via_helper
+
+        def _e2e_skip_helper(self_runner, *a, **k):
+            from app import elev_client as _ec
+            raise _ec.ElevError("e2e：helper 路径显式跳过（走可用性回退直拉路径）")
+
+        runner_mod.Runner._launch_via_helper = _e2e_skip_helper
         runner_mod.RUNTIME_FILE = os.path.join(self.tmp, "runtime.json")
         _E2EOkNte.launches = []
         _E2EOkNte.hunter_launches = []
@@ -1283,6 +1296,7 @@ class _E2EGuard:
         planner.YIELDS.update(self._yields_backup)
         runner_mod.RUNTIME_FILE = self._orig_runtime
         runner_mod.OkNte = self._orig_oknte
+        runner_mod.Runner._launch_via_helper = self._orig_lvh
         self._state_guard.__exit__(*exc)
         shutil.rmtree(self.tmp, ignore_errors=True)
         return False
@@ -9894,19 +9908,33 @@ def test_elev_helper_pure_validators():
     tmp = _sec10_tmp("pure")
     try:
         root = _sec10_root(tmp)
-        profile = _safe_path(root, "working", "configs_planner")
+        # ELEV-04/W4c-R：夹具按真实 ok-nte 安装布局（root/data/apps/ok-nte/working/
+        # configs_planner）——旧夹具误用 root/working 顶层布局、与白名单旧错一起
+        # 固化了 fixture-vs-reality 缺口。profile 路径统一取自 oknte_layout 单一来源。
+        profile = _safe_path(root, *oknte_layout.APPS_SUBDIR, "working",
+                             oknte_layout.PROFILE_DIR_NAME)
+        assert profile == oknte_layout.profile_dir(root)
         os.makedirs(profile, exist_ok=True)
-        good = _safe_path(profile, "run_planner_task.py")
+        good = _safe_path(profile, oknte_layout.LAUNCHER_NAME)
         Path(good).write_text("pass", encoding="utf-8")
+        assert good == oknte_layout.launcher_path(root)
         assert eh.launcher_allowed(good, root)
-        assert not eh.launcher_allowed(_safe_path(root, "working", "main.py"), root)
-        assert not eh.launcher_allowed(_safe_path(root, "working", "configs",
-                                                  "run_planner_task.py"), root)
+        # 旧错误布局（root/working 顶层——ELEV-04 实机缺陷形态）必须拒绝
+        _apps = _safe_path(root, *oknte_layout.APPS_SUBDIR)
+        assert not eh.launcher_allowed(
+            _safe_path(root, "working", oknte_layout.PROFILE_DIR_NAME,
+                       oknte_layout.LAUNCHER_NAME), root)
+        assert not eh.launcher_allowed(
+            _safe_path(_apps, "working", "main.py"), root)
+        assert not eh.launcher_allowed(_safe_path(_apps, "working", "configs",
+                                                  oknte_layout.LAUNCHER_NAME), root)
         assert not eh.launcher_allowed(_safe_path(profile, "evil.py"), root)
         assert not eh.launcher_allowed(good + ".bak", root)
         assert not eh.launcher_allowed(good, tmp)  # root 不匹配
         assert eh.profile_allowed(profile, root)
-        assert not eh.profile_allowed(_safe_path(root, "working", "configs"), root)
+        assert not eh.profile_allowed(_safe_path(_apps, "working", "configs"), root)
+        assert not eh.profile_allowed(_safe_path(root, "working",
+                                                 oknte_layout.PROFILE_DIR_NAME), root)
         # 启动配置校验矩阵（fail-closed）
         base = {"schema": 1, "token": "a" * 64, "parent_pid": 4321,
                 "root": root, "log_dir": root, "game_process": "HTGame.exe"}
@@ -9977,7 +10005,8 @@ def test_elev_helper_e2e_auth_ops_audit():
         except elev_client.ElevRejected:
             pass
         # launch_runner 参数越界逐一拒绝
-        profile = _safe_path(root, "working", "configs_planner")
+        profile = _safe_path(root, *oknte_layout.APPS_SUBDIR, "working",
+                   oknte_layout.PROFILE_DIR_NAME)
         os.makedirs(profile, exist_ok=True)
         launcher = _safe_path(profile, "run_planner_task.py")
         Path(launcher).write_text("print('ok')", encoding="utf-8")
@@ -10073,7 +10102,8 @@ def test_sec11_launcher_sha_tamper_rejected():
         elev_client.set_test_spawn(False)
         shutil.rmtree(tmp, ignore_errors=True)
         return
-    profile = _safe_path(root, "working", "configs_planner")
+    profile = _safe_path(root, *oknte_layout.APPS_SUBDIR, "working",
+                   oknte_layout.PROFILE_DIR_NAME)
     os.makedirs(profile, exist_ok=True)
     launcher = _safe_path(profile, "run_planner_task.py")
     # 篡改内容：无害 print+退出（复现脚本同款），不 import ok、无网络、无文件写
@@ -10137,7 +10167,8 @@ def test_sec11_launcher_sha_valid_launch_e2e():
         elev_client.set_test_spawn(False)
         shutil.rmtree(tmp, ignore_errors=True)
         return
-    profile = _safe_path(root, "working", "configs_planner")
+    profile = _safe_path(root, *oknte_layout.APPS_SUBDIR, "working",
+                   oknte_layout.PROFILE_DIR_NAME)
     os.makedirs(profile, exist_ok=True)
     launcher = _safe_path(profile, "run_planner_task.py")
     log_dir = _safe_path(tmp, "log")
@@ -10243,7 +10274,8 @@ def test_sec11_launcher_allowed_matrix_regression():
     tmp = _sec10_tmp("sec11matrix")
     try:
         root = _sec10_root(tmp)
-        profile = _safe_path(root, "working", "configs_planner")
+        profile = _safe_path(root, *oknte_layout.APPS_SUBDIR, "working",
+                   oknte_layout.PROFILE_DIR_NAME)
         os.makedirs(profile, exist_ok=True)
         good = _safe_path(profile, "run_planner_task.py")
         Path(good).write_text("pass", encoding="utf-8")
@@ -10273,7 +10305,8 @@ def test_sec11_missing_sha_arg_rejected():
         assert E.ensure(root, log_dir=log_dir, game_process="HTGame.exe"), \
             E.reason()
         port, token = E._port, E._token
-        profile = _safe_path(root, "working", "configs_planner")
+        profile = _safe_path(root, *oknte_layout.APPS_SUBDIR, "working",
+                   oknte_layout.PROFILE_DIR_NAME)
         os.makedirs(profile, exist_ok=True)
         launcher = _safe_path(profile, "run_planner_task.py")
         Path(launcher).write_text("print('ok')", encoding="utf-8")
@@ -10587,7 +10620,8 @@ def test_runner_helper_launch_stdout_stop():
             return
         with _StateGuard():
             os.makedirs(_safe_path(root, "working", "logs"), exist_ok=True)
-            profile = _safe_path(root, "working", "configs_planner")
+            profile = _safe_path(root, *oknte_layout.APPS_SUBDIR, "working",
+                   oknte_layout.PROFILE_DIR_NAME)
             os.makedirs(profile, exist_ok=True)
             launcher = _safe_path(profile, "run_planner_task.py")
             Path(launcher).write_text(
@@ -10661,6 +10695,150 @@ def test_runner_helper_launch_stdout_stop():
         runner_mod.RUNTIME_FILE = orig_runtime
         runner_mod.DATA_DIR = orig_data_dir
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_elev04_whitelist_real_layout():
+    """ELEV-04/W4c-R 行为回归（真实布局）：白名单接受 OkNte 真实布局 launcher、
+    拒绝旧错误布局（root/working 顶层——实机缺陷形态）与越界路径；launcher 与
+    profile 双 subtree 判据；生产侧（OkNte/oknte_layout）与校验侧（elev_helper）
+    路径一致。tmp 显式指 .tmp（C 盘零落地）。"""
+    from app import elev_helper as eh
+    tmp = _sec10_tmp("elev04-layout")
+    try:
+        root = _sec10_root(tmp)
+        ok = OkNte(root)  # 生产侧路径全部由 oknte_layout 单一来源派生
+        os.makedirs(ok.profile_dir, exist_ok=True)
+        Path(ok.profile_launcher).write_text("pass", encoding="utf-8")
+        # 真实布局正例：生产侧 launcher/profile 必过校验侧白名单
+        assert eh.launcher_allowed(ok.profile_launcher, root), ok.profile_launcher
+        assert eh.profile_allowed(ok.profile_dir, root)
+        assert ok.profile_launcher == oknte_layout.launcher_path(root)
+        # 旧错误布局负例：root/working/configs_planner 顶层（ELEV-04 实机形态）
+        _apps = _safe_path(root, *oknte_layout.APPS_SUBDIR)
+        old_profile = _safe_path(root, "working", oknte_layout.PROFILE_DIR_NAME)
+        old_launcher = _safe_path(old_profile, oknte_layout.LAUNCHER_NAME)
+        os.makedirs(old_profile, exist_ok=True)
+        Path(old_launcher).write_text("pass", encoding="utf-8")
+        assert not eh.launcher_allowed(old_launcher, root)
+        assert not eh.profile_allowed(old_profile, root)
+        # 越界负例：兄弟目录/任意名/后缀/root 不匹配
+        assert not eh.launcher_allowed(_safe_path(_apps, "working", "main.py"), root)
+        assert not eh.launcher_allowed(
+            _safe_path(_apps, "working", "configs", oknte_layout.LAUNCHER_NAME), root)
+        assert not eh.launcher_allowed(_safe_path(ok.profile_dir, "evil.py"), root)
+        assert not eh.launcher_allowed(ok.profile_launcher + ".bak", root)
+        assert not eh.launcher_allowed(ok.profile_launcher, tmp)  # root 不匹配
+        assert not eh.profile_allowed(_safe_path(_apps, "working", "configs"), root)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_elev04_client_helper_criteria_consistent():
+    """ELEV-04/W4c-R 行为回归（两侧判据一致＋fail-fast 类型面）：launch_runner
+    客户端预检与 helper 侧同函数（_eh.*）同判据；白名单/参数类拒绝一律
+    ElevRejected（与 helper op 拒绝同类型——runner 据此 fail-fast），root 会话
+    不一致仍为 ElevError；预检先于网络（_call 桩爆破验证零调用）。"""
+    from app import elev_client
+    assert issubclass(elev_client.ElevRejected, elev_client.ElevError)
+    tmp = _sec10_tmp("elev04-consistency")
+    try:
+        root = _sec10_root(tmp)
+        ok = OkNte(root)
+        os.makedirs(ok.profile_dir, exist_ok=True)
+        Path(ok.profile_launcher).write_text("pass", encoding="utf-8")
+        E = elev_client.ELEV
+        orig_root, orig_call = E._root, E._call
+        E._root = os.path.realpath(root)
+
+        def _no_network(*a, **k):  # 预检必须先于网络：_call 被触达即失败
+            raise AssertionError("预检拒绝不应触达辅助进程网络调用")
+
+        E._call = _no_network
+        try:
+            # 与 helper 同判据的合法参数集：launcher/profile/task/stdout 全部合法
+            # → 预检放行后触达 _call 桩（爆破）＝预检通过且零网络出站的预期路径
+            try:
+                E.launch_runner(root=ok.root, launcher=ok.profile_launcher,
+                                task="日常任务", profile=ok.profile_dir,
+                                stdout_name="ok-nte-headless-elev04.log")
+            except AssertionError:
+                pass  # _call 桩爆破＝预检放行（预期路径）
+            else:
+                raise AssertionError("合法参数应通过预检并触达 _call 桩")
+            # 白名单/参数类拒绝：ElevRejected 且零网络
+            for kwargs, frag in (
+                    ({"launcher": _safe_path(root, "working",
+                                             oknte_layout.LAUNCHER_NAME)},
+                     "launcher"),
+                    ({"profile": _safe_path(root, "working",
+                                            oknte_layout.PROFILE_DIR_NAME)},
+                     "profile"),
+                    ({"task": "cmd.exe"}, "task"),
+                    ({"stdout_name": "../evil.log"}, "stdout")):
+                merged = {"launcher": ok.profile_launcher, "task": "日常任务",
+                          "profile": ok.profile_dir,
+                          "stdout_name": "ok-nte-headless-elev04.log"}
+                merged.update(kwargs)
+                try:
+                    E.launch_runner(root=ok.root, **merged)
+                    raise AssertionError("应被预检拒绝: %r" % (frag,))
+                except elev_client.ElevRejected as e:
+                    assert frag in str(e), (frag, str(e))
+            # root 会话不一致：仍为 ElevError（非白名单类，允许既有回退语义）
+            E._root = os.path.realpath(tmp)
+            try:
+                E.launch_runner(root=ok.root, launcher=ok.profile_launcher,
+                                task="日常任务", profile=ok.profile_dir,
+                                stdout_name="ok-nte-headless-elev04.log")
+                raise AssertionError("root 不一致应被拒")
+            except elev_client.ElevRejected:
+                raise AssertionError("root 不一致不是白名单类拒绝")
+            except elev_client.ElevError as e:
+                assert "会话不一致" in str(e)
+        finally:
+            E._root, E._call = orig_root, orig_call
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case
+def test_elev04_layout_single_source_static():
+    """ELEV-04/W4c-R 静态守卫：布局单一来源接线＋elev_helper 镜像常量漂移守卫
+    ＋runner fail-fast 分支形态。"""
+    from app import elev_client
+    from app import elev_helper as eh
+    layout_src = Path(oknte_layout.__file__).read_text(encoding="utf-8")
+    # oknte_layout 纯净性：零仓库内 import（不得 from app / import app）
+    for bad in ("from app", "import app"):
+        assert bad not in layout_src, bad
+    # elev_helper 镜像常量与 oknte_layout 一致（漂移守卫——ELEV-04 根治核心）
+    assert eh.LAYOUT_APPS_SUBDIR == oknte_layout.APPS_SUBDIR
+    assert eh.LAUNCHER_NAME == oknte_layout.LAUNCHER_NAME
+    assert eh.PROFILE_DIR_NAME == oknte_layout.PROFILE_DIR_NAME
+    eh_src = Path(eh.__file__).read_text(encoding="utf-8")
+    assert "*LAYOUT_APPS_SUBDIR" in eh_src  # launcher_allowed/profile_allowed 均经镜像常量
+    assert 'os.path.join(root_real, "working"' not in eh_src  # 旧错误布局零残留
+    # oknte_adapter 生产侧接线：布局路径由 oknte_layout 派生
+    adapter_src = Path(adapter_mod.__file__).read_text(encoding="utf-8")
+    assert "oknte_layout.apps_dir(root)" in adapter_src
+    assert "oknte_layout.launcher_path(root)" in adapter_src
+    assert 'os.path.join(root, "data", "apps", "ok-nte")' not in adapter_src
+    assert adapter_mod.LAUNCHER_NAME == oknte_layout.LAUNCHER_NAME
+    # elev_client 预检类型面：白名单类拒绝 ElevRejected（与 helper op 拒绝同型）
+    ec_src = Path(elev_client.__file__).read_text(encoding="utf-8")
+    assert "raise ElevRejected(\"launcher 不在白名单路径内\")" in ec_src
+    assert "raise ElevRejected(\"profile 目录不在白名单内\")" in ec_src
+    # runner fail-fast：ElevRejected 分支先于通用回退、不回退直拉、整轮终止
+    runner_src = Path(runner_mod.__file__).read_text(encoding="utf-8")
+    sec_pos = runner_src.find("except elev_client.ElevRejected as e:")
+    gen_pos = runner_src.find("except Exception as e:  # noqa: BLE001")
+    assert 0 < sec_pos < gen_pos, "ElevRejected 分支必须在通用回退之前"
+    assert "按安全语义整轮终止，不回退直接拉起" in runner_src
+    assert "self.stop_event.set()" in runner_src
+    assert "_write_runtime(execution=None)  # 从未运行：撤销 planned 记录" in runner_src
+    assert runner_src.count("——回退直接拉起") == 1  # 仅通用 except 保留回退语义
 
 
 @case
@@ -10876,7 +11054,8 @@ def test_srv06_helper_exit_kills_children():
               " .tmp 临时根（跨卷且缺运行 DLL）")
         return
     os.makedirs(_safe_path(root, "working"), exist_ok=True)
-    profile = _safe_path(root, "working", "configs_planner")
+    profile = _safe_path(root, *oknte_layout.APPS_SUBDIR, "working",
+                   oknte_layout.PROFILE_DIR_NAME)
     os.makedirs(profile, exist_ok=True)
     launcher = _safe_path(profile, "run_planner_task.py")
     Path(launcher).write_text(
