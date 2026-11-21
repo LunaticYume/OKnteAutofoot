@@ -1494,6 +1494,44 @@ def _window_matches_process(w, proc_name):
     return bool(base) and _norm_process_name(base) == target
 
 
+# ELEV-03（2026-11-21 实机复现）：游戏关闭后 ②标题关键词兜底命中面板自身窗口
+# （process=OKntePlanner_main、title=异环养成规划器 含「异环」）——OCR 返回 HTTP
+# 200 假成功静默识别面板 UI，traverse 将提权点击面板自身窗口（高风险）。兜底候选
+# 一律排除面板自身窗口：优先按当前进程 PID（_ocr_windows 清单条目自带 pid 字段，
+# main.py:_ocr_ps_windows 段 GetWindowThreadProcessId 产物），其次按面板进程基名
+# 清单（EXE 改名/开发态 python 运行兜底），任一命中即排除（双保险叠加）。
+_SELF_PANEL_PROCESS_BASENAMES = frozenset(
+    _norm_process_name(n)
+    for n in ("OKntePlanner_main", "OKntePlanner", "pythonw", "python"))
+
+
+def _is_self_panel_window(w):
+    """ELEV-03 自窗口排除：判定清单窗口是否面板自身（仅 ②标题关键词兜底使用）。
+
+    身份依据（任一命中即排除，双保险叠加）：
+    - PID（最高优先级）：窗口 pid == 当前进程 PID（清单条目 pid 字段，PS 端
+      GetWindowThreadProcessId 直读）——面板窗口必属本进程，与 EXE 改名/打包
+      形态/开发态源码运行无关；
+    - 进程基名：process（PS Get-Process ProcessName，无 .exe 后缀）或 exe_path
+      文件名归一后 ∈ _SELF_PANEL_PROCESS_BASENAMES——覆盖 OKntePlanner_main
+      （打包）、OKntePlanner（旧命名）、pythonw/python（开发态）。
+    场景：游戏关闭后用户配置 game_window_keywords（如「异环」）命中面板窗口标题
+    「异环养成规划器」（webview.create_window 窗口）——修复前绑定面板窗口静默
+    识别面板 UI（HTTP 200 假成功）、traverse 提权点击自身窗口。
+    非自身窗口（如记事本）不在排除范围：兜底对它们保持既有语义（用户配置的
+    关键词兜底是合法特性）。"""
+    try:
+        if int(w.get("pid") or 0) == os.getpid():
+            return True
+    except (TypeError, ValueError):
+        pass  # pid 缺失/非法：落进程名判据，不因单字段异常漏判
+    if _norm_process_name(w.get("process")) in _SELF_PANEL_PROCESS_BASENAMES:
+        return True
+    exe = str(w.get("exe_path") or "").replace("/", "\\")
+    base = exe.rsplit("\\", 1)[-1] if exe else ""
+    return bool(base) and _norm_process_name(base) in _SELF_PANEL_PROCESS_BASENAMES
+
+
 def _ocr_windows():
     """枚举全部顶层可见窗口（PS EnumWindows；无标题窗口按 SEC-10 规则保留：
     游戏进程/UnrealWindow 类列入，其余排除）。
@@ -1610,7 +1648,8 @@ def _bind_game_window(windows=None):
     """游戏窗口绑定（v3 优先级）：
     ① 进程名匹配（设置 game_process_name，空=devices.json 自动）且窗口类 UnrealWindow，
        多个命中取可见面积最大（替代 Get-Process MainWindowHandle 启发式）；
-    ② 标题关键词兜底（设置 game_window_keywords，逗号分隔任一子串命中），取面积最大；
+    ② 标题关键词兜底（设置 game_window_keywords，逗号分隔任一子串命中；ELEV-03：
+       候选经 _is_self_panel_window 显式排除面板自身窗口），取面积最大；
     ③ 无命中 → (None, None, 全量清单)（调用方决定报错/回退）。
     返回 (hwnd, 命中窗口元数据|None, 全量窗口清单)；
     绑定结果 hwnd 每轮由 _OCR_PS_WINDOW 的 IsWindow 校验，失效走重绑/回退。"""
@@ -1633,8 +1672,12 @@ def _bind_game_window(windows=None):
     kws = [k.strip() for k in str(STATE.settings.get("game_window_keywords") or "").split(",")
            if k.strip()]
     if kws:
+        # ELEV-03：兜底候选显式排除面板自身窗口——游戏关闭时「异环」会命中面板
+        # 标题「异环养成规划器」，排除后落 ③ 无命中（None → 调用方 502 明确报错），
+        # 不再静默识别面板 UI / 提权点击自身（①分支进程名+UnrealWindow 类不受影响）
         cands = [w for w in windows
-                 if any(k in str(w.get("title") or "") for k in kws)]
+                 if any(k in str(w.get("title") or "") for k in kws)
+                 and not _is_self_panel_window(w)]
         if cands:
             best = max(cands, key=area)
             return int(best.get("hwnd")), best, windows

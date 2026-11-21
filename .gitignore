@@ -11,6 +11,8 @@ tools/_build/
 .zcode/
 .mimosa/
 *.log
+# CWD 漂移的运行时日志目录（如游戏启动器/外部组件按 CWD 写 logs/，2026-11-21）
+logs/
 
 # 用户/运行时数据（只保留 data/ 下的数据表：materials/yields/requirements/game_data/mysqil）
 data/backups/

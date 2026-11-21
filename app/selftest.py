@@ -14256,6 +14256,146 @@ def test_runtime_wiring_static():
         "tajiduo TOKEN_FILE 零改动（红线）"
 
 
+@case
+def test_elev03_bind_excludes_self_panel():
+    """ELEV-03 行为回归（六条；窗口清单经 _bind_game_window(windows=...) 注入，
+    无 PS）：游戏关闭后 ②标题关键词兜底（异环,Neverness）命中面板自身窗口
+    （process=OKntePlanner_main、title=异环养成规划器 含「异环」）——修复前
+    OCR HTTP 200 假成功静默识别面板 UI、traverse 提权点击自身；修复后兜底候选
+    经 _is_self_panel_window 排除面板自身（PID+进程基名双保险，任一命中即排除）
+    → 无候选 → None → _OcrWindowNotFound（端点 502 明确报错）。①分支（进程名+
+    UnrealWindow 类）不受影响。排除口径（实现如实断言）：排除仅限面板自身，
+    无关窗口保持既有兜底语义（见 ③）；窗口条目字段照 _ocr_windows 实际产物
+    （hwnd/class/title/pid/process/exe_path/w/h，main.py _OCR_PS_WINDOWS 段）。"""
+    import app.main as main_mod
+    game = {"hwnd": 2, "class": "UnrealWindow", "title": "异环  ", "pid": 11,
+            "process": "HTGame", "exe_path": "Y:\\Game\\HTGame.exe", "w": 800, "h": 600}
+    panel = {"hwnd": 900, "class": "Chrome_WidgetWin_1", "title": "异环养成规划器",
+             "pid": os.getpid(), "process": "OKntePlanner_main",
+             "exe_path": "X:\\Dist\\OKntePlanner_main.exe", "w": 1280, "h": 860}
+    with _StateGuard():
+        STATE.data["settings"] = dict(DEFAULT_SETTINGS)
+        settings = STATE.settings
+        settings["game_window_keywords"] = "异环,Neverness"  # ELEV-03 实测配置
+        # ① 游戏在跑：进程名+UnrealWindow 正常绑定，面板窗口同屏不干扰（回归①）
+        settings["game_process_name"] = "HTGame.exe"
+        hwnd, meta, allw = main_mod._bind_game_window([game, panel])
+        assert hwnd == 2 and meta["title"] == "异环  " and len(allw) == 2, (hwnd, meta)
+        # ② 仅面板窗口（ELEV-03 场景本体）：修复前兜底命中面板，修复后 None（回归②）
+        settings["game_process_name"] = "Nope.exe"
+        hwnd, meta, _allw = main_mod._bind_game_window([panel])
+        assert hwnd is None and meta is None, (hwnd, meta)
+        # ② 双保险分向：pid=本进程 但进程名陌生 → PID 判据独立排除；
+        # pid=外部进程 但 process/exe 基名属面板清单 → 进程名判据独立排除
+        by_pid = dict(panel, hwnd=901, process="WeirdShell", exe_path="")
+        assert main_mod._bind_game_window([by_pid])[0] is None, \
+            "PID 判据必须独立排除自身窗口"
+        by_name = dict(panel, hwnd=902, pid=9999)
+        assert main_mod._bind_game_window([by_name])[0] is None, \
+            "进程基名判据必须独立排除自身窗口"
+        by_exe = dict(panel, hwnd=903, pid=9999, process="",
+                      exe_path=panel["exe_path"])
+        assert main_mod._bind_game_window([by_exe])[0] is None, \
+            "exe_path 文件名判据必须独立排除自身窗口"
+        # ③ 仅无关窗口（process=notepad、title 含异环）：实现口径=排除仅限面板自身，
+        #    无关窗口保持既有兜底语义 → 照旧命中（面积最大；一致性口径与 docstring 相同）
+        note = {"hwnd": 3, "class": "Notepad", "title": "异环-记事本", "pid": 77,
+                "process": "notepad", "exe_path": "", "w": 500, "h": 400}
+        hwnd, meta, _allw = main_mod._bind_game_window([note])
+        assert hwnd == 3 and meta["process"] == "notepad", (hwnd, meta)
+        # ④ 空清单 → (None, None, [])（回归④基础：502 语义由 ⑤ 与静态用例补强）
+        assert main_mod._bind_game_window([]) == (None, None, []), "空清单不绑定"
+        # ⑤ traverse 无合法窗口零点击（回归④/⑤）：_ocr_windows 桩=仅面板窗口 →
+        #    _run_backpack_ocr 在 _ocr_traverse_page（点击起点）之前抛
+        #    _OcrWindowNotFound；审计夹具若被触达即写 click 行——断言零写入
+        os.makedirs(".tmp", exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="elev03_audit_", dir=".tmp") as tmp:
+            audit = _safe_path(tmp, "click_audit.log")
+
+            def _audit_traverse(*_a, **_k):
+                with open(audit, "a", encoding="utf-8") as f:
+                    f.write("click\n")  # 任何一次页遍历调用=一批点击的审计痕迹
+                return []
+
+            orig = (main_mod._ocr_windows, main_mod._ocr_traverse_page)
+            main_mod._ocr_windows = lambda: [panel]
+            main_mod._ocr_traverse_page = _audit_traverse
+            try:
+                try:
+                    main_mod._run_backpack_ocr(mode="traverse")
+                    raise AssertionError("仅面板窗口时必须抛 _OcrWindowNotFound")
+                except main_mod._OcrWindowNotFound as e:
+                    assert "未找到游戏窗口" in str(e), str(e)
+                assert not os.path.exists(audit), \
+                    "无合法游戏窗口时绝不允许触达点击遍历（审计零 click 写入）"
+            finally:
+                (main_mod._ocr_windows, main_mod._ocr_traverse_page) = orig
+        # ⑥ 游戏窗口恢复（回归⑥）：①进程名路径重新命中 → 绑定 HTGame；
+        #    兜底路径同态——仅关键词（进程未知）时排除面板后仍命中游戏
+        settings["game_process_name"] = "HTGame.exe"
+        hwnd, meta, _allw = main_mod._bind_game_window([panel, game])
+        assert hwnd == 2 and meta["class"] == "UnrealWindow", (hwnd, meta)
+        settings["game_process_name"] = "Nope.exe"
+        hwnd, meta, _allw = main_mod._bind_game_window([panel, game])
+        assert hwnd == 2, hwnd
+
+
+@case
+def test_elev03_bind_self_exclusion_static():
+    """ELEV-03 静态守卫（照 test_runtime_wiring_static 的 _src 风格，纯读源码、
+    零落盘）：读 app/main.py 断言——_bind_game_window ②兜底分支含自身排除调用
+    且位置序在 keywords 命中 return 之前（硬校验）；排除函数含 PID 判据（清单
+    pid 字段 + os.getpid()）与面板进程基名清单；_run_backpack_ocr 的
+    _OcrWindowNotFound → /api/inventory/ocr 502 链路形态、/api/ocr/capture
+    同一绑定无窗口 502 形态存在。"""
+    def _src(*parts):
+        return Path(_safe_path(_ROOT, *parts)).read_text(encoding="utf-8")
+
+    mn = _src("app", "main.py")
+
+    def _fn(src, name):
+        # 顶层函数体切片：def 行起、下一个顶层 def 止（嵌套 def 缩进不匹配 \ndef ）
+        start = src.index("def %s(" % name)
+        return src[start:src.index("\ndef ", start + 1)]
+
+    bind = _fn(mn, "_bind_game_window")
+    # ②兜底分支位置序硬校验：if kws: → 排除调用 → keywords 命中 return
+    i_kws = bind.index("if kws:")
+    assert bind.count("not _is_self_panel_window(w)") == 1, \
+        "自身排除调用必须恰好一处（②兜底候选过滤）"
+    i_call = bind.index("not _is_self_panel_window(w)")
+    i_ret = bind.index('return int(best.get("hwnd")), best, windows', i_call)
+    assert i_kws < i_call < i_ret, (i_kws, i_call, i_ret)
+    # ①分支保持原判据（进程名+UnrealWindow 类），其上不得叠自身排除
+    i_c1 = bind.index("cands = [w for w in windows if _window_matches_process(")
+    assert i_call > i_c1, "①分支不得引入自身排除（①语义不变）"
+    assert "_OCR_GAME_WINDOW_CLASS]" in bind, "①分支 UnrealWindow 类判据保持"
+
+    excl = _fn(mn, "_is_self_panel_window")
+    assert "os.getpid()" in excl and '"pid"' in excl, \
+        "排除函数必须含 PID 身份判据（清单 pid 字段 + 当前进程 PID）"
+    assert "_SELF_PANEL_PROCESS_BASENAMES" in excl, \
+        "排除函数必须含面板进程基名清单判据"
+    assert '"OKntePlanner_main", "OKntePlanner", "pythonw", "python"' in mn, \
+        "面板进程基名清单四项必须齐全"
+
+    ocr = _fn(mn, "_run_backpack_ocr")
+    assert ocr.count("raise _OcrWindowNotFound(") == 2, \
+        "初绑与页间重绑两处都必须抛 _OcrWindowNotFound"
+    # 502 链路形态：/api/inventory/ocr 捕获 _OcrWindowNotFound → self._send(502)
+    i_catch = mn.index("except _OcrWindowNotFound as e:")
+    assert mn.index('self._send(502, {"ok": False, "error": str(e)})', i_catch) \
+        < mn.index('elif path == "/api/ocr/cancel"', i_catch), \
+        "_OcrWindowNotFound 必须在该分支内转 502 明确报错"
+    # capture 共用绑定：无 hwnd → 502（同一 _bind_game_window，无第二套绑定路径）
+    i_cap = mn.index('path == "/api/ocr/capture"')
+    cap = mn[i_cap:mn.index('path == "/api/ocr/layout"', i_cap)]
+    assert "hwnd, _meta, _wins = _bind_game_window()" in cap, \
+        "capture 必须走同一 _bind_game_window 绑定"
+    assert "if not hwnd:" in cap and "self._send(502," in cap, \
+        "capture 无窗口必须 502 明确报错"
+
+
 def main():
     stress = "--stress" in sys.argv[1:]
     cases = CASES + STRESS_CASES if stress else CASES
