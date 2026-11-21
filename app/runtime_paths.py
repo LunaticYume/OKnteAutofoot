@@ -19,9 +19,12 @@ endpoint 等）保持 %LOCALAPPDATA%\\OKntePlanner\\data 不动——用户数�
   （键含全部输入，环境变量变化自然失效）；degrade_notice(kind) 提供每进程每
   kind 一次的降级告警文本（模块级去重），由调用方 print 一行。
 - _MEI 例外：onefile bootloader 的解包目录发生在任何 Python 代码运行之前，
-  本模块无法兜底——由 tools/build_exe.py 单文件档 launcher 壳设 TEMP/TMP 指向
-  EXE 旁 runtime_tmp 实现（--runtime-tmpdir 相对值按 CWD 解析不可靠，
-  .tmp/b3-w4br3-probe 产物为探针实测证据，见 build_exe.LAUNCHER_SINGLE_CS）。
+  本模块无法兜底——W4b-R5 起 launcher 壳已撤销，_MEI 迁出 C 盘改由构建期
+  PyInstaller 绝对 --runtime-tmpdir（tools/build_exe.py RUNTIME_TMPDIR=
+  E:/OKntePlannerRuntime/temp）实现：构建期 runtime-tmpdir 是唯一可控点，
+  boot 层无运行时 fallback 的物理限制不变。探针实测（.tmp/b3-w4br5-probe/，
+  PyInstaller 6.22.3）：不同 CWD 两次启动 _MEI 全落 E；目录不存在 bootloader
+  自动创建（含多级父目录）；创建失败明确报错退出，不静默回落 %TEMP%。
 - 纯标准库实现。
 """
 import os

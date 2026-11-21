@@ -9552,12 +9552,12 @@ def test_user_data_cli():
     （no-clobber 先到先得）；--apply 必需（缺失或单传 --dry-run → exit 2 绝不写盘）；
     --dry-run --apply 演练零写入；源目录不存在 → exit 2；正式迁移只复制不删源、
     不覆盖已有文件、不写 .migrated；输出只有计数与路径、无文件内容。
-    SKIP 守卫：dist 不携带 tools/（build_dist 仅复制 app/ 与 tests/），仓库根运行
-    才有效。子进程 env LOCALAPPDATA=临时目录、cwd=_ROOT，绝不碰真实 %LOCALAPPDATA%。"""
+    SKIP 守卫：dist 不携带 tools/，构建脚本断言仓库根运行才有效。子进程 env
+    LOCALAPPDATA=临时目录、cwd=_ROOT，绝不碰真实 %LOCALAPPDATA%。"""
     import subprocess as _sp
     if not os.path.isdir(os.path.join(_ROOT, "tools")):
-        print("SKIP test_user_data_cli: dist 不携带 tools/（build_dist 仅复制"
-              " app/ 与 tests/），仓库根运行才有效")
+        print("SKIP test_user_data_cli: dist 不携带 tools/，构建脚本断言"
+              "仓库根运行才有效")
         return
 
     def run_cli(env_dir, *cli_args):
@@ -9649,7 +9649,7 @@ def test_frozen_data_dir_relocation():
             json.dumps({"settings": {"oknte_root": "FAKE-ROOT-PLACEHOLDER"}}),
             encoding="utf-8")
         Path(_safe_path(bundled, "backups", "a.json")).write_text("{}", encoding="utf-8")
-        fake_exe = os.path.join(fake_exe_dir, "OKntePlanner.exe")
+        fake_exe = os.path.join(fake_exe_dir, "异环养成规划器.exe")  # W4b-R5 唯一发布 EXE 名
         src_snapshot = {}
         for base, _dirs, files in os.walk(fake_exe_dir):
             for name in files:
@@ -9724,19 +9724,21 @@ def test_frozen_data_dir_relocation():
 
 @case
 def test_build_dist_data_gate():
-    """tools.build_exe.check_dist_data_clean 打包前数据闸门回归（2026-11-12）：
-    仅含 keepList 出厂集（含 mysqil/.bak、sites/source_crosscheck.json）的假 dist
-    树零 offender；掺入个人/运行时数据（state.json*/backups//tajiduo_token.json/
-    edge_profile//sites/guide_sites.json/avatars//game_data_custom.json/
-    ocr_layout.json/materials.json.pre-manual.bak）的假 dist 树 offender 全列出、
-    mysqil 子树不误报；纯检查不删/不改任何文件（树前后逐字节一致）；结构断言：
-    main 源码中 check_dist_data_clean 调用点先于 build_dist() 调用点（gate 必须发
-    生在 rmtree 之前，否则闸门形同虚设而全部用例仍绿）。
-    SKIP 守卫：dist 不携带 tools/（build_dist 仅复制 app/ 与 tests/），仓库根运行才有效。"""
+    """tools.build_exe 打包前数据闸门回归（2026-11-12，W4b-R5 single-only 口径）：
+    check_dist_data_clean 仅扫 single 档 data/（默认 dist_roots==(DIST_SINGLE,)，
+    目录档已停止生成）；仅含 keepList 出厂集（含 mysqil/.bak、
+    sites/source_crosscheck.json）的假 dist 树零 offender；掺入个人/运行时数据
+    （state.json*/backups//tajiduo_token.json/edge_profile//sites/guide_sites.json/
+    avatars//game_data_custom.json/ocr_layout.json/materials.json.pre-manual.bak）
+    的假 dist 树 offender 全列出、mysqil 子树不误报；纯检查不删/不改任何文件
+    （树前后逐字节一致）；结构断言（W4b-R5 main 流程次序）：数据闸最前 → rmtree
+    清理 → 构建 single → verify_dist → 发布形态硬 gate，目录版构建函数不得再被
+    main() 调用。
+    SKIP 守卫：dist 不携带 tools/，构建脚本断言仓库根运行才有效。"""
     import inspect
     if not os.path.isdir(os.path.join(_ROOT, "tools")):
-        print("SKIP test_build_dist_data_gate: dist 不携带 tools/（build_dist 仅复制"
-              " app/ 与 tests/），仓库根运行才有效")
+        print("SKIP test_build_dist_data_gate: dist 不携带 tools/，构建脚本断言"
+              "仓库根运行才有效")
         return
     from tools import build_exe as build_mod
 
@@ -9766,8 +9768,8 @@ def test_build_dist_data_gate():
 
     tmp = tempfile.mkdtemp(prefix="oknte_gate_")
     try:
-        clean_root = fake_dist(_safe_path(tmp, "OKntePlanner"), personal=False)
-        dirty_root = fake_dist(_safe_path(tmp, "OKntePlanner_single"), personal=True)
+        clean_root = fake_dist(_safe_path(tmp, "OKntePlanner_single"), personal=False)
+        dirty_root = fake_dist(_safe_path(tmp, "OKntePlanner_single_dirty"), personal=True)
         snap = {}
         for base, _dirs, files in os.walk(tmp):
             for name in files:
@@ -9776,6 +9778,10 @@ def test_build_dist_data_gate():
         # 干净树：零 offender（mysqil 子树与 sites/source_crosscheck.json 不误报）
         offenders = build_mod.check_dist_data_clean((clean_root,))
         assert offenders == [], offenders
+        # 目录档扫描面已移除（W4b-R5）：默认参数只含 single 档根
+        assert build_mod.check_dist_data_clean.__defaults__ == \
+            ((build_mod.DIST_SINGLE,),), \
+            build_mod.check_dist_data_clean.__defaults__
         # 脏树：个人/运行时数据全列出，出厂集与 mysqil 子树不误报
         offenders = build_mod.check_dist_data_clean((dirty_root,))
         prefix = os.path.basename(dirty_root)
@@ -9788,9 +9794,6 @@ def test_build_dist_data_gate():
             os.path.join("sites", "guide_sites.json"),
         )}
         assert set(offenders) == expected, (sorted(offenders), sorted(expected))
-        # 双树同扫：干净树仍零误报
-        both = build_mod.check_dist_data_clean((clean_root, dirty_root))
-        assert set(both) == expected, sorted(both)
         # 纯检查不删/不改任何文件（树前后逐字节一致）
         snap2 = {}
         for base, _dirs, files in os.walk(tmp):
@@ -9798,12 +9801,19 @@ def test_build_dist_data_gate():
                 p = os.path.join(base, name)
                 snap2[p] = Path(p).read_bytes()
         assert snap2 == snap, "check_dist_data_clean 必须是纯检查，不得动任何文件"
-        # 结构断言：gate 调用点必须先于 build_dist()（先于其 rmtree(DIST)）
+        # 结构断言（W4b-R5 main 流程次序）：数据闸最前 → rmtree 清理 → 构建 single
+        # → verify_dist → 发布形态硬 gate；目录版构建函数不得再被 main() 调用
         src = inspect.getsource(build_mod.main)
         i_gate = src.find("check_dist_data_clean")
-        i_build = src.find("build_dist()")
-        assert i_gate != -1 and i_build != -1 and i_gate < i_build, \
-            "check_dist_data_clean 必须在 main() 中先于 build_dist() 调用（gate 须在 rmtree 之前）"
+        i_rm = src.find("rmtree(DIST")
+        i_build = src.find("try_pyinstaller_single")
+        i_verify = src.find("verify_dist")
+        i_hard = src.find("check_dist_product_gates")
+        assert -1 not in (i_gate, i_rm, i_build, i_verify, i_hard), \
+            (i_gate, i_rm, i_build, i_verify, i_hard)
+        assert i_gate < i_rm < i_build < i_verify < i_hard, \
+            "main 流程次序必须为 数据闸→清理→构建→验证→发布形态硬 gate"
+        assert "build_dist" not in src, "目录版构建函数不得再被 main() 调用（W4b-R5）"
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -10655,10 +10665,10 @@ def test_runner_helper_launch_stdout_stop():
 
 @case
 def test_sec10_deelevate_static():
-    """SEC-10 去提权静态源检：三处提权封装（run_panel.bat RunAs / csc 清单
-    requireAdministrator / PyInstaller --uac-admin）全部摘除且改为 asInvoker；
-    辅助进程接线（入口分流、白名单 stop_runner、is_running 补盲）存在；
-    elev_helper 保持纯标准库（不 import 本仓库模块）。"""
+    """SEC-10 去提权静态源检：提权封装全部摘除（run_panel.bat RunAs、PyInstaller
+    --uac-admin；W4b-R5 起 launcher 壳与 csc 清单整体移除，PyInstaller EXE 无清单
+    默认 asInvoker 不提权）；辅助进程接线（入口分流、白名单 stop_runner、
+    is_running 补盲）存在；elev_helper 保持纯标准库（不 import 本仓库模块）。"""
     if not os.path.isdir(os.path.join(_ROOT, "tools")):
         print("SKIP test_sec10_deelevate_static: dist 不携带 tools/（仓库根运行才有效）")
         return
@@ -10666,9 +10676,10 @@ def test_sec10_deelevate_static():
     assert "RunAs" not in bat and "net session" not in bat, \
         "run_panel.bat 仍含提权封装"
     build_src = Path(_safe_path(_ROOT, "tools", "build_exe.py")).read_text(encoding="utf-8")
-    assert "requireAdministrator" not in build_src, "csc 清单仍提权"
+    assert "requireAdministrator" not in build_src, "源码中仍有提权清单字样"
     assert "--uac-admin" not in build_src, "PyInstaller 仍提权"
-    assert 'level="asInvoker"' in build_src, "清单未改 asInvoker"
+    assert "APP_MANIFEST" not in build_src and "find_csc" not in build_src, \
+        "launcher 壳/csc 清单编译已整体移除（W4b-R5）：EXE 无清单=默认 asInvoker 不提权"
     main_src = Path(_safe_path(_ROOT, "app", "main.py")).read_text(encoding="utf-8")
     assert "--oknte-elev-helper" in main_src, "面板入口缺少辅助进程分流"
     helper_src = Path(_safe_path(_ROOT, "app", "elev_helper.py")).read_text(encoding="utf-8")
@@ -14162,14 +14173,14 @@ def test_runtime_wiring_static():
     """W4b-R3 静态守卫（照 test_tjd04_dacl_wiring_static 的 _src 风格）：
     读源码断言 runtime_paths 五处接线存在——main panel.log/crash.log/webview、
     runner live/headless、elev_client config.runtime_logs 下发、elev_helper
-    审计与 stdout 归属闸换运行缓存根；build_exe.py 为 launcher 形态（探针结论：
-    --runtime-tmpdir 相对值按 CWD 解析不可靠，不得出现在 PyInstaller 参数）；
-    README deprecated 标注与运行缓存说明存在。负断言：state.py/tajiduo_client.py
-    路径常量零改动（内容比对）。SKIP 守卫：dist 不携带 tools/（build_dist 仅
-    复制 app/ 与 tests/），仓库根运行才有效。"""
+    审计与 stdout 归属闸换运行缓存根；build_exe.py 为单文件档唯一形态（W4b-R5：
+    绝对 --runtime-tmpdir E 路径 + 中文名 EXE + 发布形态硬 gate，launcher 壳与
+    csc 编译链整体移除）；README 唯一发布 EXE 与运行缓存说明存在。负断言：
+    state.py/tajiduo_client.py 路径常量零改动（内容比对）。SKIP 守卫：dist 不
+    携带 tools/，构建脚本断言仓库根运行才有效。"""
     if not os.path.isdir(os.path.join(_ROOT, "tools")):
-        print("SKIP test_runtime_wiring_static: dist 不携带 tools/（build_dist 仅复制"
-              " app/ 与 tests/，构建脚本/README 断言仓库根运行才有效）")
+        print("SKIP test_runtime_wiring_static: dist 不携带 tools/，构建脚本/README"
+              " 断言仓库根运行才有效")
         return
 
     def _src(*parts):
@@ -14233,18 +14244,26 @@ def test_runtime_wiring_static():
         "elev_helper 纯标准库边界保持（绝不 import 本仓库其他模块）"
 
     bx = _src("tools", "build_exe.py")
-    assert "LAUNCHER_SINGLE_CS" in bx and "def _compile_single_launcher" in bx, \
-        "单文件档必须为 launcher 形态（W4b-R3 探针结论②）"
-    assert 'psi.EnvironmentVariables["TEMP"] = dir' in bx \
-        and 'psi.EnvironmentVariables["TMP"] = dir' in bx, \
-        "launcher 必须设 TEMP/TMP 指向 EXE 旁 runtime_tmp（探针②实测重定向生效）"
-    assert '"--runtime-tmpdir"' not in bx, \
-        "PyInstaller 参数不得含 --runtime-tmpdir（探针①：相对值按 CWD 解析不可靠）"
+    assert "LAUNCHER_CS" not in bx and "find_csc" not in bx \
+        and "_compile_single_launcher" not in bx, \
+        "launcher 壳已撤销（W4b-R5）：launcher 源码常量与 csc 编译链必须整体移除"
+    assert 'RUNTIME_TMPDIR = "E:/OKntePlannerRuntime/temp"' in bx, \
+        "PyInstaller 必须以绝对 E 路径常量指定运行缓存目录（W4b-R5 探针实测形态）"
+    assert '"--runtime-tmpdir", RUNTIME_TMPDIR' in bx, \
+        "PyInstaller 参数必须接线绝对 runtime-tmpdir（R3 探针：相对值按 CWD 解析不可靠）"
+    assert '"--name", "异环养成规划器"' in bx, \
+        "唯一发布 EXE 名=异环养成规划器（中文名构建实测可行）"
+    assert "def check_dist_product_gates" in bx, \
+        "发布形态硬 gate（PRODUCT_EXE_COUNT==1 + 目录版不存在）必须存在"
 
     rd = _src("README.md")
-    assert "deprecated" in rd, "README 必须标注目录版 deprecated"
+    assert "异环养成规划器.exe" in rd and "OKntePlanner_single" in rd, \
+        "README 必须写明唯一发布 EXE（W4b-R5）"
+    assert "OKntePlannerRuntime\\temp" in rd, \
+        "README 必须写明 _MEI 解包目录（W4b-R5 探针实测形态）"
     assert "OKntePlannerRuntime" in rd and "OKNTE_RUNTIME_ROOT" in rd, \
         "README 必须写明运行缓存位置与覆盖变量"
+    assert "deprecated" not in rd, "目录版彻底移除后 README 不得再标 deprecated 目录版"
 
     st = _src("app", "state.py")
     assert 'USER_DATA_DIR = os.path.join(' in st and '"OKntePlanner", "data")' in st, \
@@ -14260,7 +14279,10 @@ def test_runtime_wiring_static():
 def test_elev03_bind_excludes_self_panel():
     """ELEV-03 行为回归（六条；窗口清单经 _bind_game_window(windows=...) 注入，
     无 PS）：游戏关闭后 ②标题关键词兜底（异环,Neverness）命中面板自身窗口
-    （process=OKntePlanner_main、title=异环养成规划器 含「异环」）——修复前
+    （process=异环养成规划器、title=异环养成规划器 含「异环」；W4b-R5 起
+    唯一 EXE 即主程序，自窗口排除由 PID 判据承载——main.py 基名清单属红线
+    不碰且未含新 EXE 名，基名判据对生产名不覆盖、对旧名/开发态仍生效，
+    双保险分向场景以清单内旧名验证基名判据机制本身）——修复前
     OCR HTTP 200 假成功静默识别面板 UI、traverse 提权点击自身；修复后兜底候选
     经 _is_self_panel_window 排除面板自身（PID+进程基名双保险，任一命中即排除）
     → 无候选 → None → _OcrWindowNotFound（端点 502 明确报错）。①分支（进程名+
@@ -14271,8 +14293,8 @@ def test_elev03_bind_excludes_self_panel():
     game = {"hwnd": 2, "class": "UnrealWindow", "title": "异环  ", "pid": 11,
             "process": "HTGame", "exe_path": "Y:\\Game\\HTGame.exe", "w": 800, "h": 600}
     panel = {"hwnd": 900, "class": "Chrome_WidgetWin_1", "title": "异环养成规划器",
-             "pid": os.getpid(), "process": "OKntePlanner_main",
-             "exe_path": "X:\\Dist\\OKntePlanner_main.exe", "w": 1280, "h": 860}
+             "pid": os.getpid(), "process": "异环养成规划器",
+             "exe_path": "X:\\Dist\\异环养成规划器.exe", "w": 1280, "h": 860}
     with _StateGuard():
         STATE.data["settings"] = dict(DEFAULT_SETTINGS)
         settings = STATE.settings
@@ -14287,14 +14309,18 @@ def test_elev03_bind_excludes_self_panel():
         assert hwnd is None and meta is None, (hwnd, meta)
         # ② 双保险分向：pid=本进程 但进程名陌生 → PID 判据独立排除；
         # pid=外部进程 但 process/exe 基名属面板清单 → 进程名判据独立排除
+        # （W4b-R5：生产 EXE 改名 异环养成规划器，main.py 基名清单属红线不碰、
+        # 未含新名——基名判据覆盖旧名/开发态，自窗口排除以 PID 判据承载；
+        # 本分向以清单内旧名 OKntePlanner_main 验证基名判据机制本身）
         by_pid = dict(panel, hwnd=901, process="WeirdShell", exe_path="")
         assert main_mod._bind_game_window([by_pid])[0] is None, \
             "PID 判据必须独立排除自身窗口"
-        by_name = dict(panel, hwnd=902, pid=9999)
+        by_name = dict(panel, hwnd=902, pid=9999, process="OKntePlanner_main",
+                       exe_path="")
         assert main_mod._bind_game_window([by_name])[0] is None, \
             "进程基名判据必须独立排除自身窗口"
         by_exe = dict(panel, hwnd=903, pid=9999, process="",
-                      exe_path=panel["exe_path"])
+                      exe_path="X:\\Dist\\OKntePlanner_main.exe")
         assert main_mod._bind_game_window([by_exe])[0] is None, \
             "exe_path 文件名判据必须独立排除自身窗口"
         # ③ 仅无关窗口（process=notepad、title 含异环）：实现口径=排除仅限面板自身，
