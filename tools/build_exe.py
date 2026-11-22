@@ -231,19 +231,118 @@ def _generate_icon(path):
     generate_icon(path)
 
 
+def _tree_hash(root):
+    """目录树逐文件 sha256 清单（W5A 用户数据不变硬闸）：{小写相对路径: sha256}；
+    根不存在返回 {"__absent__": "1"}（首启前用户数据目录可能尚未创建）。"""
+    import hashlib
+    if not os.path.isdir(root):
+        return {"__absent__": "1"}
+    out = {}
+    for base, _dirs, files in os.walk(root):
+        for name in files:
+            p = os.path.join(base, name)
+            h = hashlib.sha256()
+            with open(p, "rb") as f:
+                for chunk in iter(lambda: f.read(65536), b""):
+                    h.update(chunk)
+            out[os.path.relpath(p, root).lower()] = h.hexdigest()
+    return out
+
+
+# 测试夹具路径签名（W5A 防污染闸 §9）：B3F-07 族两度实证的残留形态来源前缀 +
+# 系统临时目录签名。仓库 data/state.json 命中任一即视为测试污染未恢复。
+ISOLATION_SIGNATURES = (
+    "oknte_e2e_", "selftest-data-", "smoke-data-", "oknte_probe",
+    "appdata\\local\\temp", "\\temp\\oknte",
+)
+
+
+def check_test_state_isolation(user_before):
+    """W5A 测试/真实 state 隔离防污染闸（任务书 §9，构建收尾调用）。三项检查：
+      ① git 工作区必须净（porcelain 空——冻结候选自净树构建的纪律延续）；
+      ② 仓库 data/state.json 不得含测试夹具路径签名（B3F-07 族两度实证形态：
+        e2e 夹具 oknte_root 残留进真实 state 文件）；
+      ③ 用户真实数据树（%LOCALAPPDATA%\\OKntePlanner\\data）与构建验证开始前
+        逐文件 sha256 完全一致——构建全程（自测/冒烟/EXE 实跑探针）零接触用户数据。
+    返回违例描述清单；非空 → main() 退出非零。"""
+    violations = []
+    try:
+        r = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT,
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=30, shell=False)
+        if (r.returncode != 0) or (r.stdout or "").strip():
+            violations.append("git 工作区不净（porcelain）: "
+                              f"{(r.stdout or '').strip()[:400] or r.stderr[:200]}")
+    except (OSError, subprocess.TimeoutExpired) as e:
+        violations.append(f"git porcelain 检查失败: {e}")
+    try:
+        blob = (Path(ROOT) / "data" / "state.json").read_text(
+            encoding="utf-8").lower().replace("\\\\", "\\")
+    except OSError:
+        blob = ""
+    for sig in ISOLATION_SIGNATURES:
+        if sig in blob:
+            violations.append(
+                f"仓库 data/state.json 含测试夹具签名 {sig!r}（B3F-07 族形态）")
+    user_after = _tree_hash(os.path.join(
+        os.environ.get("LOCALAPPDATA") or os.path.expanduser("~/AppData/Local"),
+        "OKntePlanner", "data"))
+    changed = sorted(k for k in set(user_before) | set(user_after)
+                     if user_before.get(k) != user_after.get(k))
+    if changed:
+        shown = ", ".join(changed[:8]) + ("…" if len(changed) > 8 else "")
+        violations.append(f"用户真实数据树在构建验证期间发生变化（{len(changed)} 个文件）: {shown}")
+    return violations
+
+
+def _pe_head_ok(path):
+    """PE 头校验（MZ）：B3F-07 族两度实证 e2e 夹具 python.exe 是 touch() 空文件，
+    仅 isfile 即采信会让构建下游以 WinError 193「%1 不是有效的 Win32 应用」爆炸。"""
+    try:
+        return Path(path).read_bytes()[:2] == b"MZ"
+    except OSError:
+        return False
+
+
+def _valid_embedded_python(path):
+    return bool(path) and os.path.isfile(path) and _pe_head_ok(path)
+
+
 def embedded_python():
+    """构建/验证用 Python 定位（W5A §7 治理：仓库 data/state.json 不再是构建单点
+    真源——最多作兼容回退，且必须通过 isfile+MZ 校验）。
+
+    优先级：OKNTE_PY 环境变量（显式构建输入，校验 PE 头）→ 仓库 state.json 记录的
+    oknte_root（兼容回退，路径经 app/oknte_layout.python_exe 单一布局来源派生，
+    收编此前构建侧第三处手拼布局）→ EMBEDDED_DEFAULT 常量。全部候选无效 →
+    RuntimeError 列出全部候选与 OKNTE_PY 补救指引（绝不静默返回无效路径让下游
+    炸出难定位错误）。"""
     override = os.environ.get("OKNTE_PY", "").strip()
     if override:
+        if not _valid_embedded_python(override):
+            raise RuntimeError(
+                f"OKNTE_PY 指定的构建 Python 无效（缺失或非 PE 可执行）: {override}")
         return override
-    try:  # 优先用本机 state.json 记录的 oknte_root 定位内嵌 Python
-        with open(os.path.join(ROOT, "data", "state.json"), encoding="utf-8") as f:
-            root = json.load(f)["settings"]["oknte_root"]
-        cand = os.path.join(root, "data", "apps", "ok-nte", "python", "python.exe")
-        if os.path.isfile(cand):
+    candidates = []
+    try:
+        if ROOT not in sys.path:  # 直接运行 tools/build_exe.py 时 sys.path 不含项目根
+            sys.path.insert(0, ROOT)
+        from app import oknte_layout
+        root = json.loads((Path(ROOT) / "data" / "state.json").read_text(
+            encoding="utf-8"))["settings"]["oknte_root"]
+        cand = oknte_layout.python_exe(root)
+        candidates.append(cand)
+        if _valid_embedded_python(cand):
             return cand
     except (OSError, ValueError, KeyError):
         pass
-    return EMBEDDED_DEFAULT
+    candidates.append(EMBEDDED_DEFAULT)
+    if _valid_embedded_python(EMBEDDED_DEFAULT):
+        return EMBEDDED_DEFAULT
+    raise RuntimeError(
+        "无法定位可用构建 Python（isfile+MZ 校验均未通过），已尝试：\n  "
+        + "\n  ".join(candidates)
+        + "\n可用环境变量 OKNTE_PY 显式指定有效 python.exe")
 
 
 def verify_dist(py):
@@ -645,8 +744,21 @@ def main():
         print(f"  已移除废弃目录版残留: {DIST}")
     try:
         single = try_pyinstaller_single(py)      # 唯一发布 EXE（主档必成）
+        # W5A 用户数据不变硬闸（§8/§9）：以自测/冒烟/EXE 探针开跑前的树哈希为基准，
+        # 验证结束后比对——构建全程零接触用户真实数据。
+        user_before = _tree_hash(os.path.join(
+            os.environ.get("LOCALAPPDATA") or os.path.expanduser("~/AppData/Local"),
+            "OKntePlanner", "data"))
         checks = verify_dist(py)                 # 源码树自测 + EXE 实跑探活
+        iso_violations = check_test_state_isolation(user_before)
         violations = check_dist_product_gates()  # 发布形态硬 gate
+        if iso_violations:
+            print("== W5A 测试/真实 state 隔离闸未通过 ==")
+            for v in iso_violations:
+                print(f"  {v}")
+            return 1
+        checks.append("W5A state 隔离闸（porcelain 净 + 仓库 state 无夹具签名 + "
+                      "用户数据树哈希不变）✅")
         if violations:
             print("== 发布形态硬 gate 未通过 ==")
             for v in violations:

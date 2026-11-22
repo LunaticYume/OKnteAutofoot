@@ -28,6 +28,7 @@ APPS_SUBDIR = ("data", "apps", "ok-nte")
 WORKING_DIR_NAME = "working"
 PROFILE_DIR_NAME = "configs_planner"
 LAUNCHER_NAME = "run_planner_task.py"
+PYTHON_REL = ("python", "python.exe")  # ok-nte 内嵌解释器（无头任务/构建定位共用）
 
 
 def apps_dir(root):
@@ -48,3 +49,12 @@ def profile_dir(root):
 def launcher_path(root):
     """<root>/data/apps/ok-nte/working/configs_planner/run_planner_task.py。"""
     return os.path.join(profile_dir(root), LAUNCHER_NAME)
+
+
+def python_exe(root):
+    """<root>/data/apps/ok-nte/python/python.exe（ok-nte 内嵌解释器）。
+
+    oknte_adapter.OkNte（无头任务拉起）与 tools/build_exe.embedded_python 的
+    state.json 兼容回退按本函数派生（W5A 收编：此前构建侧手拼第三处布局，
+    与 ELEV-04 同类的 fixture-vs-reality 漂移风险面）。"""
+    return os.path.join(apps_dir(root), *PYTHON_REL)

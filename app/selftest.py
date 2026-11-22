@@ -25,10 +25,14 @@ stress 档用法（B2.7B 起，python -m app.selftest --stress）：
 约束：
 - 绝不写入 D:/GamingAssistant/ok-nte 下任何文件；ok-nte 根目录一律用 tempfile 伪造。
 - 绝不真正拉起 ok-nte 子进程；runner 用例把 app.runner.OkNte 换成假对象。
-- make_plan/runner 会写项目 data/state.json：进入用例前备份、finally 里恢复（原本不存在则删除）。
+- 全部状态族写入落 OKNTE_DATA_ROOT 隔离根（W5A，2026-11-22）：仓库 data/ 与
+  %LOCALAPPDATA% 用户数据零接触；B3F-07 迟到后台写形态（守护线程越 guard 生命周期
+  迟到 STATE.save()）被结构性排除——隔离不依赖任何守卫生命周期。隔离根每进程
+  独占（.tmp/selftest-data-<uuid>），退出时清理。
 
 每个用例 print 一行 PASS/FAIL；全部通过退出码 0，否则 1。
 """
+import atexit
 import copy
 import errno
 import hashlib
@@ -48,6 +52,18 @@ from pathlib import Path
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
+
+# ---- W5A 测试数据隔离根（B3F-07 族根治，2026-11-22）——必须先于任何 app 导入 ----
+# 进程独占目录（仓库 .tmp/ 下，E 盘零 C 盘落地）：os.environ 注入 OKNTE_DATA_ROOT
+# 后 app.state 导入期即把 DATA_DIR/STATE_FILE 及全部状态族文件（凭据/备份/出厂数据表
+# 读取）整体落到隔离根；仓库 data/ 与 %LOCALAPPDATA% 用户数据在本进程内只读/零接触。
+# 迟到后台写（B3F-07 两度实证：守护线程越 guard 生命周期迟到 STATE.save()）在
+# 结构上只能落隔离根——隔离不依赖任何守卫生命周期。
+_TMP_BASE = os.path.join(_ROOT, ".tmp")
+os.makedirs(_TMP_BASE, exist_ok=True)
+_DATA_ROOT = tempfile.mkdtemp(prefix="selftest-data-", dir=_TMP_BASE)
+os.environ["OKNTE_DATA_ROOT"] = _DATA_ROOT
+atexit.register(shutil.rmtree, _DATA_ROOT, True)
 
 from app import game_data as game_data_mod  # noqa: E402
 from app import oknte_adapter as adapter_mod  # noqa: E402
@@ -101,7 +117,9 @@ def _contained(path, base):
     return p
 
 
-# 唯一允许触碰的项目真实文件：data/state.json（_StateGuard 备份/恢复专用，经校验）
+# _StateGuard 备份/恢复专用路径（经越界校验）。W5A 起 STATE_FILE 已被隔离根重定向
+# （.tmp/selftest-data-*/state.json）——守卫快照/恢复的是隔离根内文件，仓库 data/
+# 与 %LOCALAPPDATA% 用户数据不在其触碰面内。
 _STATE_FILE_SAFE = _safe_path(os.path.dirname(os.path.abspath(STATE_FILE)),
                               os.path.basename(STATE_FILE))
 
@@ -109,7 +127,9 @@ _STATE_FILE_SAFE = _safe_path(os.path.dirname(os.path.abspath(STATE_FILE)),
 # ---------- 公共工具 ----------
 
 class _StateGuard:
-    """备份 data/state.json 与 STATE 内存数据，退出时恢复（原本不存在则删除文件）。
+    """备份隔离根 state.json（W5A：STATE_FILE 已重定向 .tmp/selftest-data-*）与
+    STATE 内存数据，退出时恢复（原本不存在则删除文件）——用例间状态文件互不残留，
+    仓库 data/ 与用户真实数据不在守卫触碰面内。
 
     同时把甲硬币产量夹到 7（生产默认为 0=未校准跳过）：planner/runner 测试依赖
     coin 可刷；夹具退出时恢复生产值，保证测试与生产数据文件解耦。
@@ -215,7 +235,7 @@ def _build_fake_oknte(tmp, logs=None, cfg=None):
 
 @case
 def test_adapter_compat_write_backup():
-    tmp = tempfile.mkdtemp(prefix="oknte_selftest_")
+    tmp = tempfile.mkdtemp(prefix="oknte_selftest_", dir=_TMP_BASE)
     backup_dir = os.path.join(tmp, "planner_backups")
     orig_data_dir = adapter_mod.DATA_DIR
     try:
@@ -271,7 +291,7 @@ def test_dxgi_probe_warning():
     - /api/bootstrap 与前端消费字段成对（静态源校验，无真服务）。"""
     import inspect
     import app.main as main_mod
-    tmp = tempfile.mkdtemp(prefix="oknte_dxgi_")
+    tmp = tempfile.mkdtemp(prefix="oknte_dxgi_", dir=_TMP_BASE)
     try:
         ok = _build_fake_oknte(os.path.join(tmp, "root"))
         no_py = None  # 断言早失败时 finally 不得 NameError
@@ -339,7 +359,7 @@ def test_compat_fingerprint_patch_matrix():
         cfg = copy.deepcopy(FAKE_ROUTINE_CONFIG) if cfg is None else copy.deepcopy(cfg)
         for key in drop_daily:
             cfg["daily_anomaly"].pop(key, None)
-        tmp = tempfile.mkdtemp(prefix="oknte_matrix_")
+        tmp = tempfile.mkdtemp(prefix="oknte_matrix_", dir=_TMP_BASE)
         dirs.append(tmp)
         ok = _build_fake_oknte(os.path.join(tmp, "root"), cfg=cfg)
         if broken is not None:
@@ -576,7 +596,7 @@ def test_monitor_failed():
 
 @case
 def test_logtail_increment_and_rotate():
-    tmp = tempfile.mkdtemp(prefix="oknte_selftest_")
+    tmp = tempfile.mkdtemp(prefix="oknte_selftest_", dir=_TMP_BASE)
     try:
         path = _safe_path(tmp, "ok-script.log")
 
@@ -980,7 +1000,7 @@ def test_runner_continuous_busy_wait_retry_stop():
 
 @case
 def test_scan_used_stamina_max():
-    tmp = tempfile.mkdtemp(prefix="oknte_selftest_")
+    tmp = tempfile.mkdtemp(prefix="oknte_selftest_", dir=_TMP_BASE)
     try:
         logs = {
             "ok-script.log": [
@@ -1007,7 +1027,7 @@ def test_scan_used_stamina_max():
 
 @case
 def test_recovery_crash_matrix():
-    tmp = tempfile.mkdtemp(prefix="oknte_recovery_")
+    tmp = tempfile.mkdtemp(prefix="oknte_recovery_", dir=_TMP_BASE)
     orig_runtime_file = runner_mod.RUNTIME_FILE
     orig_pid_alive = runner_mod._pid_alive
     orig_oknte_cls = runner_mod.OkNte
@@ -1149,7 +1169,7 @@ def test_dry_run_hundred_times():
     import hashlib
     from app.main import perform_dry_run
 
-    tmp = tempfile.mkdtemp(prefix="oknte_dryrun_")
+    tmp = tempfile.mkdtemp(prefix="oknte_dryrun_", dir=_TMP_BASE)
     try:
         with _StateGuard():
             root = os.path.join(tmp, "root")
@@ -1249,7 +1269,7 @@ class _E2EGuard:
 
     def __enter__(self):
         self._state_guard = _StateGuard().__enter__()
-        self.tmp = tempfile.mkdtemp(prefix="oknte_e2e_")
+        self.tmp = tempfile.mkdtemp(prefix="oknte_e2e_", dir=_TMP_BASE)
         self.root = os.path.join(self.tmp, "root")
         self._orig_runtime = runner_mod.RUNTIME_FILE
         self._orig_oknte = runner_mod.OkNte
@@ -1692,7 +1712,7 @@ def test_stamina_projection_and_preview():
 def test_export_import_and_rollback():
     import app.main as main_mod
     from app.oknte_adapter import OkNteError
-    tmp = tempfile.mkdtemp(prefix="oknte_impexp_")
+    tmp = tempfile.mkdtemp(prefix="oknte_impexp_", dir=_TMP_BASE)
     orig_main_datadir = main_mod.DATA_DIR
     orig_adapter_datadir = adapter_mod.DATA_DIR
     main_mod.DATA_DIR = _safe_path(tmp, "planner_data")
@@ -2066,7 +2086,7 @@ def test_hunter_plan_math():
 @case
 def test_hunter_config_and_routine_patch():
     from app.oknte_adapter import OkNteError
-    tmp = tempfile.mkdtemp(prefix="oknte_hunter_cfg_")
+    tmp = tempfile.mkdtemp(prefix="oknte_hunter_cfg_", dir=_TMP_BASE)
     try:
         ok = _build_fake_oknte(os.path.join(tmp, "root"))
         ok.is_running = lambda: False
@@ -2381,7 +2401,7 @@ def test_stamina_defaults_320():
 def test_icon_generation():
     import struct
     from app.icon_gen import generate_icon
-    tmp = tempfile.mkdtemp(prefix="oknte_icon_")
+    tmp = tempfile.mkdtemp(prefix="oknte_icon_", dir=_TMP_BASE)
     try:
         ico = _safe_path(tmp, "app.ico")
         generate_icon(ico)
@@ -2411,7 +2431,7 @@ def test_icon_generation():
 def test_compat_report_content():
     import app.main as main_mod
     from app.oknte_adapter import OkNte
-    tmp = tempfile.mkdtemp(prefix="oknte_report_")
+    tmp = tempfile.mkdtemp(prefix="oknte_report_", dir=_TMP_BASE)
     orig_datadir = main_mod.DATA_DIR
     main_mod.DATA_DIR = _safe_path(tmp, "planner_data")
     os.makedirs(main_mod.DATA_DIR, exist_ok=True)
@@ -2693,7 +2713,7 @@ def test_avatar_map_alias_and_manifest_merge():
     finally:
         sf.avatar_files, main_mod._guide_slug_names = orig_files, orig_names
     # ---------- 2) manifest 合并语义：幂等 / 失败不掉出 / 既往条目保留 ----------
-    tmp = tempfile.mkdtemp(prefix="oknte_avatar_merge_")
+    tmp = tempfile.mkdtemp(prefix="oknte_avatar_merge_", dir=_TMP_BASE)
     orig_dir, orig_man, orig_get = sf.AVATARS_DIR, sf.AVATAR_MANIFEST_JSON, sf._http_get_bytes
     sf.AVATARS_DIR = tmp
     sf.AVATAR_MANIFEST_JSON = os.path.join(tmp, "manifest.json")
@@ -2818,7 +2838,7 @@ def test_sync_guide_sites_offline():
     KeyError 冒泡致 /api/sites/sync-guide 100% 失败；monkeypatch fetcher 桩离线复现
     并修复）。临时 SNAPSHOT_JSON，绝不触网、绝不写生产 data/sites/。"""
     from app import sites_fetch as sf
-    tmp = tempfile.mkdtemp(prefix="oknte_sync_guide_")
+    tmp = tempfile.mkdtemp(prefix="oknte_sync_guide_", dir=_TMP_BASE)
     orig_dir, orig_snap = sf.SITES_DIR, sf.SNAPSHOT_JSON
     orig_nte, orig_mysqil = sf.fetch_ntestrategy, sf.fetch_mysqil_names
     sf.SITES_DIR = tmp
@@ -3296,7 +3316,7 @@ def test_tajiduo_arc_registration_and_apply():
     二次登记幂等（不重复追加）；日志行「弧盘未收录已自动登记」可见。
     _StateGuard 备份/恢复 state.json，绝不污染生产数据。"""
     from app import main as main_mod
-    tmp = tempfile.mkdtemp(prefix="oknte_arc_reg_")
+    tmp = tempfile.mkdtemp(prefix="oknte_arc_reg_", dir=_TMP_BASE)
     try:
         with _StateGuard():
             root = os.path.join(tmp, "root")
@@ -3351,7 +3371,7 @@ def test_plan_options_endpoint():
     import hashlib
     import inspect
     from app import main as main_mod
-    tmp = tempfile.mkdtemp(prefix="oknte_planopts_")
+    tmp = tempfile.mkdtemp(prefix="oknte_planopts_", dir=_TMP_BASE)
     try:
         with _StateGuard():
             root = os.path.join(tmp, "root")
@@ -3443,7 +3463,7 @@ def test_monitor_capture_fail_fastfail():
 @case
 def test_codex_custom_material():
     import app.main as main_mod
-    tmp = tempfile.mkdtemp(prefix="oknte_codex_mat_")
+    tmp = tempfile.mkdtemp(prefix="oknte_codex_mat_", dir=_TMP_BASE)
     orig_main_datadir = main_mod.DATA_DIR
     orig_planner_datadir = planner.DATA_DIR
     main_mod.DATA_DIR = tmp
@@ -3479,7 +3499,7 @@ def test_codex_custom_material():
 def test_state_settings_persist_across_load():
     """真机缺陷回归（限额 360→180 根因）：加载时默认值只补缺，绝不覆盖用户标量设置。"""
     from app import state as state_mod
-    tmp = tempfile.mkdtemp(prefix="oknte_state_persist_")
+    tmp = tempfile.mkdtemp(prefix="oknte_state_persist_", dir=_TMP_BASE)
     orig = state_mod.STATE_FILE
     try:
         state_mod.STATE_FILE = os.path.join(tmp, "state.json")
@@ -3544,7 +3564,7 @@ def test_log_sources_whitelist():
     """日志页白名单：只收三类目录下按模式命中的 .log；目录外文件（穿越）不出现。"""
     import app.main as main_mod
     from app import state as state_mod
-    tmp = tempfile.mkdtemp(prefix="oknte_logs_")
+    tmp = tempfile.mkdtemp(prefix="oknte_logs_", dir=_TMP_BASE)
     for rel in ("data/apps/ok-nte/working/logs/ok-script.log",
                 "data/apps/ok-nte/working/logs/ok-script.2026-10-29.log",
                 "data/apps/ok-nte/working/logs/other.log",      # 模式不匹配
@@ -3611,7 +3631,7 @@ def test_planner_upstream_cap_and_cumulative_target():
         # 累计口径：used=100 时写入副本的目标 = 100 + step.stamina
         STATE.data["today"]["used_stamina"] = 100
         step = {"mat_id": "coin", "name": "甲硬币", "runs": 1, "stamina": 40}
-        with tempfile.TemporaryDirectory(prefix="oknte_cum_") as tmp:
+        with tempfile.TemporaryDirectory(prefix="oknte_cum_", dir=_TMP_BASE) as tmp:
             ok = adapter_mod.OkNte(tmp)
             os.makedirs(os.path.join(tmp, "data", "apps", "ok-nte", "working", "configs"))
             adapter_mod.save_json_atomic(ok.routine_config, FAKE_ROUTINE_CONFIG)
@@ -4318,7 +4338,7 @@ def test_ocr_bind_priority():
         assert hwnd is None and meta is None and len(allw) == 4, (hwnd, meta)
         assert main_mod._bind_game_window([]) == (None, None, []), "空清单不绑定"
         # devices.json 默认进程名：设置留空时从 oknte_root 读 selected_exe[0]
-        tmp = tempfile.mkdtemp(prefix="oknte_devices_")
+        tmp = tempfile.mkdtemp(prefix="oknte_devices_", dir=_TMP_BASE)
         cfg = _safe_path(tmp, "data", "apps", "ok-nte", "working", "configs")
         os.makedirs(cfg, exist_ok=True)
         settings["oknte_root"] = tmp
@@ -4745,7 +4765,7 @@ def test_ocr_map_unknown():
         planner.MATERIALS.get("item_names", {}).get("oracle_stone")
     mat, count = main_mod._parse_cell_item("谕石\n×7", main_mod._inventory_candidates())
     assert mat == "oracle_stone" and count == 7, (mat, count)
-    tmp = tempfile.mkdtemp(prefix="oknte_ocr_map_")
+    tmp = tempfile.mkdtemp(prefix="oknte_ocr_map_", dir=_TMP_BASE)
     orig_main_datadir = main_mod.DATA_DIR
     orig_planner_datadir = planner.DATA_DIR
     main_mod.DATA_DIR = tmp
@@ -6344,8 +6364,9 @@ def test_tajiduo_token_store_and_sync_orchestration():
                 "续期不得丢绑定时间"
             tc.clear_token_store()
             assert tc.load_token_store() is None
-            # 凭证必须落在 data/ 下约定文件（安全红线：不进 git、不经前端）
-            assert orig_file.endswith(os.path.join("data", "tajiduo_token.json")), orig_file
+            # 凭证必须落在数据根下约定文件（安全红线：不进 git、不经前端）。
+            # W5A：数据根=OKNTE_DATA_ROOT 隔离根（未设时=仓库 data/，路径语义不变）
+            assert orig_file == os.path.join(state_mod.DATA_DIR, "tajiduo_token.json"), orig_file
 
             class _FakeClient:
                 """脚本化客户端：首轮鉴权失败 → 续期一次 → 重试成功；顺带验去重。"""
@@ -9051,7 +9072,7 @@ def test_read_json_robust():
     （重试间隔 sleep 恰好 2 次）。"""
     import time as time_mod
     from app import main as main_mod
-    tmp = tempfile.mkdtemp(prefix="oknte_robust_")
+    tmp = tempfile.mkdtemp(prefix="oknte_robust_", dir=_TMP_BASE)
     try:
         p = Path(tmp) / "DailyRoutineTaskConfigs.json"
         p.write_text('{"daily_anomaly": {"任务类型": "经验', encoding="utf-8")  # 半截 JSON
@@ -9112,7 +9133,7 @@ def test_oknte_plan_endpoints():
     import inspect
     from app import main as main_mod
     from app import oknte_adapter as adapter_mod
-    tmp = tempfile.mkdtemp(prefix="oknte_plan_ep_")
+    tmp = tempfile.mkdtemp(prefix="oknte_plan_ep_", dir=_TMP_BASE)
     real_plan_file = adapter_mod.OKNTE_PLAN_FILE
     plan_file = Path(tmp) / "oknte_plan.json"
     try:
@@ -9244,7 +9265,7 @@ def test_prepare_daily_profile_overrides():
     import hashlib
     import io
     from app import oknte_adapter as adapter_mod
-    tmp = tempfile.mkdtemp(prefix="oknte_profile_ovr_")
+    tmp = tempfile.mkdtemp(prefix="oknte_profile_ovr_", dir=_TMP_BASE)
     real_plan_file = adapter_mod.OKNTE_PLAN_FILE
     plan_file = Path(tmp) / "oknte_plan.json"
     try:
@@ -9351,7 +9372,7 @@ def test_make_plan_plan_targets():
     覆盖传入（first_step=列表首项）。"""
     from app import main as main_mod
     from app import oknte_adapter as adapter_mod
-    tmp = tempfile.mkdtemp(prefix="oknte_plan_targets_")
+    tmp = tempfile.mkdtemp(prefix="oknte_plan_targets_", dir=_TMP_BASE)
     real_plan_file = adapter_mod.OKNTE_PLAN_FILE
     try:
         adapter_mod.OKNTE_PLAN_FILE = Path(tmp) / "absent.json"  # 无覆盖
@@ -9460,7 +9481,7 @@ def test_user_data_seed_and_migration():
                 snap[p] = Path(p).read_bytes()
         return snap
 
-    tmp = tempfile.mkdtemp(prefix="oknte_userdata_")
+    tmp = tempfile.mkdtemp(prefix="oknte_userdata_", dir=_TMP_BASE)
     try:
         bundled = _safe_path(tmp, "bundled", "data")
         make_tree(bundled)
@@ -9575,12 +9596,14 @@ def test_user_data_cli():
         return
 
     def run_cli(env_dir, *cli_args):
-        env = {**os.environ, "LOCALAPPDATA": env_dir}
+        # W5A clean-room：剥除本进程的 OKNTE_DATA_ROOT——本用例验证产品默认路径行为
+        env = {k: v for k, v in os.environ.items() if k != "OKNTE_DATA_ROOT"}
+        env["LOCALAPPDATA"] = env_dir
         r = _sp.run([sys.executable, "-m", "tools.migrate_user_data", *cli_args],
                     cwd=_ROOT, env=env, capture_output=True, text=True, timeout=120)
         return r.returncode, (r.stdout or "") + (r.stderr or "")
 
-    tmp = tempfile.mkdtemp(prefix="oknte_cli_")
+    tmp = tempfile.mkdtemp(prefix="oknte_cli_", dir=_TMP_BASE)
     try:
         src1 = _safe_path(tmp, "src1")
         src2 = _safe_path(tmp, "src2")
@@ -9647,11 +9670,14 @@ def test_frozen_data_dir_relocation():
     import subprocess as _sp
 
     def run_py(env_dir, script, env_extra, cwd):
-        env = {**os.environ, "LOCALAPPDATA": env_dir, **env_extra}
+        # W5A clean-room：剥除本进程的 OKNTE_DATA_ROOT——本用例验证产品默认路径行为
+        env = {k: v for k, v in os.environ.items() if k != "OKNTE_DATA_ROOT"}
+        env["LOCALAPPDATA"] = env_dir
+        env.update(env_extra)
         return _sp.run([sys.executable, "-c", script], cwd=cwd, env=env,
                        capture_output=True, text=True, timeout=120)
 
-    tmp = tempfile.mkdtemp(prefix="oknte_frozen_")
+    tmp = tempfile.mkdtemp(prefix="oknte_frozen_", dir=_TMP_BASE)
     try:
         # 伪造 EXE 旁 data：出厂数据表 + 伪造旧用户数据（占位内容，无真实凭据）
         fake_exe_dir = _safe_path(tmp, "fake_exe")
@@ -9780,7 +9806,7 @@ def test_build_dist_data_gate():
             Path(_safe_path(data, "sites", "guide_sites.json")).write_text("{}", encoding="utf-8")
         return root
 
-    tmp = tempfile.mkdtemp(prefix="oknte_gate_")
+    tmp = tempfile.mkdtemp(prefix="oknte_gate_", dir=_TMP_BASE)
     try:
         clean_root = fake_dist(_safe_path(tmp, "OKntePlanner_single"), personal=False)
         dirty_root = fake_dist(_safe_path(tmp, "OKntePlanner_single_dirty"), personal=True)
@@ -11711,8 +11737,8 @@ def _conc_residue(tmp):
 class _CustomFileGuard:
     """B2.7C：CUSTOM_FILE patch 用例防泄漏门禁（真实数据不变量复核）。
 
-    先例形态：smoke_test._StateFileGuard（快照/退出复核，uuid 双形态 tmp 按精确
-    正则扫描）；与本守卫的差异：_StateFileGuard 退出时恢复快照，本守卫**对测试前
+    历史先例：smoke 缓解层守卫（快照/退出复核，uuid 双形态 tmp 按精确正则扫描；
+    W5A 根修后已退役）。与本守卫的差异：那个守卫退出时恢复快照，本守卫**对测试前
     已存在的文件只读——绝不写回/恢复/删除**（恢复=覆盖用户数据），只删除守卫期
     新增的测试垃圾。
 
@@ -12342,8 +12368,8 @@ def test_conc08_barrier_break_reported():
 @case
 def test_conc09_custom_file_guard_detects_leak():
     """B2.7C 注入②：_CustomFileGuard 防泄漏守卫自检（四场景全在 _conc_tmp
-    沙箱内，零碰真实 data/）。结构仿 test_statefileguard_uuid_pattern 的
-    快照-扰动-断言；守卫消费用 with。
+    沙箱内，零碰真实 data/）。结构为快照-扰动-断言三段式（原 smoke 守卫 uuid
+    姊妹用例已随 W5A 根修退役）；守卫消费用 with。
 
     场景一：沙箱「真实路径」已有文件且隔离写只进另一 tmp（非守卫家族）→
     守卫通过；场景二：已存在文件在守卫期内被改写 → 守卫断言失败且该文件原样
@@ -12440,6 +12466,284 @@ def test_conc09_custom_file_guard_detects_leak():
             "场景四：守卫失败路径同样不得触碰测试前已存在的文件"
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ---------- W5A 测试/真实 state 隔离确定性回归（2026-11-22，任务书 §10） ----------
+
+def _py_clean(code, env_extra=None, cwd=None):
+    """W5A 子进程干净房间：剥除继承的 OKNTE_DATA_ROOT 后按场景注入，跑 python -c。
+    selftest 进程自身设了隔离变量，直接继承会让「产品默认路径」场景失真——凡验证
+    默认解析行为的子进程一律走本助手。"""
+    env = {k: v for k, v in os.environ.items() if k != "OKNTE_DATA_ROOT"}
+    env["PYTHONIOENCODING"] = "utf-8"
+    env.update(env_extra or {})
+    return subprocess.run([sys.executable, "-c", code], cwd=cwd or _ROOT, env=env,
+                          capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", timeout=180, shell=False)
+
+
+@case
+def test_w5a_data_root_override_effective():
+    """任务书 §10-①②：OKNTE_DATA_ROOT 生效（三优先级解析）+ 产品默认数据根零变化。"""
+    code = ("import app.state as s\n"
+            "print(s.DATA_DIR)\nprint(s.STATE_FILE)\n"
+            "print(s.DATA_DIR_OVERRIDDEN)")
+    # ① 设置 override → DATA_DIR/STATE_FILE 全落隔离根（导入期一次定死）
+    ov = tempfile.mkdtemp(prefix="w5a-ovr-", dir=_TMP_BASE)
+    try:
+        r = _py_clean(code, {"OKNTE_DATA_ROOT": ov})
+        assert r.returncode == 0, f"场景①子进程失败: {r.stderr[-400:]}"
+        lines = r.stdout.strip().splitlines()
+        assert len(lines) == 3, r.stdout
+        ovc = os.path.normcase(ov)
+        assert os.path.normcase(lines[0]).startswith(ovc) \
+            and os.path.normcase(lines[1]).startswith(ovc) \
+            and lines[2] == "True", f"override 未生效: {lines}"
+    finally:
+        shutil.rmtree(ov, ignore_errors=True)
+    # ②a 无 override 源码态：默认=仓库 data/（产品默认路径不变）
+    r = _py_clean(code, {})
+    assert r.returncode == 0, r.stderr[-400:]
+    lines = r.stdout.strip().splitlines()
+    assert len(lines) == 3 and lines[2] == "False", r.stdout
+    assert os.path.normcase(lines[0]) == os.path.normcase(os.path.join(_ROOT, "data")), \
+        f"源码态默认数据根漂移: {lines[0]}"
+    # ②b 打包态（注入标志 + LOCALAPPDATA 重定向）：默认=LOCALAPPDATA/OKntePlanner/data
+    lad = tempfile.mkdtemp(prefix="w5a-lad-", dir=_TMP_BASE)
+    try:
+        r = _py_clean(code, {"OKNTE_PLANNER_USER_DATA": "1", "LOCALAPPDATA": lad})
+        assert r.returncode == 0, r.stderr[-400:]
+        lines = r.stdout.strip().splitlines()
+        expect = os.path.normcase(os.path.join(lad, "OKntePlanner", "data"))
+        assert len(lines) == 3 and lines[2] == "False" \
+            and os.path.normcase(lines[0]) == expect, f"打包态默认数据根漂移: {lines}"
+        # ②c 打包态 + override → 环境变量第一优先（EXE 探针/冒烟隔离通道）
+        ov2 = tempfile.mkdtemp(prefix="w5a-ovr2-", dir=_TMP_BASE)
+        try:
+            r = _py_clean(code, {"OKNTE_PLANNER_USER_DATA": "1",
+                                 "LOCALAPPDATA": lad, "OKNTE_DATA_ROOT": ov2})
+            assert r.returncode == 0, r.stderr[-400:]
+            lines = r.stdout.strip().splitlines()
+            assert len(lines) == 3 and lines[2] == "True" \
+                and os.path.normcase(lines[0]).startswith(os.path.normcase(ov2)), \
+                f"打包态 override 未生效: {lines}"
+        finally:
+            shutil.rmtree(ov2, ignore_errors=True)
+    finally:
+        shutil.rmtree(lad, ignore_errors=True)
+
+
+@case
+def test_w5a_delayed_background_save_isolated():
+    """W5A 核心回归（任务书 §6）：迟到后台写防线——guard 生命周期外的迟到
+    STATE.save() 仍只能落隔离根，仓库 data/ 与用户真实数据字节不变。
+    B3F-07 实证形态（两度复发）：e2e 守护线程越过 _StateGuard 生命周期、主上下文
+    退出后 STATE.save() 把夹具路径写进仓库 data/state.json。本用例刻意不进任何
+    _StateGuard——隔离必须不依赖守卫生命周期。"""
+    repo_state = os.path.join(_ROOT, "data", "state.json")
+    lad_state = os.path.join(os.environ.get("LOCALAPPDATA")
+                             or os.path.expanduser("~/AppData/Local"),
+                             "OKntePlanner", "data", "state.json")
+
+    def _snap(path):
+        try:
+            with open(path, "rb") as f:
+                return f.read()
+        except OSError:
+            return None
+
+    repo_before = _snap(repo_state)
+    lad_before = _snap(lad_state)
+    iso_before = _snap(STATE_FILE)
+    marker = {"done": False, "err": None}
+
+    def _late_save():
+        try:
+            time.sleep(0.3)  # 主上下文「先退出」后再写——B3F-07 迟到写形态
+            with STATE.lock:
+                STATE.data["today"]["used_stamina"] = \
+                    (STATE.data["today"].get("used_stamina") or 0) + 1
+                STATE.save()
+            marker["done"] = True
+        except Exception as e:  # noqa: BLE001
+            marker["err"] = e
+
+    t = threading.Thread(target=_late_save, daemon=True)
+    t.start()
+    t.join(15)
+    assert marker["err"] is None, f"迟到保存线程异常: {marker['err']!r}"
+    assert marker["done"] and not t.is_alive(), "迟到保存未完成（写盘被阻断？）"
+    assert _snap(STATE_FILE) != iso_before, "隔离根 state.json 未被迟到写更新"
+    assert _snap(repo_state) == repo_before, "仓库 data/state.json 字节被改变（污染！）"
+    assert _snap(lad_state) == lad_before, "用户真实数据 state.json 字节被改变（污染！）"
+
+
+@case
+def test_w5a_build_python_not_controlled_by_polluted_state():
+    """任务书 §7/§10-④：构建 Python 定位不再被污染 state.json 控制。
+    B3F-07 实证：仓库 data/state.json 残留 e2e 夹具 oknte_root（其 python.exe 为
+    e2e 夹具 touch() 空文件）→ 旧实现仅 isfile 即采信 → 下游 WinError 193。
+    四场景：污染 state 被忽略回默认 / 合法 state 兼容回退优先保持 / OKNTE_PY 显式
+    输入恒第一且无效即 RuntimeError / 全部落空 RuntimeError 列候选。全程 monkeypatch
+    模块常量 + 隔离夹具，仓库零写入。"""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "build_exe_w5a", os.path.join(_ROOT, "tools", "build_exe.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    base = tempfile.mkdtemp(prefix="w5a-build-", dir=_TMP_BASE)
+    fake_root = os.path.join(base, "fake-oknte-root")
+    py_dir = os.path.join(fake_root, "data", "apps", "ok-nte", "python")
+    os.makedirs(py_dir)
+    fake_py = os.path.join(py_dir, "python.exe")
+    Path(fake_py).touch()  # B3F-07 污染形态：夹具空文件 python.exe
+    os.makedirs(os.path.join(base, "data"))
+    Path(os.path.join(base, "data", "state.json")).write_text(
+        json.dumps({"settings": {"oknte_root": fake_root}}), encoding="utf-8")
+    good_dir = os.path.join(base, "good-python")
+    os.makedirs(good_dir)
+    good_py = os.path.join(good_dir, "python.exe")
+    Path(good_py).write_bytes(b"MZ" + b"\x00" * 62)  # 合法 PE 头形态
+    orig = (mod.ROOT, mod.EMBEDDED_DEFAULT, os.environ.get("OKNTE_PY"))
+    mod.ROOT = base
+
+    def _norm(p):
+        return os.path.normcase(os.path.abspath(str(p)))
+
+    try:
+        os.environ.pop("OKNTE_PY", None)
+        # A：污染 state（空文件 python.exe）+ 默认常量有效 → 忽略污染，回默认
+        mod.EMBEDDED_DEFAULT = good_py
+        assert _norm(mod.embedded_python()) == _norm(good_py), \
+            "污染 state 未被忽略（B3F-07 事故形态复发）"
+        # B：state.json 指向合法 PE → 兼容回退优先级保持
+        Path(fake_py).write_bytes(b"MZ" + b"\x00" * 62)
+        assert _norm(mod.embedded_python()) == _norm(fake_py), \
+            "合法 state 回退优先级丢失"
+        # C：显式 OKNTE_PY 恒第一（污染 state 在场）；显式无效 → RuntimeError
+        os.environ["OKNTE_PY"] = good_py
+        assert _norm(mod.embedded_python()) == _norm(good_py)
+        os.environ["OKNTE_PY"] = os.path.join(base, "no-such-python.exe")
+        try:
+            mod.embedded_python()
+            raise AssertionError("OKNTE_PY 无效应 RuntimeError")
+        except RuntimeError:
+            pass
+        os.environ.pop("OKNTE_PY")
+        # D：全部候选无效（污染空文件 + 默认缺失）→ RuntimeError 列出候选
+        #（write_bytes(b"") 真清空——touch() 对已存在文件只更新 mtime，B 场景
+        # 写入的 MZ 头仍在会让「全部无效」前提失真）
+        Path(fake_py).write_bytes(b"")
+        mod.EMBEDDED_DEFAULT = os.path.join(base, "missing-python.exe")
+        try:
+            mod.embedded_python()
+            raise AssertionError("全部候选无效应 RuntimeError")
+        except RuntimeError as e:
+            assert "OKNTE_PY" in str(e), "错误信息应含补救指引"
+    finally:
+        mod.ROOT, mod.EMBEDDED_DEFAULT = orig[0], orig[1]
+        if orig[2] is None:
+            os.environ.pop("OKNTE_PY", None)
+        else:
+            os.environ["OKNTE_PY"] = orig[2]
+        shutil.rmtree(base, ignore_errors=True)
+
+
+@case
+def test_w5a_repo_state_no_fixture_signature():
+    """任务书 §9（自测侧内容闸）：仓库 data/state.json 不得含测试夹具路径签名。
+    （porcelain 清洁与用户数据树哈希闸在构建侧 check_test_state_isolation 执行。）"""
+    repo_state = os.path.join(_ROOT, "data", "state.json")
+    assert os.path.isfile(repo_state), "仓库 data/state.json 不存在（异常环境）"
+    raw = Path(repo_state).read_text(encoding="utf-8")
+    blob = raw.lower().replace("\\\\", "\\")  # JSON 转义反斜杠还原后扫描
+    for sig in ("oknte_e2e_", "selftest-data-", "smoke-data-", "oknte_probe",
+                "appdata\\local\\temp", "\\temp\\oknte"):
+        assert sig not in blob, \
+            f"仓库 state.json 含测试夹具签名 {sig!r}（B3F-07 族污染形态）"
+    json.loads(raw)  # 内容必须可解析
+
+
+@case
+def test_w5a_user_data_untouched_by_test_writes():
+    """任务书 §10-⑥：LocalAppData 用户数据无变化——经产品数据根写入口
+    （STATE.save / save_json_atomic / 凭据存取）做一轮写入风暴后，用户真实数据
+    树（%LOCALAPPDATA%\\OKntePlanner\\data）逐文件 sha256 完全不变。全批量硬闸
+    另由构建侧 check_test_state_isolation 的树哈希比对持续把守。"""
+
+    def _user_tree():
+        lad = os.path.join(os.environ.get("LOCALAPPDATA")
+                           or os.path.expanduser("~/AppData/Local"),
+                           "OKntePlanner", "data")
+        out = {}
+        if os.path.isdir(lad):
+            for base, _ds, fs in os.walk(lad):
+                for n in fs:
+                    p2 = os.path.join(base, n)
+                    with open(p2, "rb") as f:
+                        out[os.path.relpath(p2, lad).lower()] =                             hashlib.sha256(f.read()).hexdigest()
+        else:
+            out["__absent__"] = "1"
+        return out
+
+    before = _user_tree()
+    # 写入风暴：全部走 DATA_DIR 派生目标（W5A 后=隔离根，绝不落用户数据目录）
+    with STATE.lock:
+        STATE.data["today"]["used_stamina"] =             (STATE.data["today"].get("used_stamina") or 0) + 2
+        STATE.save()
+    probe_path = os.path.join(state_mod.DATA_DIR, "w5a-probe.json")
+    state_mod.save_json_atomic(probe_path, {"probe": 1})
+    from app import tajiduo_client as tc
+    orig_token = tc.TOKEN_FILE
+    tc.TOKEN_FILE = os.path.join(state_mod.DATA_DIR, "tajiduo_token.json")
+    try:
+        fake = "x" * 64 + "-w5a-probe-not-a-real-credential"  # 非真实长串字面量（smoke WRONG_TOKEN 同型）
+        tc.save_token_store({"device_id": "PROBE",
+                             "access_token": fake,
+                             "refresh_token": fake + "-2",
+                             "center_uid": "0"})
+        tc.clear_token_store()
+    finally:
+        tc.TOKEN_FILE = orig_token
+    if os.path.isfile(probe_path):
+        os.remove(probe_path)
+    after = _user_tree()
+    assert before == after, (
+        "用户真实数据树被测试写入改变: "
+        f"{sorted(set(before) | set(after) - set(before) & set(after))[:5]}")
+
+
+@case
+def test_w5a_isolation_wiring_static_and_live():
+    """W5A 接线守卫（防回归）：隔离根在本进程真实生效 + 三入口源码形态静态断言
+    （照 test_elev04_layout_single_source_static 风格）。任何人移除 bootstrap、
+    恢复缓解层守卫或构建侧 state 单点真源，本用例必红。"""
+    # 动态：本进程隔离真实生效
+    assert state_mod.DATA_DIR_OVERRIDDEN is True, \
+        "selftest 进程隔离根未生效（bootstrap 被移除？）"
+    assert os.path.normcase(state_mod.DATA_DIR).startswith(os.path.normcase(_TMP_BASE))
+    assert os.path.normcase(state_mod.DATA_DIR) != \
+        os.path.normcase(os.path.join(_ROOT, "data"))
+    assert os.path.normcase(state_mod.DATA_DIR) != os.path.normcase(state_mod.USER_DATA_DIR)
+    assert os.path.normcase(state_mod.STATE_FILE) == os.path.normcase(
+        os.path.join(state_mod.DATA_DIR, "state.json"))
+    # 静态：app/state.py 三优先级解析 + 播种块 + boot 用解析后 DATA_DIR
+    st = Path(_safe_path(_ROOT, "app", "state.py")).read_text(encoding="utf-8")
+    assert 'DATA_ROOT_ENV = "OKNTE_DATA_ROOT"' in st
+    assert '_copy_tree_no_clobber(os.path.join(ROOT, "data"), DATA_DIR)' in st
+    assert "ensure_user_data(DATA_DIR, BUNDLED_DATA_DIR)" in st
+    # 静态：smoke_test 隔离 + 缓解层守卫已撤销
+    sm = Path(_safe_path(_ROOT, "app", "smoke_test.py")).read_text(encoding="utf-8")
+    assert 'os.environ["OKNTE_DATA_ROOT"] = _DATA_ROOT' in sm
+    assert "_StateFileGuard" not in sm, "缓解层守卫必须已移除（根修替代备份/恢复）"
+    # 静态：build_exe 侧治理
+    bx = Path(_safe_path(_ROOT, "tools", "build_exe.py")).read_text(encoding="utf-8")
+    assert "oknte_layout.python_exe" in bx
+    assert "_pe_head_ok" in bx and "check_test_state_isolation" in bx
+    # 静态：selftest bootstrap 形态
+    sf = Path(_safe_path(_ROOT, "app", "selftest.py")).read_text(encoding="utf-8")
+    assert 'os.environ["OKNTE_DATA_ROOT"] = _DATA_ROOT' in sf
+    assert 'tempfile.mkdtemp(prefix="selftest-data-", dir=_TMP_BASE)' in sf
 
 
 # ---------- B2.7B stress 档（--stress 时运行，发布前/专项复核用） ----------
@@ -13157,7 +13461,7 @@ def test_fetch06k_response_closed_on_oversize():
 # 无关文件零扰动、per-path 锁与在途写者互斥、单点 unlink 失败尽力而为）；
 # _wrap_http_error 错误体有界读（FETCH-08：短体展示兼容、恰 200B 上沿、201B
 # 只读 201、33MiB 远超上限读量有界、未知长度/分块供给形态、凭据脱敏消息口径）；
-# smoke _StateFileGuard uuid 形态守卫（姊妹项）；elev 握手前陈旧孤儿清扫
+# smoke 守卫 uuid 形态姊妹项（已随 W5A 根修退役）；elev 握手前陈旧孤儿清扫
 # （姊妹项）。全部离线纯桩——HTTPError 本地构造（先例
 # test_tajiduo_http_error_wrapping），临时目录一律仓库内 .tmp/（显式 dir=），
 # 绝不发真实网络请求。判据对齐 audit/2026-11-12/BUG-REGISTER.md:95（FETCH-08）
@@ -13495,56 +13799,11 @@ def test_httperr_credentials_redaction():
     assert str(err) == "接口 HTTP 401（/usercenter/api/refreshToken）", str(err)
 
 
-@case
-def test_statefileguard_uuid_pattern():
-    """姊妹项（smoke 守卫 uuid 形态）：_StateFileGuard 快照/恢复逻辑对
-    panel_token uuid 双形态 tmp 生效——守卫期改写/删除/新增 uuid tmp，退出后
-    恢复为进守卫时快照（进守卫时存在→恢复原内容；守卫期新增→删除）；形态
-    近邻与无关前缀不纳入守卫（不过宽 glob）。STATE_FILE 重定向 .tmp 临时目录，
-    绝不碰仓库 data/。"""
-    from app import smoke_test as sm
-    import tempfile
-    os.makedirs(".tmp", exist_ok=True)
-    hex1, hex2 = "0" * 32, "f" * 32
-    with tempfile.TemporaryDirectory(dir=".tmp") as tmp:
-        orig_state = sm.STATE_FILE
-        sm.STATE_FILE = os.path.join(tmp, "state.json")
-        try:
-            guarded = {
-                "state.json": "s0",
-                "panel_token.json": "t0",
-                "panel_token.json.bak": "b0",
-                "panel_token.json.%s.tmp" % hex1: "u0",
-                "panel_token.json.bak.%s.tmp" % hex2: "v0",
-            }
-            unguarded = {
-                "unrelated.json.%s.tmp" % hex1: "x0",          # 非守卫前缀
-                "panel_token.json.%s.tmp" % ("a" * 31): "n0",  # 31 位 hex 近邻
-                "panel_token.json.%s.tmp.bak" % hex1: "n1",    # 尾缀近邻
-            }
-            for name, content in {**guarded, **unguarded}.items():
-                Path(tmp, name).write_text(content, encoding="utf-8")
-            guard = sm._StateFileGuard()
-            guard.__enter__()
-            # 守卫期扰动：uuid tmp 改写/删除/新增 + 固定名改写 + 主文件删除
-            Path(tmp, "panel_token.json.%s.tmp" % hex1).write_text(
-                "CHANGED", encoding="utf-8")
-            os.remove(Path(tmp, "panel_token.json.bak.%s.tmp" % hex2))
-            Path(tmp, "panel_token.json.%s.tmp" % hex2).write_text(
-                "NEW", encoding="utf-8")
-            Path(tmp, "panel_token.json").write_text("T-CHANGED", encoding="utf-8")
-            os.remove(Path(tmp, "state.json"))
-            guard.__exit__(None, None, None)
-            # 恢复语义：进守卫时存在的恢复原内容（含 uuid 双形态）
-            for name, content in guarded.items():
-                assert Path(tmp, name).read_text(encoding="utf-8") == content, name
-            # 守卫期新增（快照中不存在）→ 退出删除
-            assert not Path(tmp, "panel_token.json.%s.tmp" % hex2).exists()
-            # 未纳入守卫的近邻/无关文件不受守卫影响
-            for name, content in unguarded.items():
-                assert Path(tmp, name).read_text(encoding="utf-8") == content, name
-        finally:
-            sm.STATE_FILE = orig_state
+# test_statefileguard_uuid_pattern 已随 W5A 根修退役（2026-11-22）：被测对象
+# 为 smoke 缓解层守卫（备份/恢复仓库 data/state.json + panel_token uuid 双形态
+# tmp 快照），守卫整体撤销——OKNTE_DATA_ROOT 隔离根替代其全部职责（uuid tmp
+# 残留落隔离根、随根清理；save_json_atomic 自身 tmp 的 finally 自清仍由
+# CONC-01 用例把守）。
 
 
 @case
@@ -14622,6 +14881,7 @@ def main():
             passed += 1
             print(f"PASS {name}")
     print(f"=== 自测结果: 通过 {passed}/{len(cases)} ===")
+    shutil.rmtree(_DATA_ROOT, ignore_errors=True)  # W5A 隔离根收尾清理（atexit 兜底）
     sys.exit(0 if failed == 0 else 1)
 
 

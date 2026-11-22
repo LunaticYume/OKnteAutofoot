@@ -27,12 +27,29 @@ else:
 USER_DATA_DIR = os.path.join(
     os.environ.get("LOCALAPPDATA") or os.path.expanduser("~/AppData/Local"),
     "OKntePlanner", "data")
+# ---- W5A 测试/开发数据根隔离（B3F-07 族根治，2026-11-22）----
+# OKNTE_DATA_ROOT 是数据目录的第一优先解析输入（任务书 §3.1 优先级1：环境变量
+# 显式覆盖）：设置后全部状态族文件（state.json/runtime.json/凭据/备份/出厂数据表
+# 读取）整体落到该目录，产品默认路径（打包态 %LOCALAPPDATA%\OKntePlanner\data、
+# 源码态 <root>/data）零变化。selftest/smoke 在任何 app 导入前设置本变量并指向
+# 仓库 .tmp/ 下进程独占目录；模块尾播种块把仓库 data/ 整树 no-clobber 复制进
+# 隔离根（保持既有测试起始语义），仓库 data/ 在测试进程内**只读**。
+# 迟到后台写防线（B3F-07 两度实证形态：守护线程越过 _StateGuard 生命周期、迟到
+# STATE.save() 把 e2e 夹具 oknte_root 写进仓库 state.json）：DATA_DIR 在导入期
+# 一次定死，同进程任何线程——含越过任何 guard 生命周期的迟到写——结构上只能
+# 落进隔离根，污染形态不可能再发生。打包态同样尊重该变量（smoke/EXE 探针以
+# 环境变量隔离用户数据；未设置时打包默认路径不变）。
+DATA_ROOT_ENV = "OKNTE_DATA_ROOT"
+_DATA_ROOT_OVERRIDE = os.environ.get(DATA_ROOT_ENV, "").strip()
+DATA_DIR_OVERRIDDEN = bool(_DATA_ROOT_OVERRIDE)
 if _PACKAGED_RUN:
     BUNDLED_DATA_DIR = os.path.join(ROOT, "data")  # EXE 旁出厂数据表（首启播种源）
-    DATA_DIR = USER_DATA_DIR
-else:  # 源码态：行为与旧版完全一致（数据落仓库/dist data/，不触发任何迁移）
+    DATA_DIR = os.path.abspath(_DATA_ROOT_OVERRIDE) if DATA_DIR_OVERRIDDEN \
+        else USER_DATA_DIR
+else:  # 源码态：默认行为与旧版完全一致（数据落仓库/dist data/，不触发任何迁移）
     BUNDLED_DATA_DIR = None
-    DATA_DIR = os.path.join(ROOT, "data")
+    DATA_DIR = os.path.abspath(_DATA_ROOT_OVERRIDE) if DATA_DIR_OVERRIDDEN \
+        else os.path.join(ROOT, "data")
 STATE_FILE = os.path.join(DATA_DIR, "state.json")
 
 
@@ -395,16 +412,19 @@ def ensure_user_data(user_dir, bundled_dir, marker_path=None):
 
 def _ensure_user_data_boot():
     """导入期首启初始化包装：任何 OSError 只告警不抛出（失败绝不阻断面板启动，
-    marker 未写 → 下次启动自愈重试）；成功迁移记一行首启可见日志。"""
+    marker 未写 → 下次启动自愈重试）；成功迁移记一行首启可见日志。
+
+    W5A：以解析后的 DATA_DIR 为目标（未设 OKNTE_DATA_ROOT 时 DATA_DIR 即
+    USER_DATA_DIR，行为不变；设置时首启播种进隔离根而非用户真实数据目录）。"""
     try:
-        result = ensure_user_data(USER_DATA_DIR, BUNDLED_DATA_DIR)
+        result = ensure_user_data(DATA_DIR, BUNDLED_DATA_DIR)
     except OSError as exc:
-        _migration_note(USER_DATA_DIR,
+        _migration_note(DATA_DIR,
                         "首启用户数据初始化失败（下次启动自动重试）：%s" % exc)
         return
     if result["action"] == "migrated":
         stats = result["stats"]
-        _migration_note(USER_DATA_DIR,
+        _migration_note(DATA_DIR,
                         "首启用户数据初始化完成：新建目录 %d、复制文件 %d、跳过已存在 %d"
                         % (stats["dirs"], stats["copied"], stats["skipped"]))
 
@@ -586,5 +606,18 @@ if _PACKAGED_RUN:
     # 打包态导入期即完成首启播种/迁移：STATE 在下方导入期实例化并读 STATE_FILE，
     # 必须在此之前把 EXE 旁数据整树搬入用户数据目录；失败只告警不阻断启动
     _ensure_user_data_boot()
+
+if DATA_DIR_OVERRIDDEN and not _PACKAGED_RUN:
+    # W5A 源码态隔离根播种（模块尾、STATE 实例化之前）：仓库 data/ 整树 no-clobber
+    # 复制进隔离根——出厂数据表 + 当前源码态 state.json 内容快照（保持既有测试起始
+    # 语义：STATE 载入与直跑源码态相同的内容），仓库 data/ 在本进程内只读。
+    # 播种零失败硬断言：半截种子会让 planner 导入期裸 json.load 崩且无 .bak 回退。
+    # 打包态 + override 走上方 _ensure_user_data_boot（EXE 旁播种 + marker + DACL），
+    # 此处不重复执行。
+    os.makedirs(DATA_DIR, exist_ok=True)
+    _seed = _copy_tree_no_clobber(os.path.join(ROOT, "data"), DATA_DIR)
+    if _seed["failed"]:
+        raise OSError("OKNTE_DATA_ROOT 隔离根播种失败 %d 项：%s"
+                      % (_seed["failed"], "; ".join(_seed["errors"])))
 
 STATE = State()

@@ -9,11 +9,14 @@
 约束：
 - 绝不写入 D:/GamingAssistant/ok-nte 下任何文件（bootstrap/plan 只读检测）。
 - 绝不启动游戏、绝不调 /api/start（不会真正拉起 ok-nte 任务）。
-- data/state.json 会被子进程写入：测试前备份、finally 恢复（原本不存在则删除）。
+- 子进程面板全部状态族写入落 OKNTE_DATA_ROOT 隔离根（W5A，2026-11-22）：仓库
+  data/ 与 %LOCALAPPDATA% 用户数据零接触；缓解层守卫（备份/finally 恢复仓库
+  data/state.json）随根修整体撤销；隔离根退出时清理（atexit）。
 - 结束时必须把面板子进程杀干净。
 
 每个步骤 print 一行 PASS/FAIL；全部通过退出码 0，否则 1。
 """
+import atexit
 import json
 import os
 import re
@@ -34,9 +37,19 @@ except (AttributeError, ValueError):
     pass
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-STATE_FILE = os.path.join(ROOT, "data", "state.json")
-# SEC-05 面板令牌文件：源码态 DATA_DIR=仓库 data/（与子进程面板写入口径一致）
-PANEL_TOKEN_FILE = os.path.join(ROOT, "data", "panel_token.json")
+# ---- W5A 冒烟测试数据隔离根（B3F-07 族根治，2026-11-22）——先于面板子进程设置 ----
+# OKNTE_DATA_ROOT 经 os.environ 注入后面板子进程（_spawn_panel 的 dict(os.environ)
+# 继承）把全部状态族写入落到本目录；面板在导入期把仓库 data/ 整树 no-clobber 播种
+# 进隔离根（app/state.py 模块尾播种块），仓库 data/ 在冒烟全程只读。
+_TMP_BASE = os.path.join(ROOT, ".tmp")
+os.makedirs(_TMP_BASE, exist_ok=True)
+_DATA_ROOT = tempfile.mkdtemp(prefix="smoke-data-", dir=_TMP_BASE)
+os.environ["OKNTE_DATA_ROOT"] = _DATA_ROOT
+atexit.register(shutil.rmtree, _DATA_ROOT, True)
+
+STATE_FILE = os.path.join(_DATA_ROOT, "state.json")
+# SEC-05 面板令牌文件：面板经 OKNTE_DATA_ROOT 把令牌写进隔离根（W5A 起不再落仓库 data/）
+PANEL_TOKEN_FILE = os.path.join(_DATA_ROOT, "panel_token.json")
 EMBEDDED_PY = r"D:\GamingAssistant\ok-nte\data\apps\ok-nte\python\python.exe"
 PY = EMBEDDED_PY if os.path.isfile(EMBEDDED_PY) else sys.executable
 PORT = 18765
@@ -76,78 +89,6 @@ SAMPLE_CHARACTER = {
     "tracks": {},
     "extra_needs": {"exp_char": 30},
 }
-
-
-# B2.7A：panel_token uuid 双形态 tmp 匹配（save_json_atomic 命名，state.py:147
-# 主 tmp / :154 bak tmp）：panel_token.json.<32位hex>.tmp 与
-# panel_token.json.bak.<32位hex>.tmp——面板进程若在写中途被杀会残留这两种形态
-# （含令牌明文），固定名单覆盖不到，按此正则随守卫一并快照/恢复；32 位 hex
-# 严格收窄不过宽 glob：旧固定名 panel_token.json.tmp 与无关文件名不命中。
-_PANEL_TOKEN_UUID_TMP_RE = re.compile(
-    r"^panel_token\.json(?:\.bak)?\.[0-9a-f]{32}\.tmp$")
-
-
-class _StateFileGuard:
-    """备份 data/state.json 与 data/yields.json，退出时恢复（原本不存在则删除）。
-    panel_token.json 主文件与 .bak 同管（SEC-05：面板每次启动重写主文件，二次写
-    会轮转出 .bak；原本不存在则测后删除，绝不把测试期令牌留在仓库 data/）。
-    B2.7A：panel_token 的 uuid 双形态 tmp（save_json_atomic 命名 state.py:177/:184）
-    按形态扫描后纳入同一份快照——快照/恢复逻辑按 uuid 形态扩展，守卫语义不变
-    （进守卫时存在→退出恢复原内容，进守卫时不存在→退出删除）。"""
-
-    def __enter__(self):
-        self._files = {}
-        data_dir = os.path.dirname(STATE_FILE)
-        for path in (STATE_FILE,
-                     os.path.join(data_dir, "yields.json"),
-                     os.path.join(data_dir, "requirements.json"),
-                     os.path.join(data_dir, "panel_token.json"),
-                     os.path.join(data_dir, "panel_token.json.bak")):
-            existed = os.path.isfile(path)
-            raw = None
-            if existed:
-                with open(path, "rb") as f:
-                    raw = f.read()
-            self._files[path] = (existed, raw)
-        # uuid 双形态 tmp（B2.7A）：与固定名同一快照/恢复语义
-        try:
-            names = os.listdir(data_dir)
-        except OSError:
-            names = []
-        for name in names:
-            if _PANEL_TOKEN_UUID_TMP_RE.fullmatch(name):
-                path = os.path.join(data_dir, name)
-                existed = os.path.isfile(path)
-                raw = None
-                if existed:
-                    with open(path, "rb") as f:
-                        raw = f.read()
-                self._files[path] = (existed, raw)
-        return self
-
-    def __exit__(self, *exc):
-        for path, (existed, raw) in self._files.items():
-            if existed:
-                Path(path).write_bytes(raw)
-            elif os.path.isfile(path):
-                os.remove(path)
-        # B2.7A：uuid 形态守卫期新增残留（进守卫时不存在、不在快照内）→
-        # 一并删除，同固定名「原本不存在则测后删除」语义——绝不把测试期
-        # 令牌 tmp 留在仓库 data/（面板写中途被杀的残留形态）。
-        data_dir = os.path.dirname(STATE_FILE)
-        try:
-            names = os.listdir(data_dir)
-        except OSError:
-            names = []
-        for name in names:
-            path = os.path.join(data_dir, name)
-            if _PANEL_TOKEN_UUID_TMP_RE.fullmatch(name) \
-                    and path not in self._files and os.path.isfile(path):
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
-        return False
 
 
 def _request(path, payload=None, timeout=30):
@@ -273,7 +214,8 @@ def _step_yield_calibration_endpoints():
     data = _request("/api/yield-suggestions")
     assert isinstance(data.get("suggestions"), list), \
         f"/api/yield-suggestions 结构异常: {sorted(data.keys())}"
-    # 校准建议的"应用"走产量表通道：回写当前值（内容不变，且 yields.json 有备份恢复兜底）
+    # 校准建议的"应用"走产量表通道：回写当前值（内容不变；写入落 OKNTE_DATA_ROOT
+    # 隔离根，W5A 起仓库 data/ 零接触）
     boot = _request("/api/bootstrap")
     per_run = boot["tables"]["yields"]["per_run"]
     saved = _request("/api/tables/yields", {"per_run": per_run})
@@ -303,7 +245,7 @@ def _step_export_import_backups():
         and "char_library" in exported and "weapon_library" in exported \
         and "teams" in exported, \
         f"/api/export 结构异常: {sorted(exported.keys())}"
-    # 回环导入：改一个库存值导回（守卫会恢复三个数据文件）
+    # 回环导入：改一个库存值导回（写入落 OKNTE_DATA_ROOT 隔离根，退出时清理）
     payload = dict(exported)
     payload["inventory"] = {**payload.get("inventory", {}), "exp_char": 9}
     imported = _request("/api/import", payload)
@@ -394,7 +336,7 @@ def _step_auth_gate():
 
     # F: 合法 token + 伪造 oknte_root（空临时目录，无任何 ok-nte 结构）→ 400
     fake_roots = []
-    with tempfile.TemporaryDirectory(prefix="smoke_fake_root_") as fake_root:
+    with tempfile.TemporaryDirectory(prefix="smoke_fake_root_", dir=_TMP_BASE) as fake_root:
         fake_roots.append(fake_root)
         status, raw = _raw_request("/api/settings", payload={"oknte_root": fake_root},
                                    token=token)
@@ -562,8 +504,8 @@ def _step_body_contract_srv01_srv05():
     读体路由→400「缺少请求体」；④ 伪造 Content-length: abc→400；⑤ 伪造
     Content-length: 3145728（实发 b"{}"）→413；⑥ 无 token+非法体→401 而非 400
     （非法体不得绕过鉴权，B2.1 契约）；⑦ 连续 5 次非法请求后 bootstrap→200
-    （服务不退出）；⑧ teams 保存→缺键 400→队不丢（写盘均落 _StateFileGuard
-    覆盖的 data/state.json，与 _step_characters 同口径）。"""
+    （服务不退出）；⑧ teams 保存→缺键 400→队不丢（写盘均落 OKNTE_DATA_ROOT
+    隔离根的 state.json，与 _step_characters 同口径）。"""
     token = _panel_token()
     assert token, "体契约场景前置：panel_token.json 应已生成（bootstrap 步已过）"
 
@@ -641,46 +583,45 @@ STEPS = [
 def main():
     print("=== app.smoke_test 冒烟测试开始 ===")
     assert os.path.isfile(PY), f"未找到内嵌 Python: {PY}"
-    with _StateFileGuard():
-        env = dict(os.environ)
-        env["OKNTE_PLANNER_PORT"] = str(PORT)
-        env["OKNTE_PLANNER_NO_BROWSER"] = "1"
-        proc, out = _spawn_panel(env)  # 复用既有 Popen 拉起形态
-        try:
-            passed = 0
-            failed = 0
-            for name, fn in STEPS:
-                try:
-                    fn()
-                except Exception as e:  # noqa: BLE001
-                    failed += 1
-                    print(f"FAIL {name}: {type(e).__name__}: {e}")
-                    traceback.print_exc()
-                else:
-                    passed += 1
-                    print(f"PASS {name}")
-        finally:
-            # 必须杀干净子进程
-            _kill_panel(proc)
-            out.seek(0)
-            server_log = out.read().decode("utf-8", errors="replace")
-            out.close()
-        # ---- SEC-05 重启失效场景 D/L（重启 harness：复用既有 Popen 拉起代码）----
-        try:
-            _run_restart_scenarios(env)
-        except Exception as e:  # noqa: BLE001
-            failed += 1
-            print(f"FAIL 鉴权重启场景 D/L: {type(e).__name__}: {e}")
-            traceback.print_exc()
-        else:
-            passed += 1
-            print("PASS 鉴权重启场景 D/L（旧 token 401 · token 文件已变 · 新 token 200）")
-        total = len(STEPS) + 1
-        print(f"=== 冒烟测试结果: 通过 {passed}/{total}（面板退出码 {proc.returncode}）===")
-        if failed:
-            print("--- 面板进程输出（末尾）---")
-            print("\n".join(server_log.splitlines()[-15:]))
-            sys.exit(1)
+    env = dict(os.environ)  # 含 W5A 隔离变量 OKNTE_DATA_ROOT（模块导入期注入）——面板子进程继承
+    env["OKNTE_PLANNER_PORT"] = str(PORT)
+    env["OKNTE_PLANNER_NO_BROWSER"] = "1"
+    proc, out = _spawn_panel(env)  # 复用既有 Popen 拉起形态
+    try:
+        passed = 0
+        failed = 0
+        for name, fn in STEPS:
+            try:
+                fn()
+            except Exception as e:  # noqa: BLE001
+                failed += 1
+                print(f"FAIL {name}: {type(e).__name__}: {e}")
+                traceback.print_exc()
+            else:
+                passed += 1
+                print(f"PASS {name}")
+    finally:
+        # 必须杀干净子进程
+        _kill_panel(proc)
+        out.seek(0)
+        server_log = out.read().decode("utf-8", errors="replace")
+        out.close()
+    # ---- SEC-05 重启失效场景 D/L（重启 harness：复用既有 Popen 拉起代码）----
+    try:
+        _run_restart_scenarios(env)
+    except Exception as e:  # noqa: BLE001
+        failed += 1
+        print(f"FAIL 鉴权重启场景 D/L: {type(e).__name__}: {e}")
+        traceback.print_exc()
+    else:
+        passed += 1
+        print("PASS 鉴权重启场景 D/L（旧 token 401 · token 文件已变 · 新 token 200）")
+    total = len(STEPS) + 1
+    print(f"=== 冒烟测试结果: 通过 {passed}/{total}（面板退出码 {proc.returncode}）===")
+    if failed:
+        print("--- 面板进程输出（末尾）---")
+        print("\n".join(server_log.splitlines()[-15:]))
+        sys.exit(1)
     sys.exit(0)
 
 

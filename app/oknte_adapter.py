@@ -247,7 +247,7 @@ class OkNte:
         # elev_helper 白名单各写一份、白名单少算 data/apps/ok-nte 段致实机必拒）
         self.apps_dir = oknte_layout.apps_dir(root)
         self.working = oknte_layout.working_dir(root)
-        self.python_exe = os.path.join(self.apps_dir, "python", "python.exe")
+        self.python_exe = oknte_layout.python_exe(root)
         self.routine_config = os.path.join(self.working, "configs", ROUTINE_CONFIG_NAME)
         self.routine_items = os.path.join(self.working, "configs", ROUTINE_ITEMS_NAME)
         self.hunter_config = os.path.join(self.working, "configs", HUNTER_CONFIG_NAME)
