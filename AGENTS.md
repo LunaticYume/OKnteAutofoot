@@ -60,8 +60,9 @@ ALLOWED_HOSTS = ("ntestrategy.com", "wiki.mysqil.com", "everness.info", "nte.nan
      **立即停止推送并报告**，已误提交的不得推送、先在本轮撤销；
   3. 新增会写个人数据/凭据/运行时文件的代码路径，必须**先补 `.gitignore` 再提交代码**
      （ignore 先于代码入库）。
-  **data/ 白名单制**：仅现役被跟踪的 13 个数据表/缓存文件（`git ls-files data/` 核对：数据表、
-  `mysqil/` 快照、`sites/source_crosscheck.json`）可变更入库；data/ 下任何新文件默认=运行时
+  **data/ 白名单制**：仅现役被跟踪的 12 个数据表/缓存文件（`git ls-files data/` 核对：数据表
+  4（materials/yields/requirements/game_data）＋`mysqil/` 快照 7＋`sites/source_crosscheck.json`
+  1＝12；DOC-DATA-COUNT-01 修复，2026-11-22 W5A 核实）可变更入库；data/ 下任何新文件默认=运行时
   个人产物，禁止提交，除非用户明确裁定为数据表更新且核对无个人字段。
   **永不入库黑名单（历史清洗对象，再次入库=事故）**：`data/state.json`（含 `.bak`）、
   `data/runtime.json`（含 `.bak`）、`data/backups/`、data/ 下一切 `*.bak` 与时间戳快照、
